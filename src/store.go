@@ -1,0 +1,125 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const churnDirName = ".churn"
+const churnIndexFile = "index.json"
+const churnConfigFile = "config.json"
+
+type churnIndex struct {
+	Project       string              `json:"project"`
+	IndexedCommit string              `json:"indexed_commit"`
+	Timestamp     string              `json:"timestamp"`
+	Files         map[string]fileInfo `json:"files"`
+	Symbols       map[string]symbol   `json:"symbols"`
+}
+
+type fileInfo struct {
+	Hash         string   `json:"hash"`
+	Symbols      []string `json:"symbols"`
+	Dependencies []string `json:"dependencies"`
+}
+
+type symbol struct {
+	Type      string `json:"type"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Signature string `json:"signature,omitempty"`
+}
+
+type churnConfig struct {
+	IgnorePaths []string `json:"ignore_paths"`
+	Budget      int      `json:"budget"`
+}
+
+func indexPath(root string) string  { return filepath.Join(root, churnDirName, churnIndexFile) }
+func configPath(root string) string { return filepath.Join(root, churnDirName, churnConfigFile) }
+
+func loadIndex(root string) (churnIndex, error) {
+	data, err := os.ReadFile(indexPath(root))
+	if err != nil {
+		return churnIndex{}, err
+	}
+	var idx churnIndex
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return churnIndex{}, err
+	}
+	if idx.Files == nil {
+		idx.Files = map[string]fileInfo{}
+	}
+	if idx.Symbols == nil {
+		idx.Symbols = map[string]symbol{}
+	}
+	return idx, nil
+}
+
+func saveIndexAtomic(root string, idx churnIndex) error {
+	dir := filepath.Join(root, churnDirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".index-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write([]byte("\n")); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, indexPath(root))
+}
+
+func loadConfig(root string) churnConfig {
+	cfg := churnConfig{Budget: 4000, IgnorePaths: []string{".git/", ".churn/", "node_modules/", "vendor/", "dist/", "build/", "coverage/"}}
+	data, err := os.ReadFile(configPath(root))
+	if err != nil {
+		return cfg
+	}
+	_ = json.Unmarshal(data, &cfg)
+	if cfg.Budget <= 0 {
+		cfg.Budget = 4000
+	}
+	return cfg
+}
+
+func missing(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+func ignored(path string, cfg churnConfig) bool {
+	p := filepath.ToSlash(path)
+	for _, raw := range cfg.IgnorePaths {
+		pat := filepath.ToSlash(strings.TrimSpace(raw))
+		if pat == "" {
+			continue
+		}
+		if strings.HasSuffix(pat, "/") && strings.HasPrefix(p, pat) {
+			return true
+		}
+		if p == pat || strings.HasPrefix(p, pat+"/") {
+			return true
+		}
+	}
+	return false
+}

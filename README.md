@@ -2,7 +2,7 @@
 
 Hermes remembers you. Churn remembers your code.
 
-Churn is a Go-first, local-first code memory CLI/TUI for AI coding agents. It will index a repo into a durable `.churn/` store, keep that store fresh with git-aware incremental updates, and expose token-budgeted recall through CLI and MCP surfaces.
+Churn is a zero-dependency, local-first code memory layer for autonomous AI agents and workspaces. It indexes a repository into a gitignored `.churn/` store, keeps that store fresh with git-aware incremental updates, and exposes token-budgeted recall through CLI and MCP surfaces.
 
 ## How it fits
 
@@ -18,34 +18,43 @@ glib-code sandboxes execution
 human approves promotion
 ```
 
-Churn is the code-memory layer. It is intentionally smaller than a full workspace app: open the TUI, see whether the current repo has memory, then use the CLI/MCP surfaces to index, recall, and serve context.
+Churn is the code-memory layer. It is headless on purpose: no TUI, no panels, no background account, no API key. Agents ask it for code memory; editors handle visualization.
 
 Current foundation:
 
 - safe git repo detection
-- Cobra command surface
-- BentoTUI/Bubble Tea shell
-- custom Churn theme
-- status/doctor/index/recall/serve scaffolds
+- stdlib-only command surface
+- atomic `.churn/index.json` writes
+- lexical symbol/import extraction
+- token-budgeted recall
+- MCP stdio tools
 
 ```bash
 go test ./...
-go run ./cmd/churn --version
-go run ./cmd/churn doctor
-go run ./cmd/churn status
-go run ./cmd/churn tui
+go run ./src --version
+go run ./src doctor
+go run ./src status
+go run ./src index --full
+go run ./src recall "indexer" --budget 1200
 ```
 
 Core commands:
 
 ```bash
-churn
-churn tui
-churn index [--full]
 churn status
+churn index [--full]
 churn recall <query> [--budget 4000] [--json]
+churn deps <file_path>
+churn locate <symbol_name>
 churn serve
 churn doctor
 ```
+
+MCP tools:
+
+- `churn_status`
+- `churn_recall(query, token_budget)`
+- `churn_get_file_deps(file_path)`
+- `churn_locate_symbol(symbol_name)`
 
 No telemetry. No account. No cloud backend. Core behavior stays offline-first.

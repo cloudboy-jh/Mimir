@@ -1,8 +1,8 @@
 # Churn MCP
 
-`churn serve` is the planned stdio MCP surface for read-only access to the local `.churn/` store.
+`churn serve` exposes the local `.churn/index.json` over MCP-compatible JSON-RPC on stdin/stdout.
 
-Target config:
+Config:
 
 ```json
 {
@@ -16,11 +16,9 @@ Target config:
 }
 ```
 
-Planned tools:
+Tools:
 
-- `churn_recall(query, token_budget?)`
-- `churn_context()`
-- `churn_symbols(name?)`
-- `churn_findings(severity?, path?)`
-- `churn_deps(path?)`
-- `churn_status()`
+- `churn_status`: current indexing metrics, freshness, and timestamps.
+- `churn_recall(query, token_budget)`: ranked lexical code memory fitted to budget.
+- `churn_get_file_deps(file_path)`: immediate dependencies and downstream files.
+- `churn_locate_symbol(symbol_name)`: absolute path, line, type, and signature.

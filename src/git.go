@@ -1,4 +1,4 @@
-package git
+package main
 
 import (
 	"context"
@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-var ErrNotRepo = errors.New("not inside a git repository")
+var errNotRepo = errors.New("not inside a git repository")
 
-type RepoInfo struct {
+type repoInfo struct {
 	Root        string
 	Branch      string
 	HeadSHA     string
@@ -25,26 +25,22 @@ type RepoInfo struct {
 }
 
 type indexManifest struct {
-	Repo struct {
-		IndexedSHA string `json:"indexedSha"`
-		HeadSHA    string `json:"headSha"`
-		Stale      bool   `json:"stale"`
-	} `json:"repo"`
+	IndexedCommit string `json:"indexed_commit"`
 }
 
-func Detect(ctx context.Context, dir string) (RepoInfo, error) {
-	root, err := Run(ctx, dir, "rev-parse", "--show-toplevel")
+func detectRepo(ctx context.Context, dir string) (repoInfo, error) {
+	root, err := runGit(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return RepoInfo{}, ErrNotRepo
+		return repoInfo{}, errNotRepo
 	}
 
-	branch, _ := Run(ctx, root, "branch", "--show-current")
-	head, _ := Run(ctx, root, "rev-parse", "HEAD")
-	remote, _ := Run(ctx, root, "config", "--get", "remote.origin.url")
+	branch, _ := runGit(ctx, root, "branch", "--show-current")
+	head, _ := runGit(ctx, root, "rev-parse", "HEAD")
+	remote, _ := runGit(ctx, root, "config", "--get", "remote.origin.url")
 
 	storePath := filepath.Join(root, ".churn")
 	manifestPath := filepath.Join(storePath, "index.json")
-	info := RepoInfo{
+	info := repoInfo{
 		Root:        filepath.Clean(root),
 		Branch:      branch,
 		HeadSHA:     head,
@@ -65,7 +61,7 @@ func Detect(ctx context.Context, dir string) (RepoInfo, error) {
 	return info, nil
 }
 
-func Run(ctx context.Context, dir string, args ...string) (string, error) {
+func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
@@ -88,7 +84,7 @@ func readIndexedSHA(path string) (string, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return "", err
 	}
-	return manifest.Repo.IndexedSHA, nil
+	return manifest.IndexedCommit, nil
 }
 
 func pathExists(path string) bool {

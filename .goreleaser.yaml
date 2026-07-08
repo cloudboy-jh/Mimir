@@ -6,7 +6,7 @@ before:
 
 builds:
   - id: churn
-    main: ./cmd/churn
+    main: ./src
     binary: churn
     env:
       - CGO_ENABLED=0
