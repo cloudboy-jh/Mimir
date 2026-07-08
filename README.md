@@ -1,5 +1,7 @@
 # Mimir
 
+![Mimir](./mimir-readme.png)
+
 Hermes remembers the developer. Chiron remembers the session. Mimir remembers the code.
 
 Mimir is a zero-dependency, local-first code memory layer for autonomous AI agents and workspaces. It indexes a repository into a gitignored `.mimir/` store, keeps that store fresh with git-aware incremental updates, and exposes token-budgeted recall through CLI and MCP surfaces.
