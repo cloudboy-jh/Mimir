@@ -1,0 +1,9 @@
+.churn/
+dist/
+build/
+coverage/
+*.exe
+*.test
+*.out
+*.log
+.DS_Store
