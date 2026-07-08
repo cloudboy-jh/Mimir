@@ -5,9 +5,9 @@ before:
     - go mod tidy
 
 builds:
-  - id: churn
+  - id: mimir
     main: ./src
-    binary: churn
+    binary: mimir
     env:
       - CGO_ENABLED=0
     goos:

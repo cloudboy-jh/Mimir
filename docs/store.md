@@ -1,9 +1,9 @@
-# `.churn/` Store
+# `.mimir/` Store
 
 The durable store lives at the repository root and is gitignored by default.
 
 ```txt
-.churn/
+.mimir/
 ├── index.json
 ├── config.json
 └── history/

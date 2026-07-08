@@ -59,7 +59,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 			return err
 		}
 		if len(queryArgs) == 0 {
-			return fmt.Errorf("usage: churn recall <query> [--budget 4000] [--json]")
+			return fmt.Errorf("usage: mimir recall <query> [--budget 4000] [--json]")
 		}
 		res, err := runRecall(ctx, recallOptions{Dir: ".", Query: strings.Join(queryArgs, " "), Budget: budget, JSON: jsonOut})
 		if err != nil {
@@ -69,7 +69,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	case "deps":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: churn deps <file_path>")
+			return fmt.Errorf("usage: mimir deps <file_path>")
 		}
 		fi, downstream, err := fileDeps(ctx, ".", args[1])
 		if err != nil {
@@ -83,7 +83,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	case "locate":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: churn locate <symbol_name>")
+			return fmt.Errorf("usage: mimir locate <symbol_name>")
 		}
 		sym, ok, err := locateSymbol(ctx, ".", args[1])
 		if err != nil {
@@ -106,17 +106,17 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 }
 
 func usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, `churn remembers the code
+	_, err := fmt.Fprintln(out, `mimir remembers the code
 
 Usage:
-  churn status
-  churn index [--full]
-  churn recall <query> [--budget 4000] [--json]
-  churn deps <file_path>
-  churn locate <symbol_name>
-  churn serve
-  churn doctor
-  churn --version`)
+  mimir status
+  mimir index [--full]
+  mimir recall <query> [--budget 4000] [--json]
+  mimir deps <file_path>
+  mimir locate <symbol_name>
+  mimir serve
+  mimir doctor
+  mimir --version`)
 	return err
 }
 
@@ -144,7 +144,7 @@ func status(ctx context.Context, out io.Writer) error {
 }
 
 func doctor(ctx context.Context, out io.Writer) error {
-	fmt.Fprintf(out, "churn %s\n", versionString())
+	fmt.Fprintf(out, "mimir %s\n", versionString())
 	if _, err := runGit(ctx, ".", "--version"); err != nil {
 		fmt.Fprintln(out, "git: missing")
 		return nil

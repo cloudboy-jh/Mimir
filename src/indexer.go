@@ -94,15 +94,15 @@ func runIndex(ctx context.Context, opts indexOptions) (indexResult, error) {
 	return indexResult{Message: fmt.Sprintf("indexed %s: %d updated, %d removed, %d files, %d symbols", mode, indexed, removed, len(idx.Files), len(idx.Symbols)), Indexed: indexed, Removed: removed}, nil
 }
 
-func baseIndex(ctx context.Context, root, head string, full bool) (churnIndex, []string, error) {
+func baseIndex(ctx context.Context, root, head string, full bool) (mimirIndex, []string, error) {
 	if full {
 		paths, err := listFiles(ctx, root)
-		return churnIndex{IndexedCommit: head, Files: map[string]fileInfo{}, Symbols: map[string]symbol{}}, paths, err
+		return mimirIndex{IndexedCommit: head, Files: map[string]fileInfo{}, Symbols: map[string]symbol{}}, paths, err
 	}
 	idx, err := loadIndex(root)
 	if err != nil {
 		paths, listErr := listFiles(ctx, root)
-		return churnIndex{IndexedCommit: head, Files: map[string]fileInfo{}, Symbols: map[string]symbol{}}, paths, listErr
+		return mimirIndex{IndexedCommit: head, Files: map[string]fileInfo{}, Symbols: map[string]symbol{}}, paths, listErr
 	}
 	changed, err := changedFiles(ctx, root, idx.IndexedCommit)
 	if err != nil || idx.IndexedCommit == "" {
@@ -211,7 +211,7 @@ func parseFile(root, rel string) (parsedFile, error) {
 	return pf, nil
 }
 
-func deleteFile(idx churnIndex, rel string) {
+func deleteFile(idx mimirIndex, rel string) {
 	delete(idx.Files, rel)
 	for name, sym := range idx.Symbols {
 		if sym.File == rel {

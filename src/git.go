@@ -38,7 +38,7 @@ func detectRepo(ctx context.Context, dir string) (repoInfo, error) {
 	head, _ := runGit(ctx, root, "rev-parse", "HEAD")
 	remote, _ := runGit(ctx, root, "config", "--get", "remote.origin.url")
 
-	storePath := filepath.Join(root, ".churn")
+	storePath := filepath.Join(root, ".mimir")
 	manifestPath := filepath.Join(storePath, "index.json")
 	info := repoInfo{
 		Root:        filepath.Clean(root),

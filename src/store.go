@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-const churnDirName = ".churn"
-const churnIndexFile = "index.json"
-const churnConfigFile = "config.json"
+const mimirDirName = ".mimir"
+const mimirIndexFile = "index.json"
+const mimirConfigFile = "config.json"
 
-type churnIndex struct {
+type mimirIndex struct {
 	Project       string              `json:"project"`
 	IndexedCommit string              `json:"indexed_commit"`
 	Timestamp     string              `json:"timestamp"`
@@ -33,22 +33,22 @@ type symbol struct {
 	Signature string `json:"signature,omitempty"`
 }
 
-type churnConfig struct {
+type mimirConfig struct {
 	IgnorePaths []string `json:"ignore_paths"`
 	Budget      int      `json:"budget"`
 }
 
-func indexPath(root string) string  { return filepath.Join(root, churnDirName, churnIndexFile) }
-func configPath(root string) string { return filepath.Join(root, churnDirName, churnConfigFile) }
+func indexPath(root string) string  { return filepath.Join(root, mimirDirName, mimirIndexFile) }
+func configPath(root string) string { return filepath.Join(root, mimirDirName, mimirConfigFile) }
 
-func loadIndex(root string) (churnIndex, error) {
+func loadIndex(root string) (mimirIndex, error) {
 	data, err := os.ReadFile(indexPath(root))
 	if err != nil {
-		return churnIndex{}, err
+		return mimirIndex{}, err
 	}
-	var idx churnIndex
+	var idx mimirIndex
 	if err := json.Unmarshal(data, &idx); err != nil {
-		return churnIndex{}, err
+		return mimirIndex{}, err
 	}
 	if idx.Files == nil {
 		idx.Files = map[string]fileInfo{}
@@ -59,8 +59,8 @@ func loadIndex(root string) (churnIndex, error) {
 	return idx, nil
 }
 
-func saveIndexAtomic(root string, idx churnIndex) error {
-	dir := filepath.Join(root, churnDirName)
+func saveIndexAtomic(root string, idx mimirIndex) error {
+	dir := filepath.Join(root, mimirDirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -92,8 +92,8 @@ func saveIndexAtomic(root string, idx churnIndex) error {
 	return os.Rename(tmpPath, indexPath(root))
 }
 
-func loadConfig(root string) churnConfig {
-	cfg := churnConfig{Budget: 4000, IgnorePaths: []string{".git/", ".churn/", "node_modules/", "vendor/", "dist/", "build/", "coverage/"}}
+func loadConfig(root string) mimirConfig {
+	cfg := mimirConfig{Budget: 4000, IgnorePaths: []string{".git/", ".mimir/", "node_modules/", "vendor/", "dist/", "build/", "coverage/"}}
 	data, err := os.ReadFile(configPath(root))
 	if err != nil {
 		return cfg
@@ -107,7 +107,7 @@ func loadConfig(root string) churnConfig {
 
 func missing(err error) bool { return errors.Is(err, os.ErrNotExist) }
 
-func ignored(path string, cfg churnConfig) bool {
+func ignored(path string, cfg mimirConfig) bool {
 	p := filepath.ToSlash(path)
 	for _, raw := range cfg.IgnorePaths {
 		pat := filepath.ToSlash(strings.TrimSpace(raw))

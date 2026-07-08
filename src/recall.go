@@ -61,7 +61,7 @@ func queryRecall(ctx context.Context, dir, query string, budget int) (Response, 
 	}
 	idx, err := loadIndex(info.Root)
 	if err != nil {
-		return Response{}, fmt.Errorf("missing .churn/index.json; run churn index --full")
+		return Response{}, fmt.Errorf("missing .mimir/index.json; run mimir index --full")
 	}
 	matches := rank(idx, query)
 	return Response{Query: query, Budget: budget, Stale: info.Stale, Matches: fit(matches, budget)}, nil
@@ -111,7 +111,7 @@ func locateSymbol(ctx context.Context, dir, name string) (symbol, bool, error) {
 	return sym, ok, nil
 }
 
-func rank(idx churnIndex, query string) []Match {
+func rank(idx mimirIndex, query string) []Match {
 	q := strings.ToLower(strings.TrimSpace(query))
 	var matches []Match
 	for name, sym := range idx.Symbols {

@@ -1,4 +1,4 @@
-.churn/
+.mimir/
 dist/
 build/
 coverage/

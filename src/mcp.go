@@ -70,7 +70,7 @@ func handle(ctx context.Context, dir string, req request) map[string]any {
 	}
 	switch req.Method {
 	case "initialize":
-		return success(map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]any{"name": "churn", "version": versionString()}, "capabilities": map[string]any{"tools": map[string]any{}}})
+		return success(map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]any{"name": "mimir", "version": versionString()}, "capabilities": map[string]any{"tools": map[string]any{}}})
 	case "tools/list":
 		return success(map[string]any{"tools": tools()})
 	case "tools/call":
@@ -93,10 +93,10 @@ func handle(ctx context.Context, dir string, req request) map[string]any {
 
 func tools() []map[string]any {
 	return []map[string]any{
-		{"name": "churn_status", "description": "Return current indexing metrics and freshness.", "inputSchema": schema(map[string]any{})},
-		{"name": "churn_recall", "description": "Return ranked code memory for a query inside a token budget.", "inputSchema": schema(map[string]any{"query": str(), "token_budget": num()})},
-		{"name": "churn_get_file_deps", "description": "Return immediate imports and downstream dependency linkages for a file.", "inputSchema": schema(map[string]any{"file_path": str()})},
-		{"name": "churn_locate_symbol", "description": "Return absolute file path, line, type, and signature for a symbol.", "inputSchema": schema(map[string]any{"symbol_name": str()})},
+		{"name": "mimir_status", "description": "Return current indexing metrics and freshness.", "inputSchema": schema(map[string]any{})},
+		{"name": "mimir_recall", "description": "Return ranked code memory for a query inside a token budget.", "inputSchema": schema(map[string]any{"query": str(), "token_budget": num()})},
+		{"name": "mimir_get_file_deps", "description": "Return immediate imports and downstream dependency linkages for a file.", "inputSchema": schema(map[string]any{"file_path": str()})},
+		{"name": "mimir_locate_symbol", "description": "Return absolute file path, line, type, and signature for a symbol.", "inputSchema": schema(map[string]any{"symbol_name": str()})},
 	}
 }
 
@@ -112,7 +112,7 @@ func num() map[string]string { return map[string]string{"type": "number"} }
 
 func callTool(ctx context.Context, dir, name string, args map[string]any) (string, error) {
 	switch name {
-	case "churn_status":
+	case "mimir_status":
 		info, err := detectRepo(ctx, dir)
 		if err != nil {
 			return "", err
@@ -120,7 +120,7 @@ func callTool(ctx context.Context, dir, name string, args map[string]any) (strin
 		idx, _ := loadIndex(info.Root)
 		data, _ := json.MarshalIndent(map[string]any{"root": info.Root, "head": info.HeadSHA, "indexed_commit": info.IndexedSHA, "stale": info.Stale, "files": len(idx.Files), "symbols": len(idx.Symbols), "updated": idx.Timestamp}, "", "  ")
 		return string(data), nil
-	case "churn_recall":
+	case "mimir_recall":
 		query, _ := args["query"].(string)
 		budget := 4000
 		if v, ok := args["token_budget"].(float64); ok {
@@ -132,7 +132,7 @@ func callTool(ctx context.Context, dir, name string, args map[string]any) (strin
 		}
 		data, _ := json.MarshalIndent(res, "", "  ")
 		return string(data), nil
-	case "churn_get_file_deps":
+	case "mimir_get_file_deps":
 		file, _ := args["file_path"].(string)
 		fi, downstream, err := fileDeps(ctx, dir, file)
 		if err != nil {
@@ -140,7 +140,7 @@ func callTool(ctx context.Context, dir, name string, args map[string]any) (strin
 		}
 		data, _ := json.MarshalIndent(map[string]any{"file": file, "dependencies": fi.Dependencies, "downstream": downstream}, "", "  ")
 		return string(data), nil
-	case "churn_locate_symbol":
+	case "mimir_locate_symbol":
 		name, _ := args["symbol_name"].(string)
 		sym, ok, err := locateSymbol(ctx, dir, name)
 		if err != nil {
