@@ -8,6 +8,22 @@ The agent keeps an optional map of the repo, and a working session (goal, progre
 
 ## Install
 
+### Agent prompt (paste this)
+
+```text
+Install and wire Mimir for me.
+
+1. Install the skill (not a product clone of cloudboy-jh/Mimir):
+   npx skills add cloudboy-jh/Mimir@mimir -g -y
+   PromptScript only (no global): npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+2. Load / follow skills/mimir (or the installed skill). Bootstrap control + session.
+3. Do not ask for a session GitHub URL. Use gh auth → private login/mimir-sessions.
+4. Sessions use git + gh. Binary is optional (code index / recall / MCP only).
+5. Confirm with a ◆ mimir receipt and doctor/status if available. Reload harness if skills load only at session start.
+```
+
+### Skill command
+
 ```bash
 npx skills add cloudboy-jh/Mimir@mimir -g -y
 ```
