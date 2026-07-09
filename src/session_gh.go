@@ -99,7 +99,7 @@ func sessionInit(ctx context.Context, opts sessionInitOptions) (sessionInitResul
 
 	cloned, pulled := false, false
 	if pathExists(filepath.Join(dir, ".git")) {
-		// already a repo — set remote if needed, pull
+		// already a repo - set remote if needed, pull
 		if rem, err := runGit(ctx, dir, "config", "--get", "remote.origin.url"); err != nil || rem == "" {
 			_, _ = runGit(ctx, dir, "remote", "add", "origin", opts.Repo)
 		}

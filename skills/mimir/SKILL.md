@@ -14,9 +14,9 @@ Users never “use Mimir.” They talk to you. You drive Mimir. Config + log exi
 
 Session push does **not** depend on code index. Control + sessions still work if the binary is missing.
 
-## Install (agent walks this — zero paste)
+## Install (agent walks this - zero paste)
 
-### Layer 1 — control
+### Layer 1 - control
 
 On “Set up Mimir” or first skill load with missing config:
 
@@ -27,7 +27,7 @@ mimir control init
 
 Derive `machine` from hostname / known aliases (`therig`, `thedeck`). Only ask on collision.
 
-### Layer 2 — sessions
+### Layer 2 - sessions
 
 **Do not ask for a GitHub URL first.**
 
@@ -46,7 +46,7 @@ Refuse: public repos, application monorepos as session remotes. Never store toke
 
 Only ask when: no `gh` auth, ambiguous multi-account choice (one terse choice), or explicit custom remote.
 
-### Layer 3 — code (opportunistic)
+### Layer 3 - code (opportunistic)
 
 Binary on PATH → register MCP for **active** harness only → `mimir index --full` once, incremental after. If binary fails: report degradation; sessions still work.
 
@@ -109,7 +109,7 @@ Agent-first debug. Expand checks: control home, config, sessions path/repo, git,
 ## Hard rules
 
 - Don't ask for anything the environment already has (git identity, gh login, hostname, harness, project name).
-- Don't teach session CLI as daily user vocabulary — map intent in natural language.
+- Don't teach session CLI as daily user vocabulary - map intent in natural language.
 - Don't fold sessions into project `.mimir/`.
 - Don't reintroduce a separate Chiron brand.
 - No TUI, no install wizard forms, no SaaS.

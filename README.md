@@ -4,32 +4,81 @@
 
 Hermes remembers the **developer**. Mimir remembers the **repo** and the **session**.
 
-You talk to an agent. The agent drives Mimir. You almost never touch Mimir directly — when you need to audit something, there’s a small config and a log.
+You talk to an agent. The agent drives Mimir. You almost never touch Mimir directly. When you need to audit something, there is a small config and a log.
+
+**For agents:** read [`AGENTS.md`](./AGENTS.md) first.
+
+## Install (copy-paste)
+
+Requires Go 1.25+ on PATH. Uses your existing `gh` auth for session sync (no Mimir account).
+
+```bash
+git clone https://github.com/cloudboy-jh/Mimir.git
+cd Mimir
+go build -o mimir ./src
+```
+
+Put `mimir` on your PATH (examples):
+
+```bash
+# macOS / Linux (current shell)
+export PATH="$PWD:$PATH"
+
+# or install into GOPATH/bin with a stable name
+mkdir -p "$(go env GOPATH)/bin"
+cp mimir "$(go env GOPATH)/bin/mimir"
+# ensure $(go env GOPATH)/bin is on PATH
+```
+
+```powershell
+# Windows (PowerShell) - current session
+$env:Path = "$PWD;$env:Path"
+
+# or copy into a permanent tools dir already on PATH
+Copy-Item .\mimir.exe $env:USERPROFILE\bin\mimir.exe
+```
+
+One-time setup:
+
+```bash
+mimir control init
+mimir session init
+mimir doctor
+```
+
+In a repo you want code memory for:
+
+```bash
+mimir index --full
+mimir recall "auth"
+```
+
+Agent path (preferred): say **"Set up Mimir"** and let the agent walk the same steps. Do not paste remotes.
 
 ## What it remembers
 
-**Code** — indexes the repo you’re in so agents can cold-start without re-reading the whole tree. Lives in `<repo>/.mimir/` (gitignored). Served over CLI + MCP.
+**Code:** indexes the repo you are in so agents can cold-start without re-reading the whole tree. Lives in `<repo>/.mimir/` (gitignored). Served over CLI + MCP.
 
-**Session** — saves what you were doing (goal, progress, context) as markdown and syncs it through *your* private git repo so another machine can pick up the same work. Lives in `~/.mimir/sessions/`.
+**Session:** saves what you were doing (goal, progress, context) as markdown and syncs it through *your* private git repo so another machine can pick up the same work. Lives in `~/.mimir/sessions/`.
 
-**Control** — `~/.mimir/config.toml` + `mimir.log`. Tiny. Agent writes; human reads on doubt.
+**Control:** `~/.mimir/config.toml` + `mimir.log`. Tiny. Agent writes; human reads on doubt.
 
 ## How you use it
 
 Say things like:
 
-- “Set up Mimir.”
-- “Save progress.”
-- “Continue what I was doing on thedeck.”
-- “What do we know about auth in this repo?”
+- "Set up Mimir."
+- "Save progress."
+- "Continue what I was doing on thedeck."
+- "What do we know about auth in this repo?"
 
-Don’t paste remotes, fill install forms, or learn CLI verbs as daily vocabulary. The agent uses `gh`, hostname, and cwd — you confirm only real decisions.
+Do not paste remotes, fill install forms, or learn CLI verbs as daily vocabulary. The agent uses `gh`, hostname, and cwd. You confirm only real decisions.
 
 ### Example
 
 **You:** Set up Mimir.
 
-**Agent:** Control plane ready (`machine=therig`). GitHub as `you` — bound private `you/mimir-sessions` → `~/.mimir/sessions`. Index this repo?
+**Agent:** Control plane ready (`machine=therig`). GitHub as `you`. Bound private `you/mimir-sessions` to `~/.mimir/sessions`. Index this repo?
 
 **You:** Yes.
 
@@ -56,7 +105,7 @@ Don’t paste remotes, fill install forms, or learn CLI verbs as daily vocabular
 
 **You on another machine:** Continue yesterday on therig.
 
-**Agent:** Same login → pull → restore. No URL paste.
+**Agent:** Same login, pull, restore. No URL paste.
 
 Every memory-bus event in chat starts with `◆ mimir`. Durable twin: `~/.mimir/mimir.log`.
 
@@ -68,9 +117,13 @@ Every memory-bus event in chat starts with `◆ mimir`. Durable twin: `~/.mimir/
 | sessions | `~/.mimir/sessions/` | git + markdown |
 | config + log | `~/.mimir/` | agent-written |
 
-Session sync does **not** depend on the code index. If the binary isn’t installed, sessions and control still work.
+Session sync does **not** depend on the code index. If the binary is not installed, sessions and control can still work.
 
-Full contract: [`spec.md`](./spec.md) · Agent skill: [`skills/mimir/SKILL.md`](./skills/mimir/SKILL.md)
+| doc | use |
+|---|---|
+| [`AGENTS.md`](./AGENTS.md) | agent operating manual |
+| [`spec.md`](./spec.md) | full product contract |
+| [`skills/mimir/SKILL.md`](./skills/mimir/SKILL.md) | harness skill |
 
 ## Dev
 
@@ -78,7 +131,7 @@ Full contract: [`spec.md`](./spec.md) · Agent skill: [`skills/mimir/SKILL.md`](
 go test ./src
 go run ./src doctor
 go run ./src control init
-go run ./src session init   # prefers gh create/clone of private mimir-sessions
+go run ./src session init
 go run ./src index --full
 go run ./src recall "indexer" --budget 1200
 ```
@@ -87,15 +140,15 @@ go run ./src recall "indexer" --budget 1200
 
 ## Manual appendix
 
-Worth reading only if you’re wiring Mimir without an agent.
+Worth reading only if you are wiring Mimir without an agent.
 
 ```bash
 # once per machine
 mimir control init [--machine NAME]
 
-# once per person — discovers gh, creates/clones private mimir-sessions
+# once per person (discovers gh, creates/clones private mimir-sessions)
 mimir session init
-mimir session push --id my-work --harness cli --project myproj --goal "…"
+mimir session push --id my-work --harness cli --project myproj --goal "..."
 mimir session pull
 mimir session list
 
@@ -109,6 +162,6 @@ mimir status
 mimir doctor
 ```
 
-MCP: `mimir_status`, `mimir_recall`, `mimir_get_file_deps`, `mimir_locate_symbol` — [`docs/mcp.md`](./docs/mcp.md).
+MCP: `mimir_status`, `mimir_recall`, `mimir_get_file_deps`, `mimir_locate_symbol`. See [`docs/mcp.md`](./docs/mcp.md).
 
 No telemetry. No Mimir account. Sessions live in *your* private repo via existing `gh` auth.

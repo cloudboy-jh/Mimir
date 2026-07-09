@@ -298,7 +298,7 @@ func controlInit(machine string) (ControlConfig, error) {
 
 func encodeControlTOML(cfg ControlConfig) string {
 	var b strings.Builder
-	b.WriteString("# ~/.mimir/config.toml — agent owns most writes\n")
+	b.WriteString("# ~/.mimir/config.toml - agent owns most writes\n")
 	fmt.Fprintf(&b, "machine = %q\n\n", cfg.Machine)
 	b.WriteString("[sessions]\n")
 	fmt.Fprintf(&b, "enabled = %t\n", cfg.Sessions.Enabled)

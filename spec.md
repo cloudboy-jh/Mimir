@@ -44,7 +44,7 @@ Chiron is retired as a brand. Session plane *is* what Chiron was.
 
 Install is three layers. Agent walks them. User confirms only real decisions.
 
-### Layer 1 — Control plane (once per machine)
+### Layer 1 - Control plane (once per machine)
 
 Triggered by: “Set up Mimir” / first skill load with missing config.
 
@@ -61,7 +61,7 @@ Agent:
 
 No user paste required.
 
-### Layer 2 — Session plane (once per person, shared across machines)
+### Layer 2 - Session plane (once per person, shared across machines)
 
 Triggered automatically when control plane is new and user is coding / has git provider auth.
 
@@ -94,7 +94,7 @@ Triggered automatically when control plane is new and user is coding / has git p
 - Refuse using an existing application monorepo as the sessions remote
 - Never store tokens in config (use existing `gh`/credential helper)
 
-### Layer 3 — Code plane engine (opportunistic)
+### Layer 3 - Code plane engine (opportunistic)
 
 Triggered by: user wants repo memory, or agent needs index for coding work.
 
@@ -116,7 +116,7 @@ If binary install fails: **sessions + control still work**. Report degradation; 
 **User:** Set up Mimir.
 
 **Agent (on therig, gh = cloudboy-jh):**
-Control plane ready (`machine=therig`). You're signed into GitHub as `cloudboy-jh` — I created/cloned private `cloudboy-jh/mimir-sessions` into `~/.mimir/sessions` and enabled session sync. Code indexer: install + index this repo?
+Control plane ready (`machine=therig`). You're signed into GitHub as `cloudboy-jh` - I created/cloned private `cloudboy-jh/mimir-sessions` into `~/.mimir/sessions` and enabled session sync. Code indexer: install + index this repo?
 
 **User:** Yes.
 **Agent:** MCP wired, full index done. Receipts in `~/.mimir/mimir.log`.
@@ -129,7 +129,7 @@ Control plane ready (`machine=therig`). You're signed into GitHub as `cloudboy-j
 
 ---
 
-## Config (human UI — keep tiny)
+## Config (human UI - keep tiny)
 
 ```toml
 # ~/.mimir/config.toml
@@ -216,7 +216,7 @@ Append-only. Examples:
 
 ## Inline chat surface
 
-User-readable receipts in agent chat (like a clean diff header — not MCP JSON, not a robot dump).
+User-readable receipts in agent chat (like a clean diff header - not MCP JSON, not a robot dump).
 
 ### Mark (locked)
 
@@ -308,7 +308,7 @@ One line when enough; second/third only for meaning or metrics. Never paste full
 
 1. This spec as source of truth
 2. Control plane paths + config schema + log format
-3. Session skill: discover/`gh create`/clone/push/pull — agent-first
+3. Session skill: discover/`gh create`/clone/push/pull - agent-first
 4. Go binary: keep for code plane only
 5. README framed as agent dialogue + short manual appendix for non-agent installs
 
