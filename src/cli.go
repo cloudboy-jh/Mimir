@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 type IO struct {
@@ -40,6 +41,10 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return status(ctx, ioctx.Out)
 	case "doctor":
 		return doctor(ctx, ioctx.Out)
+	case "control":
+		return cmdControl(ctx, args[1:], ioctx)
+	case "session":
+		return cmdSession(ctx, args[1:], ioctx)
 	case "index":
 		fs := flag.NewFlagSet("index", flag.ContinueOnError)
 		fs.SetOutput(ioctx.Err)
@@ -47,12 +52,23 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
+		start := time.Now()
 		res, err := runIndex(ctx, indexOptions{Dir: ".", Full: *full})
 		if err != nil {
+			writeReceipt(ioctx.Out, failReceipt("code", "index", err.Error()))
 			return err
 		}
-		_, err = fmt.Fprintln(ioctx.Out, res.Message)
-		return err
+		ms := time.Since(start).Milliseconds()
+		cfg := mustLoadCfgOrDefault()
+		_ = appendLog(cfg, "code.index", fmt.Sprintf("%s %s files=%d %dms", res.Project, res.Mode, res.Indexed, ms), "ok")
+		writeReceipt(ioctx.Out, Receipt{
+			Plane:   "code",
+			Verb:    "index",
+			Subject: res.Project + "  " + res.Mode,
+			Meaning: fmt.Sprintf("+%d files · %dms · sha %s", res.Indexed, ms, short(res.HeadSHA)),
+			Status:  "ok",
+		})
+		return nil
 	case "recall":
 		queryArgs, budget, jsonOut, err := parseRecallArgs(args[1:])
 		if err != nil {
@@ -61,9 +77,17 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if len(queryArgs) == 0 {
 			return fmt.Errorf("usage: mimir recall <query> [--budget 4000] [--json]")
 		}
-		res, err := runRecall(ctx, recallOptions{Dir: ".", Query: strings.Join(queryArgs, " "), Budget: budget, JSON: jsonOut})
+		query := strings.Join(queryArgs, " ")
+		res, err := runRecall(ctx, recallOptions{Dir: ".", Query: query, Budget: budget, JSON: jsonOut})
 		if err != nil {
 			return err
+		}
+		if !jsonOut {
+			writeReceipt(ioctx.Out, Receipt{
+				Plane:   "code",
+				Verb:    "recall",
+				Subject: query,
+			})
 		}
 		_, err = fmt.Fprintln(ioctx.Out, res.Output)
 		return err
@@ -105,25 +129,211 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	}
 }
 
+func cmdControl(ctx context.Context, args []string, ioctx IO) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mimir control <init|status>")
+	}
+	switch args[0] {
+	case "init":
+		machine := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--machine" && i+1 < len(args) {
+				machine = args[i+1]
+				i++
+			}
+		}
+		cfg, err := controlInit(machine)
+		if err != nil {
+			writeReceipt(ioctx.Out, failReceipt("control", "init", err.Error()))
+			return err
+		}
+		sess := "off"
+		if cfg.Sessions.Enabled {
+			sess = "on"
+		}
+		writeReceipt(ioctx.Out, Receipt{
+			Plane:   "control",
+			Verb:    "init",
+			Subject: "machine=" + cfg.Machine,
+			Meaning: "sessions " + sess + " · code mcp optional",
+			Status:  "ok",
+		})
+		return nil
+	case "status":
+		return controlStatus(ioctx.Out)
+	default:
+		return fmt.Errorf("unknown control subcommand %q", args[0])
+	}
+}
+
+func controlStatus(out io.Writer) error {
+	home, cfgPath, logPath, err := controlPaths()
+	if err != nil {
+		return err
+	}
+	cfg, err := loadControlConfig()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "home:     %s\n", home)
+	fmt.Fprintf(out, "config:   %s (%s)\n", cfgPath, presentMissing(pathExists(cfgPath)))
+	fmt.Fprintf(out, "machine:  %s\n", dash(cfg.Machine))
+	fmt.Fprintf(out, "sessions: enabled=%t repo=%s\n", cfg.Sessions.Enabled, dash(cfg.Sessions.Repo))
+	sp, _ := sessionsAbsPath(cfg)
+	fmt.Fprintf(out, "sesspath: %s (%s)\n", sp, presentMissing(pathExists(sp)))
+	lp, err := logAbsPath(cfg)
+	if err != nil {
+		lp = logPath
+	}
+	fmt.Fprintf(out, "log:      %s (%s)\n", lp, presentMissing(pathExists(lp)))
+	return nil
+}
+
+func cmdSession(ctx context.Context, args []string, ioctx IO) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mimir session <init|push|pull|list>")
+	}
+	switch args[0] {
+	case "init":
+		repo := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--repo" && i+1 < len(args) {
+				repo = args[i+1]
+				i++
+			}
+		}
+		res, err := sessionInit(ctx, sessionInitOptions{Repo: repo})
+		writeReceipt(ioctx.Out, res.Receipt)
+		return err
+	case "push":
+		opts := sessionPushOptions{}
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--id":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--id requires a value")
+				}
+				opts.ID = args[i+1]
+				i++
+			case "--harness":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--harness requires a value")
+				}
+				opts.Harness = args[i+1]
+				i++
+			case "--project":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--project requires a value")
+				}
+				opts.Project = args[i+1]
+				i++
+			case "--goal":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--goal requires a value")
+				}
+				opts.Goal = args[i+1]
+				i++
+			case "--body":
+				if i+1 >= len(args) {
+					return fmt.Errorf("--body requires a value")
+				}
+				bodyArg := args[i+1]
+				i++
+				if bodyArg == "-" {
+					b, err := io.ReadAll(ioctx.In)
+					if err != nil {
+						return err
+					}
+					opts.Body = string(b)
+				} else {
+					b, err := os.ReadFile(bodyArg)
+					if err != nil {
+						return err
+					}
+					opts.Body = string(b)
+				}
+			case "--no-push":
+				opts.NoPush = true
+			}
+		}
+		if opts.ID == "" {
+			return fmt.Errorf("usage: mimir session push --id SLUG [--harness NAME] [--project NAME] [--goal TEXT] [--body PATH|-]")
+		}
+		res, err := sessionPush(ctx, opts)
+		writeReceipt(ioctx.Out, res.Receipt)
+		return err
+	case "pull":
+		id := ""
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--id" && i+1 < len(args) {
+				id = args[i+1]
+				i++
+			}
+		}
+		res, err := sessionPull(ctx, id)
+		writeReceipt(ioctx.Out, res.Receipt)
+		if err == nil {
+			for _, f := range res.Files {
+				fmt.Fprintln(ioctx.Out, f)
+			}
+		}
+		return err
+	case "list":
+		cfg := mustLoadCfgOrDefault()
+		names, err := sessionList(cfg)
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Fprintln(ioctx.Out, "(no sessions)")
+			return nil
+		}
+		for _, n := range names {
+			fmt.Fprintln(ioctx.Out, n)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown session subcommand %q", args[0])
+	}
+}
+
 func usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, `mimir remembers the code
+	_, err := fmt.Fprintln(out, `mimir remembers the repo and the session
 
 Usage:
+  mimir control init [--machine NAME]
+  mimir control status
+  mimir session init [--repo URL]
+  mimir session push --id SLUG [--harness NAME] [--project NAME] [--goal TEXT] [--body PATH|-]
+  mimir session pull [--id SLUG]
+  mimir session list
   mimir status
+  mimir doctor
   mimir index [--full]
   mimir recall <query> [--budget 4000] [--json]
   mimir deps <file_path>
   mimir locate <symbol_name>
   mimir serve
-  mimir doctor
-  mimir --version`)
+  mimir --version
+
+Agent-primary: daily UX is chat intent, not these commands.`)
 	return err
 }
 
 func status(ctx context.Context, out io.Writer) error {
+	// Control plane brief
+	if home, err := mimirHome(); err == nil {
+		fmt.Fprintf(out, "control:     %s (%s)\n", home, presentMissing(pathExists(home)))
+	}
+	if cfg, err := loadControlConfig(); err == nil && cfg.Machine != "" {
+		fmt.Fprintf(out, "machine:     %s\n", cfg.Machine)
+		fmt.Fprintf(out, "sessions:    enabled=%t\n", cfg.Sessions.Enabled)
+	}
+
 	info, err := detectRepo(ctx, ".")
 	if errors.Is(err, errNotRepo) {
-		return fmt.Errorf("not inside a git repo")
+		fmt.Fprintln(out, "repo:        -")
+		return nil
 	}
 	if err != nil {
 		return err
@@ -145,11 +355,41 @@ func status(ctx context.Context, out io.Writer) error {
 
 func doctor(ctx context.Context, out io.Writer) error {
 	fmt.Fprintf(out, "mimir %s\n", versionString())
+
+	// control
+	home, cfgPath, _, err := controlPaths()
+	if err != nil {
+		fmt.Fprintf(out, "control: error (%v)\n", err)
+	} else {
+		fmt.Fprintf(out, "control home: %s (%s)\n", home, presentMissing(pathExists(home)))
+		fmt.Fprintf(out, "config: %s (%s)\n", cfgPath, presentMissing(pathExists(cfgPath)))
+		if cfg, err := loadControlConfig(); err == nil {
+			fmt.Fprintf(out, "machine: %s\n", dash(cfg.Machine))
+			sp, _ := sessionsAbsPath(cfg)
+			fmt.Fprintf(out, "sessions enabled: %t path=%s (%s)\n", cfg.Sessions.Enabled, sp, presentMissing(pathExists(sp)))
+			if cfg.Sessions.Repo != "" {
+				fmt.Fprintf(out, "sessions repo: %s\n", cfg.Sessions.Repo)
+			}
+			lp, _ := logAbsPath(cfg)
+			fmt.Fprintf(out, "log: %s (%s)\n", lp, presentMissing(pathExists(lp)))
+		}
+	}
+
 	if _, err := runGit(ctx, ".", "--version"); err != nil {
 		fmt.Fprintln(out, "git: missing")
-		return nil
+	} else {
+		fmt.Fprintln(out, "git: ok")
 	}
-	fmt.Fprintln(out, "git: ok")
+	if _, err := runCmd(ctx, "", "gh", "--version"); err != nil {
+		fmt.Fprintln(out, "gh: missing")
+	} else {
+		fmt.Fprintln(out, "gh: ok")
+		if login, err := ghLogin(ctx); err != nil {
+			fmt.Fprintln(out, "gh auth: none")
+		} else {
+			fmt.Fprintf(out, "gh auth: %s\n", login)
+		}
+	}
 	if info, err := detectRepo(ctx, "."); err == nil {
 		fmt.Fprintf(out, "repo: %s\n", info.Root)
 		fmt.Fprintf(out, "store: %s\n", storeState(info))
@@ -190,12 +430,21 @@ func storeState(info repoInfo) string {
 	}
 	return "missing"
 }
+
+func presentMissing(ok bool) string {
+	if ok {
+		return "present"
+	}
+	return "missing"
+}
+
 func dash(s string) string {
 	if s == "" {
 		return "-"
 	}
 	return s
 }
+
 func short(s string) string {
 	if len(s) > 12 {
 		return s[:12]

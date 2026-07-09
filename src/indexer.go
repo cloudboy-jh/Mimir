@@ -23,6 +23,9 @@ type indexResult struct {
 	Message string
 	Indexed int
 	Removed int
+	Mode    string
+	Project string
+	HeadSHA string
 }
 
 var symbolPatterns = []*regexp.Regexp{
@@ -91,7 +94,14 @@ func runIndex(ctx context.Context, opts indexOptions) (indexResult, error) {
 	if opts.Full || !info.StoreExists {
 		mode = "full"
 	}
-	return indexResult{Message: fmt.Sprintf("indexed %s: %d updated, %d removed, %d files, %d symbols", mode, indexed, removed, len(idx.Files), len(idx.Symbols)), Indexed: indexed, Removed: removed}, nil
+	return indexResult{
+		Message: fmt.Sprintf("indexed %s: %d updated, %d removed, %d files, %d symbols", mode, indexed, removed, len(idx.Files), len(idx.Symbols)),
+		Indexed: indexed,
+		Removed: removed,
+		Mode:    mode,
+		Project: project,
+		HeadSHA: info.HeadSHA,
+	}, nil
 }
 
 func baseIndex(ctx context.Context, root, head string, full bool) (mimirIndex, []string, error) {
