@@ -6,7 +6,7 @@ before:
 
 builds:
   - id: mimir
-    main: ./src
+    main: ./cmd/mimir
     binary: mimir
     env:
       - CGO_ENABLED=0
