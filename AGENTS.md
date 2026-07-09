@@ -2,7 +2,10 @@
 
 This file is the operating manual for any coding agent working **with** or **on** Mimir.
 
-Read this first. Prefer natural language intent over raw CLI. Users talk to you; you drive Mimir.
+Read this first.
+
+**Canonical product repo (do not search GitHub):**  
+`https://github.com/cloudboy-jh/Mimir`
 
 ---
 
@@ -20,59 +23,49 @@ Three planes:
 | code    | `<repo>/.mimir/`     | index + recall (CLI / MCP)                       |
 
 **Hard rule:** session push/pull does **not** depend on code index or `mimir serve`.
-If the binary is missing, control + sessions can still work via this skill + git/`gh`.
+If the binary is missing, control + sessions can still work via this file + git/`gh`.
 
 ---
 
-## User speak → what you do
+## Install Mimir (concrete, no research)
 
-| User says | You do |
-|-----------|--------|
-| "Set up Mimir" | Full install path below (control → session → optional code) |
-| "Save progress" / "checkpoint" | Session write + push. Always show `◆ mimir` receipt. |
-| "Continue what I was doing on X" | Session pull, open matching session file(s), resume. |
-| "What do we know about Y in this repo?" | Code recall (`mimir recall` or MCP). Receipt only if user-facing. |
-| Mid-coding structure lookup | MCP silently if fine; one-line receipt only if useful. |
-
-### Do not ask for
-
-- GitHub clone URLs when `gh` is signed in
-- Hostnames when hostname is available
-- Harness names when the active agent harness is known
-- Project names when cwd/repo name is known
-- Install form fields the environment already answers
-
-### Only ask when
-
-- No `gh` (or equivalent) auth and sessions cannot be created safely
-- Multiple accounts/orgs and the choice is ambiguous (**one** short choice)
-- Explicit custom remote / path override requested
-
----
-
-## Install (zero paste)
-
-Run in order. User confirms only real decisions.
-
-### 1. Control plane (once per machine)
+When the user wants Mimir installed or the binary is missing, run this path.  
+Do **not** web-search, "find the project", or invent clone URLs.
 
 ```bash
-mimir control init
-# optional override:
-# mimir control init --machine therig
+git clone https://github.com/cloudboy-jh/Mimir.git
+cd Mimir
+go build -o mimir ./src
+./mimir control init
+./mimir session init
+./mimir doctor
 ```
 
-If binary missing: create `~/.mimir/`, write minimal `config.toml` (machine = short hostname; map `therig` / `thedeck` when hostname matches), touch log. Same outcome.
+Windows PowerShell: `.\mimir.exe` instead of `./mimir`.
 
-Log: `control.init machine=… path=… ok`
-
-### 2. Session plane (once per person)
+If you already have a checkout of this repo as cwd:
 
 ```bash
-mimir session init
+go build -o mimir ./src
+./mimir control init
+./mimir session init
+./mimir doctor
 ```
 
-Discovery order (CLI already does this; mirror if bare-handed):
+Need Go 1.25+, git, `gh` signed in. Machine name is derived (hostname / `therig` / `thedeck`). Override only if asked: `./mimir control init --machine NAME`.
+
+### After binary exists
+
+```bash
+mimir control init      # once per machine
+mimir session init      # once per person (gh discovers private mimir-sessions)
+# optional, per repo:
+mimir index --full
+```
+
+### Session remote discovery (this is the zero-paste part)
+
+Do not ask for a **session** GitHub URL when `gh` works. Order:
 
 1. `sessions.repo` already in config → clone/pull to `~/.mimir/sessions`
 2. Else `gh api user` → login
@@ -87,12 +80,10 @@ Discovery order (CLI already does this; mirror if bare-handed):
 mimir session init --repo <url>
 ```
 
-### 3. Code plane (optional, per repo)
+### Code plane (optional, per repo)
 
 ```bash
-# binary: PATH → go install / release → else degrade, keep sessions
-mimir index --full    # first time in this repo
-# later:
+mimir index --full    # first time
 mimir index           # incremental
 ```
 
@@ -108,6 +99,32 @@ Register MCP only for the **active** harness if the user wants repo memory:
   }
 }
 ```
+
+---
+
+## User speak → what you do (daily)
+
+| User says | You do |
+|-----------|--------|
+| Install / get Mimir working | Canonical install block above. No GitHub search. |
+| "Save progress" / "checkpoint" | Session write + push. Always show `◆ mimir` receipt. |
+| "Continue what I was doing on X" | Session pull, open matching session file(s), resume. |
+| "What do we know about Y in this repo?" | Code recall (`mimir recall` or MCP). Receipt only if user-facing. |
+| Mid-coding structure lookup | MCP silently if fine; one-line receipt only if useful. |
+
+### Do not ask for
+
+- Mimir product clone URL (it is fixed above)
+- Session remotes when `gh` is signed in
+- Hostnames when hostname is available
+- Harness names when the active agent harness is known
+- Project names when cwd/repo name is known
+
+### Only ask when
+
+- No `gh` (or equivalent) auth and sessions cannot be created safely
+- Multiple accounts/orgs and the choice is ambiguous (**one** short choice)
+- Explicit custom remote / path override requested
 
 ---
 

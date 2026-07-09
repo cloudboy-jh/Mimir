@@ -10,9 +10,8 @@ You talk to an agent. The agent drives Mimir. You almost never touch Mimir direc
 
 ## Install
 
-Preferred: tell your agent **"Set up Mimir"**. They follow [`AGENTS.md`](./AGENTS.md).
-
-From a shell (needs Go 1.25+, git, and `gh` signed in):
+Repo: `https://github.com/cloudboy-jh/Mimir`  
+Needs: Go 1.25+, git, `gh` signed in. No Mimir account.
 
 ```bash
 git clone https://github.com/cloudboy-jh/Mimir.git
@@ -23,16 +22,16 @@ go build -o mimir ./src
 ./mimir doctor
 ```
 
-On Windows PowerShell use `.\mimir.exe` instead of `./mimir`. Put the binary on your PATH if you want `mimir` globally.
+Windows PowerShell: `.\mimir.exe` instead of `./mimir`. Put the binary on PATH if you want a global `mimir`.
 
-Code memory is per-repo, later:
+Agents: do **not** search the web for Mimir. Use this repo URL and [`AGENTS.md`](./AGENTS.md). Session remotes are discovered via `gh` (`mimir session init`); do not invent or guess those.
+
+Per-repo code memory when you want it:
 
 ```bash
 mimir index --full
 mimir recall "auth"
 ```
-
-No Mimir account. Session sync uses your private GitHub via existing `gh` auth.
 
 ## What it remembers
 
@@ -42,24 +41,19 @@ No Mimir account. Session sync uses your private GitHub via existing `gh` auth.
 | **session** | goal / progress / context, git-synced across machines | `~/.mimir/sessions/` |
 | **control** | tiny config + audit log | `~/.mimir/config.toml`, `mimir.log` |
 
-## How you use it
+## How you use it (after install)
 
-Say things like:
+Daily intent goes to the agent. Install itself is the block above, not a vague product search.
 
-- "Set up Mimir."
 - "Save progress."
 - "Continue what I was doing on thedeck."
 - "What do we know about auth in this repo?"
 
-Do not paste remotes, fill install forms, or learn CLI verbs as daily vocabulary. The agent uses `gh`, hostname, and cwd. You confirm only real decisions.
+Do not paste session remotes when `gh` already works. Do not make CLI the daily vocabulary after install.
 
 ### Example
 
-**You:** Set up Mimir.
-
-**Agent:** Control plane ready (`machine=therig`). GitHub as `you`. Bound private `you/mimir-sessions` to `~/.mimir/sessions`. Index this repo?
-
-**You:** Yes.
+After install (`control init` + `session init`), first index of a repo:
 
 ```text
 ◆ mimir  control.init  machine=therig
@@ -74,7 +68,7 @@ Do not paste remotes, fill install forms, or learn CLI verbs as daily vocabulary
          +128 files · 210ms · sha 7d58e16
 ```
 
-**You (later):** Save progress.
+**You:** Save progress.
 
 ```text
 ◆ mimir  session.push  therig-hermes-gittrix-v2

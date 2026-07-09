@@ -14,39 +14,46 @@ Users never “use Mimir.” They talk to you. You drive Mimir. Config + log exi
 
 Session push does **not** depend on code index. Control + sessions still work if the binary is missing.
 
-## Install (agent walks this - zero paste)
+## Install (no research)
 
-### Layer 1 - control
-
-On “Set up Mimir” or first skill load with missing config:
+**Product repo (fixed, do not search):** `https://github.com/cloudboy-jh/Mimir`
 
 ```bash
-mimir control init
-# optional: mimir control init --machine therig
+git clone https://github.com/cloudboy-jh/Mimir.git
+cd Mimir
+go build -o mimir ./src
+./mimir control init
+./mimir session init
+./mimir doctor
 ```
 
-Derive `machine` from hostname / known aliases (`therig`, `thedeck`). Only ask on collision.
+If already in this checkout: `go build -o mimir ./src` then the three `./mimir` commands. Windows: `.\mimir.exe`.
 
-### Layer 2 - sessions
-
-**Do not ask for a GitHub URL first.**
+### After binary exists
 
 ```bash
-mimir session init
-# only if they insist / gh missing: mimir session init --repo <url they already own>
+mimir control init      # once per machine (machine derived from hostname)
+mimir session init      # once; gh invents private login/mimir-sessions
+mimir index --full      # optional, per repo
 ```
 
-Discovery order (CLI does this):
+### Session remotes (zero-paste)
 
-1. `sessions.repo` already in config → clone/pull
-2. `gh auth` / `gh api user` → `<login>/mimir-sessions` private create-or-clone
-3. write remote into config, enable sessions
+Do not ask for a **session** GitHub URL when `gh` works. CLI discovery:
 
-Refuse: public repos, application monorepos as session remotes. Never store tokens in config.
+1. `sessions.repo` in config → clone/pull
+2. `gh api user` → login
+3. create-or-clone private `login/mimir-sessions`
+4. write config, enable sessions
 
-Only ask when: no `gh` auth, ambiguous multi-account choice (one terse choice), or explicit custom remote.
+Refuse: public repos, app monorepos as session remotes. Never store tokens.
 
-### Layer 3 - code (opportunistic)
+### Code layer (optional)
+
+```bash
+mimir index --full
+mimir index
+```
 
 Binary on PATH → register MCP for **active** harness only → `mimir index --full` once, incremental after. If binary fails: report degradation; sessions still work.
 
