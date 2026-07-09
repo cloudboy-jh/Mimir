@@ -46,7 +46,7 @@ Session push/pull does **not** depend on code index or `mimir serve`.
 npx skills add cloudboy-jh/Mimir@mimir -g -y
 ```
 
-Reload harness if skills are loaded only at session start.
+Reload harness if skills are loaded only at session start. PromptScript has no global scope; install it project-scoped: `npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y`.
 
 ### 2. Control + session
 

@@ -16,6 +16,12 @@ Install the skill. No product clone required to use Mimir.
 npx skills add cloudboy-jh/Mimir@mimir -g -y
 ```
 
+PromptScript does not allow global installs; use project scope instead:
+
+```bash
+npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+```
+
 After the skill is on the harness, bootstrap control + sessions:
 
 ```bash

@@ -19,6 +19,12 @@ npx skills add cloudboy-jh/Mimir@mimir -g -y
 
 That is enough for session + control procedures (git + `gh` + skill). Reload the harness if your agent only picks up skills on start.
 
+**PromptScript** rejects global installs (`-g`). Install it project-scoped instead:
+
+```bash
+npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+```
+
 ### Optional binary (code plane only)
 
 Install the `mimir` CLI when you need index / recall / MCP in a repo:
@@ -146,3 +152,25 @@ Filename: `{machine}-{harness}-{session_id}.md`
 - Do not web-search for "how to install Mimir." Use this skill + the install block above.
 - Do not ask for anything the environment already has (`gh` login, hostname, harness, project name).
 - No second brand (Chiron). No TUI. No SaaS. Sessions never under project `.mimir/`.
+
+---
+
+## Safety boundary
+
+What this skill does and does not touch. Everything is local + your own private git.
+
+**Reads:** `gh` auth identity, hostname, cwd repo name, files in the current repo (for indexing only when the binary is used).
+
+**Writes:**
+- `~/.mimir/` — `config.toml`, `mimir.log`, and `sessions/` clone.
+- One **private** GitHub repo `mimir-sessions` under your own account (created only if missing).
+- `<repo>/.mimir/` — code index, gitignored, only when you run `mimir index`.
+
+**Never:**
+- Stores tokens or secrets (auth comes from your existing `gh` / git credential helper).
+- Creates or pushes to public repos.
+- Uses an application monorepo as the session remote.
+- Deletes your files, force-pushes, or touches paths outside `~/.mimir/` and the current repo's `.mimir/`.
+- Sends telemetry or calls a Mimir backend (there is none).
+
+Commands the agent may run: `git` (clone/pull/add/commit/push within `~/.mimir/sessions`), `gh` (auth check, repo view/create), `mimir` (local CLI), `go install` (only if you opt into the binary).
