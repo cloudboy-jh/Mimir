@@ -72,7 +72,7 @@ Refuse: public remotes, app monorepos as session remotes, tokens in config.
 
 Only hand-prompt when: no `gh` auth, multi-account ambiguity (one short choice), or explicit custom remote.
 
-Without binary: run the same steps with `gh` + `git clone/pull` yourself and write config.
+Without binary: run the same steps with `gh` + `git clone/pull` yourself and write config. Exact file formats (config.toml, session frontmatter, log line, manual flow) are in [`references/formats.md`](references/formats.md).
 
 ### Code (optional, per repo you want indexed)
 
