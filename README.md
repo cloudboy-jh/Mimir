@@ -10,7 +10,7 @@ You talk to an agent. The agent drives Mimir. You almost never touch Mimir direc
 
 ## Install
 
-Same as Cloudflare / other agent skills. No product clone required to use Mimir.
+Install the skill. No product clone required to use Mimir.
 
 ```bash
 npx skills add cloudboy-jh/Mimir@mimir -g -y

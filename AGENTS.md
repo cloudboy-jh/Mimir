@@ -19,7 +19,7 @@ npx skills add cloudboy-jh/Mimir@mimir -g -y
 
 Source of the skill: `skills/mimir/SKILL.md` in this repo (for packaging only).
 
-Think Cloudflare / docs skills: knowledge + procedure land in the agent, not a second app checkout in the user’s projects.
+Knowledge + procedure land in the agent, not a second app checkout in the user’s projects.
 
 ---
 

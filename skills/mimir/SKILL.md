@@ -11,7 +11,7 @@ Users talk to you. You drive Mimir. Config + log exist so humans can audit.
 
 ## Install (this is how agents get Mimir)
 
-Same pattern as Cloudflare / docs skills. **Install the skill. Do not clone the product repo to "set up" Mimir.**
+**Install the skill. Do not clone the product repo to "set up" Mimir.**
 
 ```bash
 npx skills add cloudboy-jh/Mimir@mimir -g -y
@@ -27,13 +27,7 @@ Install the `mimir` CLI when you need index / recall / MCP in a repo:
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 ```
 
-If that path fails (old tree), build without cloning for long-term use after a short fetch:
-
-```bash
-GOBIN="$(go env GOPATH)/bin"
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-# requires GOBIN on PATH as `mimir`
-```
+Ensure `$(go env GOPATH)/bin` is on PATH so `mimir` resolves.
 
 Contributors working **on** Mimir itself use the product checkout. End users and agents using Mimir as infrastructure should only need the skill (+ optional binary).
 
