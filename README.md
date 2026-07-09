@@ -8,60 +8,39 @@ You talk to an agent. The agent drives Mimir. You almost never touch Mimir direc
 
 **For agents:** read [`AGENTS.md`](./AGENTS.md) first.
 
-## Install (copy-paste)
+## Install
 
-Requires Go 1.25+ on PATH. Uses your existing `gh` auth for session sync (no Mimir account).
+Preferred: tell your agent **"Set up Mimir"**. They follow [`AGENTS.md`](./AGENTS.md).
+
+From a shell (needs Go 1.25+, git, and `gh` signed in):
 
 ```bash
 git clone https://github.com/cloudboy-jh/Mimir.git
 cd Mimir
 go build -o mimir ./src
+./mimir control init
+./mimir session init
+./mimir doctor
 ```
 
-Put `mimir` on your PATH (examples):
+On Windows PowerShell use `.\mimir.exe` instead of `./mimir`. Put the binary on your PATH if you want `mimir` globally.
 
-```bash
-# macOS / Linux (current shell)
-export PATH="$PWD:$PATH"
-
-# or install into GOPATH/bin with a stable name
-mkdir -p "$(go env GOPATH)/bin"
-cp mimir "$(go env GOPATH)/bin/mimir"
-# ensure $(go env GOPATH)/bin is on PATH
-```
-
-```powershell
-# Windows (PowerShell) - current session
-$env:Path = "$PWD;$env:Path"
-
-# or copy into a permanent tools dir already on PATH
-Copy-Item .\mimir.exe $env:USERPROFILE\bin\mimir.exe
-```
-
-One-time setup:
-
-```bash
-mimir control init
-mimir session init
-mimir doctor
-```
-
-In a repo you want code memory for:
+Code memory is per-repo, later:
 
 ```bash
 mimir index --full
 mimir recall "auth"
 ```
 
-Agent path (preferred): say **"Set up Mimir"** and let the agent walk the same steps. Do not paste remotes.
+No Mimir account. Session sync uses your private GitHub via existing `gh` auth.
 
 ## What it remembers
 
-**Code:** indexes the repo you are in so agents can cold-start without re-reading the whole tree. Lives in `<repo>/.mimir/` (gitignored). Served over CLI + MCP.
-
-**Session:** saves what you were doing (goal, progress, context) as markdown and syncs it through *your* private git repo so another machine can pick up the same work. Lives in `~/.mimir/sessions/`.
-
-**Control:** `~/.mimir/config.toml` + `mimir.log`. Tiny. Agent writes; human reads on doubt.
+| plane | what | where |
+|---|---|---|
+| **code** | repo structure index for cold-start | `<repo>/.mimir/` (gitignored) |
+| **session** | goal / progress / context, git-synced across machines | `~/.mimir/sessions/` |
+| **control** | tiny config + audit log | `~/.mimir/config.toml`, `mimir.log` |
 
 ## How you use it
 
