@@ -2,7 +2,9 @@
 
 ![Mimir](./mimir-readme.png)
 
-Memory for your coding agent. Mimir remembers the **repo** (code index) and the **session** (what you were doing), so an agent can cold-start and pick work back up across machines.
+Agent-driven code and session memory.
+
+The agent keeps an optional map of the repo, and a working session (goal, progress, context). Sessions sync through your own private git so work continues across machines. You talk; the agent runs it; `~/.mimir` is there when you want to audit.
 
 ## Install
 
@@ -10,34 +12,30 @@ Memory for your coding agent. Mimir remembers the **repo** (code index) and the 
 npx skills add cloudboy-jh/Mimir@mimir -g -y
 ```
 
-PromptScript has no global scope, install it per project:
+PromptScript has no global scope — install per project:
 
 ```bash
 npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
 ```
 
-That is it. The skill teaches your agent how to run Mimir with `git` + `gh`. No product clone, no account.
+Skill only for sessions. Don't clone this repo to "set up" Mimir. The skill runs on `git` + your existing `gh` auth.
 
-Then just talk to your agent:
+Then say things like:
 
-- "Set up Mimir."
-- "Save progress."
-- "Continue what I was doing on thedeck."
-- "What do we know about auth in this repo?"
+- Set up Mimir.
+- Save progress.
+- Continue what I was doing on thedeck.
+- What do we know about auth in this repo?
 
-## What it does
+## Where things go
 
-Three planes. You touch none of them directly.
+| | |
+|---|---|
+| sessions | `~/.mimir/sessions/` → private `mimir-sessions` under your GitHub account |
+| control | `~/.mimir/config.toml`, `mimir.log` |
+| code index (optional) | `<repo>/.mimir/` (gitignored) |
 
-| plane | remembers | where |
-|---|---|---|
-| **session** | goal, progress, context, synced across machines | `~/.mimir/sessions/` (your private git repo) |
-| **code** | repo structure and symbols for cold-start | `<repo>/.mimir/` (gitignored) |
-| **control** | tiny config + audit log | `~/.mimir/config.toml`, `mimir.log` |
-
-Sessions sync through a private `mimir-sessions` repo created under your own GitHub via existing `gh` auth. Code memory is optional and never required for sessions to work.
-
-Agents report actions in chat with a locked mark:
+In chat the agent leaves a short receipt:
 
 ```text
 ◆ mimir  session.push  therig-hermes-gittrix-v2
@@ -45,11 +43,11 @@ Agents report actions in chat with a locked mark:
          ok · abc1234
 ```
 
-The durable copy of every action lives in `~/.mimir/mimir.log`.
+Same line also lands in `~/.mimir/mimir.log`.
 
-## Optional: code-memory binary
+## Optional: index / recall / MCP
 
-Only needed for repo index / recall / MCP. Sessions and control work without it.
+Binary only. Sessions work without it.
 
 ```bash
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest   # ensure $(go env GOPATH)/bin is on PATH
@@ -64,7 +62,7 @@ mimir recall "auth"
 - [`spec.md`](./spec.md) — full product contract
 - [`docs/mcp.md`](./docs/mcp.md) — MCP tools
 
-No telemetry. No account. No cloud backend. Sessions live in *your* private repo.
+Local + your private git. No Mimir account, backend, or telemetry.
 
 <details>
 <summary>Full CLI surface</summary>
