@@ -17,16 +17,6 @@ Mimir acts as local infrastructure for software development agents, providing st
 
 ---
 
-## Workspace Dry-Runs
-
-Before executing files edits or code modifications on durable assets, run them inside an isolated workspace using GitTrix:
-1. Start an ephemeral sandbox: `gittrix session start "<task>" "/local/repo" <branch>`
-2. Work directly in the transient subdirectory.
-3. Review changes cleanly: `gittrix session diff`
-4. Promote back to long-term storage only after verification: `gittrix promote`
-
----
-
 ## Daily UX
 
 Your agent handles all Mimir operations in natural language inside chat.
