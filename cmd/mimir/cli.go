@@ -60,11 +60,11 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		}
 		ms := time.Since(start).Milliseconds()
 		cfg := mustLoadCfgOrDefault()
-		_ = appendLog(cfg, "code.index", fmt.Sprintf("%s %s files=%d %dms", res.Project, res.Mode, res.Indexed, ms), "ok")
+		_ = appendLog(cfg, "code.index", fmt.Sprintf("%s %s files=%d %dms", res.Repo, res.Mode, res.Indexed, ms), "ok")
 		writeReceipt(ioctx.Out, Receipt{
 			Plane:   "code",
 			Verb:    "index",
-			Subject: res.Project + "  " + res.Mode,
+			Subject: res.Repo + "  " + res.Mode,
 			Meaning: fmt.Sprintf("+%d files · %dms · sha %s", res.Indexed, ms, short(res.HeadSHA)),
 			Status:  "ok",
 		})

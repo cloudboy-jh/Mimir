@@ -13,7 +13,7 @@ const mimirIndexFile = "index.json"
 const mimirConfigFile = "config.json"
 
 type mimirIndex struct {
-	Project       string              `json:"project"`
+	Repo          string              `json:"repo"`
 	IndexedCommit string              `json:"indexed_commit"`
 	Timestamp     string              `json:"timestamp"`
 	Files         map[string]fileInfo `json:"files"`

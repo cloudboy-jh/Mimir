@@ -24,7 +24,7 @@ type indexResult struct {
 	Indexed int
 	Removed int
 	Mode    string
-	Project string
+	Repo    string
 	HeadSHA string
 }
 
@@ -51,8 +51,8 @@ func runIndex(ctx context.Context, opts indexOptions) (indexResult, error) {
 	if err != nil {
 		return indexResult{}, err
 	}
-	project := filepath.Base(info.Root)
-	idx.Project = project
+	repo := filepath.Base(info.Root)
+	idx.Repo = repo
 	idx.IndexedCommit = info.HeadSHA
 	idx.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	if idx.Files == nil {
@@ -99,7 +99,7 @@ func runIndex(ctx context.Context, opts indexOptions) (indexResult, error) {
 		Indexed: indexed,
 		Removed: removed,
 		Mode:    mode,
-		Project: project,
+		Repo:    repo,
 		HeadSHA: info.HeadSHA,
 	}, nil
 }

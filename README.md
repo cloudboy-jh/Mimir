@@ -13,9 +13,9 @@ The agent keeps an optional map of the repo, and a working session (goal, progre
 ```text
 Install and wire Mimir for me.
 
-1. Install the skill (not a product clone of cloudboy-jh/Mimir):
-   npx skills add cloudboy-jh/Mimir@mimir -g -y
-   PromptScript only (no global): npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+1. Install the skill (not a product clone):
+   npx skills add <repository-source>@mimir -g -y
+   PromptScript only (no global): npx skills add <repository-source>@mimir -a promptscript -y
 2. Load / follow skills/mimir (or the installed skill). Bootstrap control + session.
 3. Do not ask for a session GitHub URL. Use gh auth → private login/mimir-sessions.
 4. Sessions use git + gh. Binary is optional (code index / recall / MCP only).
@@ -25,13 +25,13 @@ Install and wire Mimir for me.
 ### Skill command
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -g -y
+npx skills add <repository-source>@mimir -g -y
 ```
 
 PromptScript has no global scope — install per project:
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+npx skills add <repository-source>@mimir -a promptscript -y
 ```
 
 Skill only for sessions. Don't clone this repo to "set up" Mimir. The skill runs on `git` + your existing `gh` auth.
@@ -40,7 +40,7 @@ Then say things like:
 
 - Set up Mimir.
 - Save progress.
-- Continue what I was doing on thedeck.
+- Continue what I was doing on another machine.
 - What do we know about auth in this repo?
 
 ## Where things go
@@ -54,7 +54,7 @@ Then say things like:
 In chat the agent leaves a short receipt:
 
 ```text
-◆ mimir  session.push  therig-hermes-gittrix-v2
+◆ mimir  session.push  workstation-a-hermes-core-v2
          goal: Durable/Eph adapter split
          ok · abc1234
 ```
@@ -66,7 +66,7 @@ Same line also lands in `~/.mimir/mimir.log`.
 Binary only. Sessions work without it.
 
 ```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest   # ensure $(go env GOPATH)/bin is on PATH
+go install <repository-source>/cmd/mimir@latest   # ensure $(go env GOPATH)/bin is on PATH
 mimir index --full
 mimir recall "auth"
 ```
@@ -104,8 +104,8 @@ mimir doctor
 <summary>Contributing (working on Mimir itself)</summary>
 
 ```bash
-git clone https://github.com/cloudboy-jh/Mimir.git
-cd Mimir
+git clone https://github.com/<owner>/mimir.git
+cd mimir
 go test ./cmd/mimir
 go build -o mimir ./cmd/mimir
 ```
