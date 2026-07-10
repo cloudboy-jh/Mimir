@@ -14,7 +14,7 @@ Users talk to you. You drive Mimir. Config + log exist so humans can audit.
 **Install the skill. Do not clone the product repo to "set up" Mimir.**
 
 ```bash
-npx skills add <repository-source>@mimir -g -y
+npx skills add cloudboy-jh/Mimir@mimir -g -y
 ```
 
 That is enough for session + control procedures (git + `gh` + skill). Reload the harness if your agent only picks up skills on start.
@@ -22,7 +22,7 @@ That is enough for session + control procedures (git + `gh` + skill). Reload the
 **PromptScript** rejects global installs (`-g`). Install it project-scoped instead:
 
 ```bash
-npx skills add <repository-source>@mimir -a promptscript -y
+npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
 ```
 
 ### Optional binary (code plane only)
