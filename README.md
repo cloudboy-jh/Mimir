@@ -6,7 +6,32 @@ Agent-driven code and session memory.
 
 The agent keeps an optional map of the repo, and a working session (goal, progress, context). Sessions sync through your own private git so work continues across machines. You talk; the agent runs it; `~/.mimir` is there when you want to audit.
 
-## Install
+## User Guide
+
+Mimir gives your agent two independent capabilities: **Session Checkpoints** (tracking what you are doing) and **Repository Memory** (indexing what the code looks like).
+
+### 1. Sessions (Your Work Checkpoints)
+
+Sessions are structured markdown files that track your open work narratives (Goal, Progress, State Variables, Context Briefs). They are completely decoupled from your durable codebase history, saving straight to your machine and syncing to your private git branch (`mimir-sessions`).
+
+*   **When to use**: Before switching machines, taking a break, or handing off work to another model.
+*   **What to tell your agent**:
+    *   *"Save progress"* -> The agent writes a custom session file and pushes it to your private git.
+    *   *"Continue what I was doing"* -> The agent pulls latest logs from your remote, lists open sessions, and restores the context.
+*   **Durable Twin**: All pushes write cleanly to `~/.mimir/sessions/<machine>-<harness>-<session-id>.md`.
+
+### 2. Repos (Your Code plane Memory)
+
+The Code plane operates strictly on git repository roots. By compiling a local index of your symbols, dependencies, and imports, it gives your agent instant codebase search without sending massive code payloads in the chat prompt.
+
+*   **When to use**: Onboarding an agent to a new repository, or debugging complex symbols, imports, and downstream dependencies.
+*   **What to tell your agent**:
+    *   *"Index this repository"* -> The agent compiles a private search index under your gignored `<repo>/.mimir/index.json`.
+    *   *"What do we know about OAuth/Symbols?"* -> The agent runs instant recall queries to extract relevant hunks without bloating memory limits.
+
+---
+
+## Install (Agent-driven)
 
 ### Agent prompt (paste this)
 
@@ -35,13 +60,6 @@ npx skills add <repository-source>@mimir -a promptscript -y
 ```
 
 Skill only for sessions. Don't clone this repo to "set up" Mimir. The skill runs on `git` + your existing `gh` auth.
-
-Then say things like:
-
-- Set up Mimir.
-- Save progress.
-- Continue what I was doing on another machine.
-- What do we know about auth in this repo?
 
 ## Where things go
 
