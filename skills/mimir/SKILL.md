@@ -14,7 +14,7 @@ Users talk to you. You drive Mimir. Config + log exist so humans can audit.
 **Install the skill. Do not clone the product repo to "set up" Mimir.**
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -g -y
+npx skills add <repository-source>@mimir -g -y
 ```
 
 That is enough for session + control procedures (git + `gh` + skill). Reload the harness if your agent only picks up skills on start.
@@ -22,7 +22,7 @@ That is enough for session + control procedures (git + `gh` + skill). Reload the
 **PromptScript** rejects global installs (`-g`). Install it project-scoped instead:
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+npx skills add <repository-source>@mimir -a promptscript -y
 ```
 
 ### Optional binary (code plane only)
@@ -104,17 +104,18 @@ MCP for the **active** harness only:
 
 ---
 
-## Daily user speech
+## Daily user speech & Agent Execution Playbook
 
-| User says | You do |
-|---|---|
-| install / wire Mimir | `npx skills add cloudboy-jh/Mimir@mimir -g -y` then control + session init |
-| save progress / checkpoint | session write + push; always `◆ mimir` receipt |
-| continue from X | session pull; open matching `*.md` |
-| what do we know about Y | `mimir recall` / MCP |
-| mid coding structure | MCP quiet unless user needs an answer |
+This contains the mapping from human natural language expressions to exact agent actions.
 
-Fill session bodies for real: goal, state, progress, context. Not empty templates.
+| User Intent | Trigger Condition | Step-by-Step Agent Action |
+|---|---|---|
+| **Save / Checkpoint** | "Save progress", "checkpoint", "save my session" | 1. Parse current project details from context.<br>2. Run `mimir session push --id <slug> --harness hermes --goal "<what-was-done>" --body <notes-path-or-text>` (always commit progress to private git).<br>3. Emit the locked `◆ mimir session.push  <id>` receipt back to chat. |
+| **Continue / Restore** | "Continue yesterday", "restore workstation", "pull sesh" | 1. Run `mimir session pull` to pull latest markdown trackers from your private sync remote.<br>2. List sessions using `mimir session list`. <br>3. Open and locate the matching `{machine}-{harness}-{session_id}.md` file to feed goal and context back into active chat layers.<br>4. Emit `◆ mimir session.pull  <id>` receipt. |
+| **Index Repository** | "index this", "add memory for code", "wire workspace" | 1. Ensure `mimir` CLI binary exists.<br>2. Run `mimir index` (or parse `--full` if `.mimir` directory is missing entirely).<br>3. Print compiler result + `◆ mimir code.index <repo> <mode>` receipt. |
+| **Query Code** | "recall symbol", "where is X", "what is Y" | 1. Resolve query strings.<br>2. Run `mimir recall "<query-text>"`. <br>3. Format hit lists neatly under `◆ mimir code.recall <query>`. |
+
+Fill session bodies for real: goal, state, progress, context. Not empty templates. When creating notes or checkpoint descriptors, inspect your environment's local change logs (`git status`, recent diff titles, etc.) to flesh out the narrative, ensuring the next machine can restore immediately.
 
 ---
 
@@ -150,7 +151,8 @@ Filename: `{machine}-{harness}-{session_id}.md`
 
 - Skill install != product clone.
 - Do not web-search for "how to install Mimir." Use this skill + the install block above.
-- Do not ask for anything the environment already has (`gh` login, hostname, harness, project name).
+- Do not ask for anything the environment already has (`gh` login, hostname, harness).
+- **Code Plane Identity details repo-only**: The code plane represents repositories as the absolute unit of truth (`repo`), never high-level "projects". CLI index configurations store, load, and transmit `"repo"` metadata (the basename of the git root directory) rather than `"project"` tags. Modifying active repositories must use GitTrix ephemeral workouts for dry-runs.
 - No second brand (Chiron). No TUI. No SaaS. Sessions never under project `.mimir/`.
 
 ---
