@@ -88,7 +88,7 @@ func TestReceiptMark(t *testing.T) {
 func TestSessionFileNameAndRender(t *testing.T) {
 	t.Parallel()
 	name := sessionFileName("therig", "hermes", "gittrix-v2")
-	if name != "therig-hermes-gittrix-v2.md" {
+	if name != "sessions/therig-hermes-gittrix-v2.md" {
 		t.Fatalf("name %s", name)
 	}
 	doc := renderSessionDoc(SessionMeta{

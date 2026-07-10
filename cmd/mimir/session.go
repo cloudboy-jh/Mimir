@@ -25,7 +25,7 @@ type SessionMeta struct {
 }
 
 func sessionFileName(machine, harness, id string) string {
-	return fmt.Sprintf("%s-%s-%s.md", machine, harness, id)
+	return fmt.Sprintf("sessions/%s-%s-%s.md", machine, harness, id)
 }
 
 func validateSessionID(id string) error {
@@ -131,6 +131,12 @@ func sessionPush(ctx context.Context, opts sessionPushOptions) (sessionPushResul
 
 	name := sessionFileName(cfg.Machine, harness, opts.ID)
 	abs := filepath.Join(dir, name)
+	
+	// Ensure the parent sessions/ subdirectory physically exists
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return sessionPushResult{}, err
+	}
+	
 	doc := renderSessionDoc(SessionMeta{
 		SessionID: opts.ID,
 		Machine:   cfg.Machine,
@@ -259,7 +265,9 @@ func sessionPull(ctx context.Context, id string) (sessionPullResult, error) {
 }
 
 func listSessionFiles(dir, id string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	sessionSubdir := filepath.Join(dir, "sessions")
+	_ = os.MkdirAll(sessionSubdir, 0o755)
+	entries, err := os.ReadDir(sessionSubdir)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +283,7 @@ func listSessionFiles(dir, id string) ([]string, error) {
 		if id != "" && !strings.Contains(name, id) {
 			continue
 		}
-		out = append(out, filepath.Join(dir, name))
+		out = append(out, filepath.Join(sessionSubdir, name))
 	}
 	sort.Strings(out)
 	return out, nil
