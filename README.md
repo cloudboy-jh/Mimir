@@ -2,7 +2,7 @@
 
 ![Mimir](./mimir-readme.png)
 
-## Your agents should remember
+## Your agents forget. Mimir doesn't.
 
 Coding agents lose the useful parts of yesterday's work: approaches that
 failed, errors already diagnosed, files that mattered, and fixes that actually
