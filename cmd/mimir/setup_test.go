@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,12 +66,28 @@ func TestMaterializeWorker(t *testing.T) {
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/whoami" || r.Header.Get("Authorization") != "Bearer machine-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"sessions":0,"log":0}`)
+	}))
+	defer server.Close()
 	var output bytes.Buffer
-	if err := setup(context.Background(), []string{"--url", "https://mimir.example.workers.dev", "--json"}, IO{In: bytes.NewBuffer(nil), Out: &output, Err: &output}); err != nil {
+	if err := setup(context.Background(), []string{"--url", server.URL, "--json"}, IO{In: bytes.NewBuffer(nil), Out: &output, Err: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); got != "{\"state\":\"connected\",\"url\":\"https://mimir.example.workers.dev\"}\n" {
-		t.Fatalf("output %q", got)
+	var result struct {
+		State      string             `json:"state"`
+		URL        string             `json:"url"`
+		Connection connectionManifest `json:"connection"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "connected" || result.URL != server.URL || result.Connection.OpenAIBaseURL != server.URL+"/v1" {
+		t.Fatalf("result %#v", result)
 	}
 	pointer, err := loadPointer()
 	if err != nil {

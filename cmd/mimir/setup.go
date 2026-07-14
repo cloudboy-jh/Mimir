@@ -29,6 +29,7 @@ type setupOptions struct {
 	BucketName    string
 	OpenRouterKey string
 	JSON          bool
+	Progress      *setupProgress
 }
 
 type setupStateError struct {
@@ -52,8 +53,8 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 			return args[i], nil
 		}
 		switch args[i] {
-		case "--quick", "--minimal":
-			opts.Mode = strings.TrimPrefix(args[i], "--")
+		case "--quick":
+			opts.Mode = "quick"
 		case "--json":
 			opts.JSON = true
 		case "--url":
@@ -102,23 +103,36 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !opts.JSON {
 		printSetupBanner(ioctx.Out)
+		opts.Progress = startSetupProgress(ioctx.Out, []string{"Preparing Worker", "Authenticating Cloudflare", "Provisioning database", "Provisioning archive", "Applying schema", "Configuring credentials", "Connecting OpenRouter", "Deploying Worker", "Verifying connection"})
+		defer func() { opts.Progress.Stop() }()
 	}
 	if opts.URL != "" {
+		if err := validateDeploymentURL(opts.URL); err != nil {
+			return err
+		}
 		opts.Token = strings.TrimSpace(os.Getenv("MIMIR_TOKEN"))
 		if opts.Token == "" && opts.JSON {
 			return setupStateError{State: "mimir_token_required", Message: "set MIMIR_TOKEN to connect an existing endpoint"}
 		}
 		if opts.Token == "" {
 			var err error
+			opts.Progress.Pause()
 			opts.Token, err = promptSecret(ioctx, "Mimir token: ")
+			opts.Progress.Resume()
 			if err != nil {
 				return err
 			}
 		}
-		if err := savePointer(Pointer{URL: strings.TrimRight(opts.URL, "/"), Token: opts.Token}); err != nil {
+		pointer := Pointer{URL: strings.TrimRight(opts.URL, "/"), Token: opts.Token}
+		if err := verifyPointer(ctx, pointer); err != nil {
+			return fmt.Errorf("verifying existing deployment: %w", err)
+		}
+		if err := savePointer(pointer); err != nil {
 			return err
 		}
-		return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/")}, "Mimir connected.")
+		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+		opts.Progress.Stop()
+		return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/")}, opts.URL), connectionSummary(opts.URL))
 	}
 	return provision(ctx, opts, ioctx)
 }
@@ -135,11 +149,11 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
 		return fmt.Errorf("installing Worker dependencies: %w", err)
 	}
-	setupStep(ioctx.Out, opts.JSON, "Worker package ready")
-	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON); err != nil {
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
+	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON, opts.Progress); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Cloudflare authenticated")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Cloudflare authenticated")
 	if opts.DatabaseID == "" {
 		output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
 		if err != nil {
@@ -157,18 +171,18 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 			return fmt.Errorf("could not read the D1 database ID; retry with --database-id")
 		}
 	}
-	setupStep(ioctx.Out, opts.JSON, "D1 session index ready")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Database ready")
 	if _, err := runWrangler(ctx, dir, nil, "r2", "bucket", "create", opts.BucketName); err != nil && !alreadyExists(err.Error()) {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "R2 exchange archive ready")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Archive ready")
 	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
 		return err
 	}
 	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Database schema current")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Schema current")
 	key := opts.OpenRouterKey
 	if key == "" {
 		key = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
@@ -179,7 +193,9 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 		if opts.JSON {
 			return setupStateError{State: "openrouter_key_required", Message: "set OPENROUTER_API_KEY and rerun setup"}
 		}
+		opts.Progress.Pause()
 		key, err = promptSecret(ioctx, "OpenRouter API key: ")
+		opts.Progress.Resume()
 		if err != nil {
 			return err
 		}
@@ -194,51 +210,50 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "This machine registered")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Machine registered")
 	if key != "" {
 		if _, err := runWrangler(ctx, dir, strings.NewReader(key), "secret", "put", "OPENROUTER_API_KEY"); err != nil {
 			return err
 		}
 	}
-	setupStep(ioctx.Out, opts.JSON, "OpenRouter credential ready")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "OpenRouter connected")
 	output, err := runWrangler(ctx, dir, nil, "deploy")
 	if err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Worker deployed")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker deployed")
 	url := workerURL(output)
 	if url == "" {
 		return fmt.Errorf("deployment succeeded but its workers.dev URL was not found; reconnect with mimir setup --url <url> --token <token>")
 	}
-	if err := savePointer(Pointer{URL: strings.TrimRight(url, "/"), Token: token}); err != nil {
+	pointer := Pointer{URL: strings.TrimRight(url, "/"), Token: token}
+	if err := verifyPointer(ctx, pointer); err != nil {
+		return fmt.Errorf("Worker deployed but whoami verification failed: %w", err)
+	}
+	if err := savePointer(pointer); err != nil {
 		return err
 	}
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err
 	}
-	if opts.Mode == "minimal" {
-		if _, err := remoteRequest(ctx, "PUT", "/config", map[string]bool{"save.enabled": false}); err != nil {
-			return fmt.Errorf("Worker deployed but minimal config could not be applied: %w", err)
-		}
-	}
-	if err := verifyDeployment(ctx); err != nil {
-		return fmt.Errorf("Worker deployed but whoami verification failed: %w", err)
-	}
-	setupStep(ioctx.Out, opts.JSON, "Deployment verified")
-	return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": opts.Mode != "minimal"}, "Mimir connected, deployed, and verified.")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+	opts.Progress.Stop()
+	return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true}, url), connectionSummary(url))
 }
 
-func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO, noninteractive bool) error {
+func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO, noninteractive bool, progress *setupProgress) error {
 	if _, err := runWrangler(ctx, dir, nil, "whoami"); err == nil {
 		return nil
 	}
 	if noninteractive {
 		return setupStateError{State: "cloudflare_auth_required", Message: "run wrangler login in an interactive terminal"}
 	}
+	progress.Pause()
 	fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
 	if err := runWranglerInteractive(ctx, dir, ioctx, "login"); err != nil {
 		return fmt.Errorf("Cloudflare login failed: %w", err)
 	}
+	progress.Resume()
 	if _, err := runWrangler(ctx, dir, nil, "whoami"); err != nil {
 		return fmt.Errorf("Cloudflare login could not be verified: %w", err)
 	}
@@ -258,10 +273,20 @@ func writeSetupResult(out io.Writer, jsonOutput bool, result map[string]any, hum
 	return err
 }
 
-func setupStep(out io.Writer, jsonOutput bool, label string) {
+func setupStep(progress *setupProgress, out io.Writer, jsonOutput bool, label string) {
 	if !jsonOutput {
-		fmt.Fprintf(out, "\x1b[38;5;116m✓\x1b[0m %s\n", label)
+		progress.Complete(label)
 	}
+}
+
+func connectionSummary(url string) string {
+	machine, _ := os.Hostname()
+	if strings.TrimSpace(machine) == "" {
+		machine = "registered"
+	}
+	credential, _ := tokenPath()
+	manifest, _ := currentConnectionManifest(url)
+	return fmt.Sprintf("Mimir connected\n\n  Worker      %s\n  Machine     %s\n  Credential  %s\n  OpenAI      %s\n  Anthropic   %s\n  MCP         mimir serve\n  Memory      enabled\n  Status      ready for harness connection", strings.TrimRight(url, "/"), machine, credential, manifest.OpenAIBaseURL, manifest.AnthropicBaseURL)
 }
 
 func registerMachineToken(ctx context.Context, dir, database, token string) error {
@@ -285,10 +310,10 @@ func storeDeploymentURL(ctx context.Context, dir, database, url string) error {
 
 func sqlQuote(value string) string { return strings.ReplaceAll(value, "'", "''") }
 
-func verifyDeployment(ctx context.Context) error {
+func verifyPointer(ctx context.Context, pointer Pointer) error {
 	var last error
 	for attempt := 0; attempt < 8; attempt++ {
-		if _, err := remoteRequest(ctx, "GET", "/whoami", nil); err == nil {
+		if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
 			return nil
 		} else {
 			last = err

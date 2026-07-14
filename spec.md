@@ -44,8 +44,10 @@ harness (opencode / Claude Code / Cursor / anything)
    partitioned
 ```
 
-**Binary** (Go, zero deps) is a client only: `setup`, config sugar, queries,
-`mark`. Local state is a pointer file — URL + token — nothing else.
+**Binary** (Go, zero deps) is the setup/login client and stdio MCP server.
+Operational commands remain available for diagnostics, but normal users only
+run `setup` and `login`. Local state is a pointer file — URL + token — nothing
+else.
 
 **Ownership:** everything runs in the user's Cloudflare account. Mimir has
 no backend, no tenant, nothing of ours in the loop. Single-dev per
@@ -121,6 +123,10 @@ CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,        -- ulid
   started_at    TEXT NOT NULL,
   ended_at      TEXT,
+  state         TEXT NOT NULL DEFAULT 'active',
+                -- 'active' | 'inactive'; resumable, never terminal
+  last_active_at TEXT,
+  inactive_at   TEXT,
   boundary      TEXT NOT NULL,           -- 'header' | 'heuristic'
   outcome       TEXT NOT NULL DEFAULT 'unknown',
                 -- 'promoted' | 'discarded' | 'abandoned' | 'unknown'
@@ -192,13 +198,22 @@ evidence it's worth it.
 ### 5.1 Boundary
 
 1. **Header** (`x-mimir-session`) — harness-declared. Authoritative.
-2. **Heuristic fallback** — same repo + inter-request gap < `session_gap`
-   (config, default 15m). Runs at index time, marked `boundary: heuristic`.
+2. **Heuristic fallback** — same optional repo/harness metadata plus an
+   inter-request gap < `session_gap` (config, default 15m). Requests without
+   metadata still work and share the default personal telemetry bucket.
 
-If heuristic bucketing proves garbage in practice, it gets demoted to
-opt-in; header path is the contract.
+### 5.2 Lifecycle
 
-### 5.2 Outcomes
+Every completed exchange is persisted immediately. Sessions become `inactive`
+after a fifteen-minute telemetry gap. Requests carrying an existing
+authoritative session ID reactivate that same session, including after days or
+weeks. Inactivity is therefore derived state, not a harness lifecycle contract.
+Harnesses without dynamic headers use the heuristic path automatically.
+
+Raw R2 exchanges and D1 metadata are retained indefinitely. Personal-scale
+deployments do not add queues, compaction, or retention infrastructure.
+
+### 5.3 Outcomes
 
 Closed enum: `promoted | discarded | abandoned | unknown`.
 
@@ -268,10 +283,10 @@ Mimir ships **no interface.** It's endpoints.
 - **HTTP** — §3.2. Canonical.
 - **MCP** — one server, tools mirror HTTP 1:1: `whoami`,
   `sessions_list`, `sessions_get`, `search`, `mark`, `config_get`,
-  `config_set`. Any MCP-speaking harness gets everything. No per-harness
-  integration code exists anywhere in the project.
-- **CLI** — another client. `mimir sessions`, `mimir search`, `mimir mark`,
-  `mimir config`. Sugar over HTTP.
+  `config_set`. Agents use these tools automatically.
+- **CLI** — the promoted human surface is only `mimir setup` and
+  `mimir login`. Diagnostic commands are hidden from normal help. The same
+  binary hosts MCP and exposes a harness-neutral connection manifest.
 
 TUIs, GUIs, dashboards are consumers other people (including us, elsewhere)
 build against the same endpoints. Never part of Mimir.
@@ -283,19 +298,16 @@ build against the same endpoints. Never part of Mimir.
 Onboarding is a first-class feature, not plumbing. Two paths, one
 underlying mechanism.
 
-### 8.1 `mimir setup` (human path)
+### 8.1 Human path
 
-Wizard, three modes on fresh run (hermes-setup shape):
+`mimir setup` provisions and verifies the deployment. `mimir login` reconnects
+another machine. Both return the same harness-neutral manifest: OpenAI and
+Anthropic base URLs, credential-file path, MCP command, and optional telemetry
+headers. Interactive runs show one status line and one final summary instead of
+printing every provisioning stage.
 
-- **Quick** (`--quick`, zero prompts): detect wrangler auth or run
-  `wrangler login` OAuth → deploy Worker + create R2 bucket + D1 schema →
-  generate bearer token → prompt for OpenRouter key → write pointer file →
-  print per-harness base-URL snippets (opencode, Claude Code, Cursor) →
-  verify with a whoami round-trip.
-- **Full**: every option surfaced — names, region, config defaults,
-  redaction patterns.
-- **Minimal**: deploy with `save.enabled=false`; pure proxy until the user
-  opts in.
+JSON mode remains the agent-safe automation contract. The `mimir-setup` skill
+applies the manifest to whichever harness is active.
 
 Detects existing state: a v1 `.mimir/index.json` (keep serving it), an
 existing deployment (offer reconnect instead of redeploy).
@@ -304,20 +316,16 @@ existing deployment (offer reconnect instead of redeploy).
 
 The repo ships a `skills/` folder (agentskills.io format):
 
-- **mimir-setup** — teaches an agent to run `mimir setup --quick`, edit
-  the harness's own config to point at the Worker (the one thing the CLI
-  can't do from outside), and verify.
-- **mimir-use** — the one that matters. Teaches the habit: before starting
-  work, query sessions for prior attempts touching these files/errors; on
-  finish, `mark` the outcome; set `x-mimir-session`. This is the
-  behavioral glue MCP alone doesn't provide — MCP exposes tools, the skill
-  teaches when to reach for them.
+- **mimir-setup** — teaches an agent to run setup/login, apply the generic
+  connection manifest to the active harness, and defer secret entry to the
+  local masked prompt.
+- **mimir-use** — teaches agents to use MCP memory automatically. It never asks
+  the user to run search, indexing, or outcome commands.
 
 Distribution: `npx skills add cloudboy-jh/mimir` via skills.sh reaches
 20+ harnesses. Not a dependency — the skill format is the open standard,
-content lives in our repo, and `mimir setup` installs the skills into the
-detected harness itself as the primary path. skills.sh is passive
-discovery; README documents the plain copy-the-folder method.
+content lives in our repo, and the setup agent installs `mimir-use` while
+applying the connection manifest. skills.sh is passive discovery.
 
 ---
 
@@ -342,15 +350,15 @@ discovery; README documents the plain copy-the-folder method.
 2. **Session indexing + D1** — boundaries, derivation, explicit adapter.
 3. **Query surface** — HTTP + MCP + CLI.
 4. **git outcome adapter.**
-5. **`mimir setup`** — wizard, both skills, harness snippets.
+5. **`mimir setup`** — wizard, both skills, generic connection manifest.
 6. **v1 code index federation** through the client.
 
 ---
 
 ## 11. Open questions
 
-- Heuristic session bucketing quality — ship behind a flag, evaluate on
-  real traffic before making it default.
+- Heuristic session bucketing quality — evaluate on real traffic and keep the
+  exact header path available for harnesses that expose session IDs.
 - Redaction builtin set — needs a concrete pattern list before the Worker
   writes anything to R2.
 - `/search` ranking across types — v1 Mimir's ranking applies to code;
@@ -368,7 +376,7 @@ Mimir is a self-hosted Cloudflare Worker memory plane. The Worker proxies OpenAI
 
 ## Boundaries
 
-`x-mimir-session` is authoritative. Requests without the header are grouped by repository and a configurable fifteen-minute gap.
+`x-mimir-session` is authoritative. Requests without the header are grouped by optional repository/harness metadata and a configurable fifteen-minute gap. Exact IDs reactivate the same session when resumed.
 
 ## Surfaces
 

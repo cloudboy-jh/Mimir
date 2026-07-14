@@ -33,7 +33,12 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "--version", "version":
 		_, err := fmt.Fprintln(ioctx.Out, versionString())
 		return err
-	case "-h", "--help", "help":
+	case "-h", "--help":
+		return usage(ioctx.Out)
+	case "help":
+		if len(args) == 2 && args[1] == "advanced" {
+			return advancedUsage(ioctx.Out)
+		}
 		return usage(ioctx.Out)
 	case "index":
 		fs := flag.NewFlagSet("index", flag.ContinueOnError)
@@ -94,6 +99,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return setup(ctx, args[1:], ioctx)
 	case "login":
 		return login(ctx, args[1:], ioctx)
+	case "connection":
+		return writeConnectionManifest(ioctx.Out)
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
 			return fmt.Errorf("usage: mimir outcome git <session>")
@@ -155,8 +162,20 @@ func usage(out io.Writer) error {
 	_, err := fmt.Fprintln(out, `mimir remembers
 
 Usage:
-  mimir setup [--quick|--minimal] [--json]
+  mimir setup [--quick] [--json]
   mimir login [--json]
+
+Run "mimir help advanced" for diagnostic commands.`)
+	return err
+}
+
+func advancedUsage(out io.Writer) error {
+	_, err := fmt.Fprintln(out, `mimir advanced commands
+
+These commands support harness integrations, diagnostics, and development.
+
+Usage:
+  mimir connection
   mimir whoami
   mimir sessions
   mimir session <id>

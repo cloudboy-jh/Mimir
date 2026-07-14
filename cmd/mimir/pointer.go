@@ -87,9 +87,15 @@ func savePointer(p Pointer) error {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return err
 	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
 	tokenFile, err := tokenPath()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(tokenFile, []byte(p.Token+"\n"), 0o600)
+	if err := os.WriteFile(tokenFile, []byte(p.Token+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(tokenFile, 0o600)
 }

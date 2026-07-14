@@ -1,6 +1,6 @@
 ---
 name: mimir-setup
-description: Set up or reconnect the self-hosted Mimir Cloudflare memory plane and wire the active OpenCode or Claude Code harness. Use when the user explicitly asks to install, set up, connect, or log in to Mimir.
+description: Set up or reconnect the self-hosted Mimir Cloudflare memory plane and connect the active agent harness. Use when the user explicitly asks to install, set up, connect, or log in to Mimir.
 ---
 
 # Mimir Setup
@@ -9,19 +9,17 @@ Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in
 
 ## Procedure
 
-1. Check for the CLI with `command -v mimir`. If absent and Go is available, run `go install github.com/cloudboy-jh/mimir/cmd/mimir@latest` and use `$(go env GOPATH)/bin/mimir` if PATH has not refreshed.
-2. Run `mimir whoami`.
-3. If connected, skip login.
-4. If disconnected, run `mimir login --json`.
-5. If it returns `cloudflare_auth_required`, tell the user Cloudflare browser approval is required and run `mimir login` in the interactive terminal.
-6. If it returns `deployment_missing`, this is the first machine. Run `mimir setup --json` only when `OPENROUTER_API_KEY` already exists in the process environment.
-7. If setup returns `openrouter_key_required`, tell the user to run `mimir setup` in their terminal and enter the key at the masked prompt. Do not request or transfer the key through chat.
-8. Once `mimir whoami` succeeds, wire only the active harness using the matching reference below.
-9. Run `mimir whoami` through the configured MCP server and report whether session boundaries are exact or heuristic.
+1. Check for `mimir`. If absent and Go is available, run `go install github.com/cloudboy-jh/mimir/cmd/mimir@latest`.
+2. Run `mimir login --json`.
+3. If it returns `cloudflare_auth_required`, tell the user browser approval is required and run interactive `mimir login`.
+4. If it returns `deployment_missing`, run `mimir setup --json` only when `OPENROUTER_API_KEY` exists in the process environment.
+5. If setup returns `openrouter_key_required`, tell the user to run interactive `mimir setup` and enter the key at the masked prompt. Never request or transfer the key through chat.
+6. Read the `connection` object from setup/login, or run the internal `mimir connection` command after an existing setup.
+7. Configure the active harness's OpenAI or Anthropic provider with the corresponding base URL. Supply authentication using `credential_file`, `credential_command`, or the harness's secure secret input. Do not print or place the credential value in ordinary configuration or chat.
+8. Register the returned `mcp_command` as the harness's local Mimir MCP server.
+9. If the harness supports dynamic request headers, derive and add any names listed in `optional_headers`. Never use header names or placeholder text as literal values. These improve grouping but are not required.
+10. Install `mimir-use` in the harness's skill directory and validate the harness configuration using its native validation command or schema.
 
-## Harness References
+The connection manifest is the contract. Do not add harness-specific behavior to Mimir's Worker or CLI.
 
-- OpenCode: [`references/opencode.md`](references/opencode.md)
-- Claude Code: [`references/claude-code.md`](references/claude-code.md)
-
-Do not create Git session repositories, session Markdown, Mimir accounts, or alternate storage. Do not claim unsupported harnesses are wired.
+Do not create Git session repositories, session Markdown, Mimir accounts, alternate storage, lifecycle hooks, or routine user workflows.

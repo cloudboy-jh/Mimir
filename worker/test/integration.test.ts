@@ -4,7 +4,8 @@ import worker from "../src/index";
 
 const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
-CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', outcome_src TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', outcome_src TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
 CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session_files (session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(session_id, file));
@@ -71,5 +72,27 @@ describe("Worker integration", () => {
     expect(response.status).toBe(200);
     expect((await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first<{ count: number }>())?.count).toBe(0);
     expect((await env.LOGS.list()).objects).toHaveLength(0);
+  });
+
+  it("reopens an inactive exact session on the next exchange", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 2, completion_tokens: 1 } }))));
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary) VALUES ('session-lifecycle', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'inactive', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'header')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "session-lifecycle", "x-mimir-harness": "test" };
+    await request("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "openai/test", messages: [] }) });
+    expect(await env.DB.prepare("SELECT state, request_count FROM sessions WHERE id = 'session-lifecycle'").first()).toEqual({ state: "active", request_count: 1 });
+  });
+
+  it("marks stale sessions inactive when memory is queried", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('stale', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 'active', '2020-01-01T00:00:00Z', 'heuristic')").run();
+    const response = await request("/sessions", { headers: { authorization: "Bearer machine-token" } });
+    expect(response.status).toBe(200);
+    expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'stale'").first<{ state: string }>())?.state).toBe("inactive");
+  });
+
+  it("coalesces concurrent headerless requests into one heuristic session", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [] }))));
+    const init = { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ model: "openai/test", messages: [] }) };
+    await Promise.all([request("/v1/chat/completions", init), request("/v1/chat/completions", init)]);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS sessions, SUM(request_count) AS requests FROM sessions").first()).toEqual({ sessions: 1, requests: 2 });
   });
 });

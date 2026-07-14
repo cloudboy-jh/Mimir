@@ -7,12 +7,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 func remoteRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
 	p, err := loadPointer()
 	if err != nil {
+		return nil, err
+	}
+	return remoteRequestWithPointer(ctx, p, method, path, body)
+}
+
+func remoteRequestWithPointer(ctx context.Context, p Pointer, method, path string, body any) ([]byte, error) {
+	if err := validateDeploymentURL(p.URL); err != nil {
 		return nil, err
 	}
 	var input io.Reader
@@ -44,4 +52,19 @@ func remoteRequest(ctx context.Context, method, path string, body any) ([]byte, 
 		return nil, fmt.Errorf("Mimir API %s: %s", res.Status, strings.TrimSpace(string(data)))
 	}
 	return data, nil
+}
+
+func validateDeploymentURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("invalid Mimir deployment URL")
+	}
+	host := parsed.Hostname()
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
+		return fmt.Errorf("Mimir deployment URL must use HTTPS")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("invalid Mimir deployment URL")
+	}
+	return nil
 }

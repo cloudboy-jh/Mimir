@@ -17,7 +17,7 @@ type SaveConfig = {
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SESSION_COLUMNS = "id, started_at, ended_at, boundary, outcome, outcome_src, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent";
+const SESSION_COLUMNS = "id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, outcome, outcome_src, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent";
 
 const app = new Hono<AppEnv>();
 
@@ -43,6 +43,7 @@ app.get("/whoami", async (c) => {
 });
 
 app.get("/sessions", async (c) => {
+  await expireSessions(c.env.DB);
   const where: string[] = [];
   const values: string[] = [];
   for (const [field, column] of [["repo", "repo"], ["model", "model_primary"], ["outcome", "outcome"]] as const) {
@@ -68,6 +69,7 @@ app.get("/sessions", async (c) => {
 });
 
 app.get("/sessions/:id", async (c) => {
+  await expireSessions(c.env.DB);
   const session = await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
   if (!session) return c.json({ error: "session not found" }, 404);
   const [exchanges, files, errors] = await Promise.all([
@@ -106,6 +108,7 @@ app.get("/log/*", async (c) => {
 });
 
 app.post("/search", async (c) => {
+  await expireSessions(c.env.DB);
   const body = await c.req.json<{ query?: string; types?: string[]; budget?: number; filters?: { repo?: string; outcome?: string } }>();
   const query = body.query?.trim() ?? "";
   const budget = Math.max(1, Math.min(body.budget ?? 4000, 16000));
@@ -165,6 +168,7 @@ async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
   const repo = metadata(c.req.header("x-mimir-repo"));
   const harness = metadata(c.req.header("x-mimir-harness"));
   const config = await readSaveConfig(c.env.DB);
+  await expireSessions(c.env.DB, config.gapMinutes);
   const save = shouldSave(config, repo, model);
   const headers = buildUpstreamHeaders(c.req.raw.headers, c.env.OPENROUTER_API_KEY);
   const upstream = await fetch(`https://openrouter.ai/api/v1${endpoint === "chat" ? "/chat/completions" : "/messages"}`, { method: "POST", headers, body: requestBody });
@@ -182,7 +186,7 @@ async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
 }
 
 async function capture(env: Bindings, input: { request: Record<string, unknown>; archiveBody: ReadableStream<Uint8Array>; endpoint: string; model: string; repo: string | null; harness: string | null; declaredSession: string | null; sourceRef: string | null; responseType: string; started: number }) {
-	const responseText = await readBoundedText(input.archiveBody, MAX_RESPONSE_BYTES);
+  const responseText = await readBoundedText(input.archiveBody, MAX_RESPONSE_BYTES);
 	const response = parseCapturedResponse(responseText, input.responseType);
 	const config = await readConfig(env.DB);
 	const patterns = array(config["redact.patterns"]);
@@ -191,7 +195,7 @@ async function capture(env: Bindings, input: { request: Record<string, unknown>;
   const r2Key = `log/${now.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
 	const redactedRequest = redact(input.request, patterns);
 	const redactedResponse = redact(response, patterns);
-	const session = await resolveSession(env.DB, input.declaredSession, input.repo, input.sourceRef, input.model, now);
+  const session = await resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, now);
 	const usage = extractUsage(response);
 	const derived = deriveSessionFields(redactedRequest, redactedResponse);
 	const log = { id, ts: now, session: input.declaredSession, model: input.model, endpoint: input.endpoint, request: redactedRequest, response: redactedResponse, usage, latency_ms: Date.now() - input.started, meta: { repo: input.repo, harness: input.harness } };
@@ -200,24 +204,32 @@ async function capture(env: Bindings, input: { request: Record<string, unknown>;
   const responseExcerpt = excerpt(JSON.stringify(redactedResponse));
   await env.DB.batch([
     env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, session.id, now, input.endpoint, input.model, requestExcerpt, responseExcerpt, JSON.stringify(usage), Date.now() - input.started, input.repo, input.harness, r2Key),
-		env.DB.prepare("UPDATE sessions SET ended_at = ?, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?").bind(now, input.model, usage.prompt_tokens, usage.completion_tokens, session.id),
+		env.DB.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = 'active', inactive_at = NULL, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?").bind(now, now, now, now, input.harness, input.model, usage.prompt_tokens, usage.completion_tokens, session.id),
     ...derived.files.map((file) => env.DB.prepare("INSERT OR IGNORE INTO session_files(session_id, file) VALUES (?, ?)").bind(session.id, file)),
     ...derived.errors.map((signature) => env.DB.prepare("INSERT OR IGNORE INTO session_errors(session_id, signature) VALUES (?, ?)").bind(session.id, signature)),
   ]);
 }
 
-async function resolveSession(db: D1Database, declared: string | null, repo: string | null, sourceRef: string | null, model: string, now: string) {
+async function resolveSession(db: D1Database, declared: string | null, repo: string | null, harness: string | null, sourceRef: string | null, model: string, now: string) {
 	if (declared) {
-		await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, boundary, repo, source_ref, model_primary) VALUES (?, ?, 'header', ?, ?, ?)").bind(declared, now, repo, sourceRef, model).run();
+		await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, source_ref, model_primary) VALUES (?, ?, ?, ?, 'header', ?, ?, ?)").bind(declared, now, now, harness, repo, sourceRef, model).run();
     return { id: declared };
   }
   const config = await readSaveConfig(db);
   const cutoff = new Date(Date.parse(now) - config.gapMinutes * 60_000).toISOString();
-  const prior = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND repo IS ? AND ended_at >= ? ORDER BY ended_at DESC LIMIT 1").bind(repo, cutoff).first<{ id: string }>();
+  const prior = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness, cutoff).first<{ id: string }>();
   if (prior) return prior;
   const id = ulid();
-  await db.prepare("INSERT INTO sessions(id, started_at, boundary, repo, model_primary) VALUES (?, ?, 'heuristic', ?, ?)").bind(id, now, repo, model).run();
-  return { id };
+  await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, 'heuristic', ?, ?)").bind(id, now, now, harness, repo, model).run();
+  const active = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness).first<{ id: string }>();
+  if (!active) throw new Error("could not resolve heuristic session");
+  return active;
+}
+
+async function expireSessions(db: D1Database, gapMinutes?: number, now = new Date().toISOString()) {
+  const gap = gapMinutes ?? (await readSaveConfig(db)).gapMinutes;
+  const cutoff = new Date(Date.parse(now) - gap * 60_000).toISOString();
+  await db.prepare("UPDATE sessions SET state = 'inactive', inactive_at = COALESCE(inactive_at, ?), ended_at = COALESCE(ended_at, last_active_at) WHERE state = 'active' AND last_active_at < ?").bind(now, cutoff).run();
 }
 
 async function readConfig(db: D1Database) {

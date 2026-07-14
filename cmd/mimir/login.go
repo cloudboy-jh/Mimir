@@ -34,6 +34,8 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !opts.JSON {
 		printSetupBanner(ioctx.Out)
+		opts.Progress = startSetupProgress(ioctx.Out, []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"})
+		defer func() { opts.Progress.Stop() }()
 	}
 	dir, err := workerDir(opts.WorkerDir)
 	if err != nil {
@@ -46,11 +48,11 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Worker package ready")
-	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON); err != nil {
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
+	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON, opts.Progress); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Cloudflare authenticated")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Cloudflare authenticated")
 	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
 	if err != nil {
 		return err
@@ -62,10 +64,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
 		return err
 	}
-	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
-		return err
-	}
-	setupStep(ioctx.Out, opts.JSON, "Existing deployment found")
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Deployment found")
 	url := strings.TrimRight(opts.URL, "/")
 	if url == "" {
 		url, err = deploymentURL(ctx, dir, opts.DatabaseName)
@@ -76,6 +75,9 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if url == "" {
 		return setupStateError{State: "deployment_url_missing", Message: "run mimir login --url <worker-url>"}
 	}
+	if err := validateDeploymentURL(url); err != nil {
+		return err
+	}
 	token, err := randomToken()
 	if err != nil {
 		return err
@@ -83,15 +85,17 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if err := registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "This machine registered")
-	if err := savePointer(Pointer{URL: url, Token: token}); err != nil {
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Machine registered")
+	pointer := Pointer{URL: url, Token: token}
+	if err := verifyPointer(ctx, pointer); err != nil {
 		return err
 	}
-	if err := verifyDeployment(ctx); err != nil {
+	if err := savePointer(pointer); err != nil {
 		return err
 	}
-	setupStep(ioctx.Out, opts.JSON, "Connection verified")
-	return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "connected", "url": url}, fmt.Sprintf("Connected this machine to %s", url))
+	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+	opts.Progress.Stop()
+	return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "connected", "url": url}, url), connectionSummary(url))
 }
 
 func deploymentURL(ctx context.Context, dir, database string) (string, error) {

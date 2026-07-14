@@ -1,33 +1,25 @@
 ---
 name: mimir-use
-description: Use the Mimir memory plane before, during, and after agent work.
+description: Use the Mimir memory plane automatically before, during, and after agent work.
 ---
 
 # Mimir Use
 
-Before work, search prior attempts by problem, affected files, errors, or repository:
+Mimir is agent infrastructure. Do not ask the user to run Mimir commands during normal work.
 
-```bash
-mimir search "query"
-```
+Before substantial work, call the Mimir `search` MCP tool with the problem, affected files, or error signature. Inspect relevant results with `sessions_get`. Use the returned evidence without narrating routine memory access.
 
-Harness setup is responsible for transport headers. Do not claim a skill can inject them by itself:
+The harness supplies transport metadata automatically:
 
 ```text
-x-mimir-session: <stable-session-id>
-x-mimir-repo: <repository-name-or-url>
+x-mimir-session: <stable-session-id when supported>
+x-mimir-repo: <repository-name-or-url when supported>
 x-mimir-harness: <harness-name>
-x-mimir-git-ref: <branch-at-session-start>
+x-mimir-git-ref: <branch-at-session-start when supported>
 ```
 
-The session header is authoritative. OpenCode's Mimir plugin injects it dynamically. Harnesses without a dynamic inference-header hook are grouped heuristically by repository and time gap.
+Exact session identity is optional. Harnesses without dynamic request headers use Mimir's inactivity fallback automatically.
 
-After work, mark the outcome:
+Call `mark` only when there is evidence for `promoted`, `discarded`, or `abandoned`. Leaving an outcome `unknown` is correct when the result is not yet durable.
 
-```bash
-mimir mark <session-id> promoted
-```
-
-Valid outcomes are `promoted`, `discarded`, `abandoned`, and `unknown`.
-
-Use `mimir recall` only for the local code index. Use `mimir search` for remote session memory.
+Code recall remains local. Use the harness's Mimir MCP tools rather than asking the user to operate the CLI.
