@@ -55,18 +55,20 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
+	if err := ensureWorkerDependencies(ctx, dir); err != nil {
 		return err
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
-	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON, opts.Progress); err != nil {
-		return err
-	}
-	identity, err := readCloudflareIdentity(ctx, dir)
+	identity, err := ensureCloudflareIdentity(ctx, dir, ioctx, opts.JSON)
 	if err != nil {
 		return err
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Cloudflare authenticated")
+	if pointer, err := loadPointer(); err == nil {
+		if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
+			return writeLoginResult(ioctx, opts.JSON, identity, pointer.URL)
+		}
+	}
 	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
 	if err != nil {
 		return err
@@ -108,8 +110,12 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+	return writeLoginResult(ioctx, opts.JSON, identity, url)
+}
+
+func writeLoginResult(ioctx IO, jsonOutput bool, identity cloudflareIdentity, url string) error {
 	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity}, url)
-	return writeSetupResult(ioctx.Out, opts.JSON, result, loginSummary(identity, url, terminalColor(ioctx.Out)))
+	return writeSetupResult(ioctx.Out, jsonOutput, result, loginSummary(identity, url, terminalColor(ioctx.Out)))
 }
 
 func readCloudflareIdentity(ctx context.Context, dir string) (cloudflareIdentity, error) {
@@ -123,6 +129,25 @@ func readCloudflareIdentity(ctx context.Context, dir string) (cloudflareIdentity
 	}
 	if !identity.LoggedIn {
 		return cloudflareIdentity{}, fmt.Errorf("Cloudflare user is not logged in")
+	}
+	return identity, nil
+}
+
+func ensureCloudflareIdentity(ctx context.Context, dir string, ioctx IO, noninteractive bool) (cloudflareIdentity, error) {
+	identity, err := readCloudflareIdentity(ctx, dir)
+	if err == nil {
+		return identity, nil
+	}
+	if noninteractive {
+		return cloudflareIdentity{}, setupStateError{State: "cloudflare_auth_required", Message: "run wrangler login in an interactive terminal"}
+	}
+	fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+	if err := runWranglerInteractive(ctx, dir, ioctx, "login"); err != nil {
+		return cloudflareIdentity{}, fmt.Errorf("Cloudflare login failed: %w", err)
+	}
+	identity, err = readCloudflareIdentity(ctx, dir)
+	if err != nil {
+		return cloudflareIdentity{}, fmt.Errorf("Cloudflare login could not be verified: %w", err)
 	}
 	return identity, nil
 }

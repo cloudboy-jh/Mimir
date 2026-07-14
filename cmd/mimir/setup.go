@@ -146,7 +146,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err != nil {
 		return err
 	}
-	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
+	if err := ensureWorkerDependencies(ctx, dir); err != nil {
 		return fmt.Errorf("installing Worker dependencies: %w", err)
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
@@ -397,7 +397,36 @@ func materializeWorker(source string) (string, error) {
 	return target, nil
 }
 
+func ensureWorkerDependencies(ctx context.Context, dir string) error {
+	hash, err := workerDependencyHash(dir)
+	if err != nil {
+		return err
+	}
+	markerPath := filepath.Join(dir, ".mimir-dependencies")
+	marker, _ := os.ReadFile(markerPath)
+	wranglerReady := pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler")) || pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler.cmd"))
+	if wranglerReady && strings.TrimSpace(string(marker)) == hash {
+		return nil
+	}
+	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
+		return err
+	}
+	return os.WriteFile(markerPath, []byte(hash+"\n"), 0o600)
+}
+
+func workerDependencyHash(dir string) (string, error) {
+	lock, err := os.ReadFile(filepath.Join(dir, "package-lock.json"))
+	if err != nil {
+		return "", fmt.Errorf("reading Worker package lock: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(lock)), nil
+}
+
 func runWrangler(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
+	local := filepath.Join(dir, "node_modules", ".bin", "wrangler")
+	if pathExists(local) {
+		return runCommand(ctx, dir, stdin, local, args...)
+	}
 	return runCommand(ctx, dir, stdin, "npx", append([]string{"wrangler"}, args...)...)
 }
 
@@ -437,7 +466,11 @@ func promptSecret(ioctx IO, label string) (string, error) {
 }
 
 func runWranglerInteractive(ctx context.Context, dir string, ioctx IO, args ...string) error {
-	cmd := exec.CommandContext(ctx, "npx", append([]string{"wrangler"}, args...)...)
+	name, commandArgs := filepath.Join(dir, "node_modules", ".bin", "wrangler"), args
+	if !pathExists(name) {
+		name, commandArgs = "npx", append([]string{"wrangler"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, name, commandArgs...)
 	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, ioctx.In, ioctx.Out, ioctx.Err
 	return cmd.Run()
 }

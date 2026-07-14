@@ -63,6 +63,28 @@ func TestMaterializeWorker(t *testing.T) {
 	}
 }
 
+func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "package-lock.json")
+	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := workerDependencyHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3,"packages":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := workerDependencyHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("dependency hash did not change with package lock")
+	}
+}
+
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
