@@ -13,7 +13,7 @@ import (
 	mimirassets "github.com/cloudboy-jh/mimir"
 )
 
-const setupLogoWidth = 88
+const setupLogoWidth = 64
 
 func printSetupBanner(out io.Writer) {
 	file, ok := out.(*os.File)
@@ -80,7 +80,7 @@ func terminalImageProtocol() string {
 	switch {
 	case os.Getenv("KITTY_WINDOW_ID") != "", strings.Contains(program, "ghostty"), strings.Contains(program, "wezterm"), strings.Contains(term, "kitty"):
 		return "kitty"
-	case strings.Contains(program, "iterm"), os.Getenv("LC_TERMINAL") == "iTerm2":
+	case strings.Contains(program, "iterm"), strings.Contains(program, "warp"), os.Getenv("LC_TERMINAL") == "iTerm2":
 		return "iterm"
 	default:
 		return ""

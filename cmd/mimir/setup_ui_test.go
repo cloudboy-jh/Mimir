@@ -33,3 +33,13 @@ func TestWriteANSIImage(t *testing.T) {
 		t.Fatal("ANSI image has no true-color pixels")
 	}
 }
+
+func TestWarpUsesITermImageProtocol(t *testing.T) {
+	t.Setenv("TERM_PROGRAM", "WarpTerminal")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("KITTY_WINDOW_ID", "")
+	t.Setenv("LC_TERMINAL", "")
+	if got := terminalImageProtocol(); got != "iterm" {
+		t.Fatalf("terminalImageProtocol() = %q, want iterm", got)
+	}
+}
