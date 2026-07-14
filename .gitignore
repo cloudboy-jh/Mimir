@@ -7,3 +7,5 @@ coverage/
 *.out
 *.log
 .DS_Store
+worker/node_modules/
+worker/.wrangler/

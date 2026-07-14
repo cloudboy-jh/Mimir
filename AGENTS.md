@@ -1,121 +1,28 @@
 # AGENTS.md
 
-Operating manual for any coding agent **using** Mimir or working **on** this repo.
+Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies OpenRouter-compatible requests, writes full redacted exchanges to R2, and indexes sessions/configuration in D1.
 
----
+## Repository
 
-## Product vs skill
+- Worker: `worker/` TypeScript with Hono and Wrangler.
+- CLI/MCP: `cmd/mimir/` Go, standard library only.
+- Local code memory remains `<repo>/.mimir/index.json`.
+- Sessions are remote D1 records. Do not add Git-backed session sync or session markdown.
+- Raw exchanges belong in R2. Searchable metadata and R2 references belong in D1.
 
-| | |
-|---|---|
-| **Use Mimir** | Install the skill. Do **not** clone this repo. |
-| **Hack on Mimir** | Clone this repo (contributors only). |
-
-Canonical skill install:
-
-```bash
-npx skills add cloudboy-jh/Mimir@mimir -g -y
-```
-
-Source of the skill: `skills/mimir/SKILL.md` in this repo (for packaging only).
-
-Knowledge + procedure land in the agent, not a second app checkout in the user’s projects.
-
----
-
-## What Mimir is
-
-Hermes remembers the **developer**.
-Mimir remembers the **repo** and the **session**.
-
-| plane | path | job |
-|---|---|---|
-| control | `~/.mimir/` | `config.toml` + `mimir.log` |
-| session | `~/.mimir/sessions/` | markdown work log, private git sync |
-| code | `<repo>/.mimir/` | index + recall (optional binary / MCP) |
-
-Session push/pull does **not** depend on code index or `mimir serve`.
-
----
-
-## Install path (agents)
-
-### 1. Skill (always)
+## Commands
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -g -y
+cd worker && npm install && npm run typecheck
+cd worker && npx wrangler deploy --dry-run
+go test ./...
+go build -o /tmp/mimir ./cmd/mimir
 ```
 
-Reload harness if skills are loaded only at session start. PromptScript has no global scope; install it project-scoped: `npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y`.
+## Constraints
 
-### 2. Control + session
-
-```bash
-mimir control init
-mimir session init
-```
-
-If the binary is missing, do the same with `gh` + `git` per the skill (private `login/mimir-sessions`, config under `~/.mimir/`). **Do not** ask the user to paste session remotes when `gh` works.
-
-### 3. Code binary (only if index/recall/MCP needed)
-
-```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-```
-
-Then per repo: `mimir index --full` · MCP `mimir serve` on the active harness only.
-
----
-
-## User speak (daily)
-
-| User says | You do |
-|---|---|
-| install / enable Mimir | skill add → control init → session init (binary only if code memory wanted) |
-| save / checkpoint | session push + `◆ mimir` receipt |
-| continue on machine X | session pull + open matching md |
-| what do we know about Y | `mimir recall` / MCP |
-| mid-coding structure | MCP quietly |
-
-### Do not
-
-- Clone `Mimir` just so the user can run agents with memory
-- Web-search for random install blogs when the skill exists
-- Ask for session APIs/URLs when `gh` is signed in
-- Ask for hostname / harness / project when environment has them
-
-### Only ask when
-
-- No `gh` auth and sessions cannot be created safely
-- Multi-account ambiguity (one short choice)
-- Explicit custom session remote
-
----
-
-## Receipts
-
-```text
-◆ mimir  <plane>.<verb>  <subject>
-         <optional meaning>
-         <ok|warn|fail> · <metric>
-```
-
-Fail: reason + `log: ~/.mimir/mimir.log`. Never dump `index.json`.
-
----
-
-## Working on this repository
-
-```bash
-go test ./cmd/mimir
-go build -o mimir ./cmd/mimir
-```
-
-- Module: `github.com/cloudboy-jh/mimir`
-- CLI main: `./cmd/mimir`
-- Spec: `spec.md`
-- Skill published from: `skills/mimir/SKILL.md`
-
-Design constraints: agent-primary, stdlib-first, no TUI/SaaS/telemetry for core, no Chiron brand, sessions never under project `.mimir/`.
-
-When behavior changes: update `spec.md`, this file, and `skills/mimir/SKILL.md`. Keep README skill-first.
+- The Worker HTTP API is canonical; CLI and MCP delegate to it.
+- `x-mimir-session` is the authoritative session boundary.
+- Redact before writing to R2.
+- Preserve upstream streaming and persist with `waitUntil`.
+- No UI, SaaS backend, multi-user tenancy, or code-index migration to D1.

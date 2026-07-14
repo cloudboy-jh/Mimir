@@ -2,81 +2,67 @@
 
 ![Mimir](./mimir-readme.png)
 
-Agent-driven repository and session memory.
-
-Mimir acts as local infrastructure for software development agents, providing structured session backups and zero-bloat repository indexing.
-
----
-
-## How it Works
-
-| Dimension | Scope | Backing Storage | Sync Channel |
-| :--- | :--- | :--- | :--- |
-| **Session** | Narrative work context (Goals, Progress, Meta) | `~/.mimir/sessions/sessions/` | Private Git (`mimir-sessions`) |
-| **Repo** | Code syntax index (Symbols, Imports, Dependencies) | `<repo>/.mimir/` | Local / Gitignored |
-
----
-
-## Daily UX
-
-Your agent handles all Mimir operations in natural language inside chat.
-
-*   **Set up Mimir** -> Initializes configuration and hooks your private sync repo.
-*   **Save progress** -> Writes the active work narrative and commits it to your private git.
-*   **Continue yesterday** -> Pulls latest sessions and restores the open context.
-*   **Index this repo** -> Compiles local codebase charts for prompt-free symbol lookup.
-*   **Recall <query>** -> Queries local symbol signatures instantly.
-
----
-
-## Install (Agent-driven)
-
-Paste this directly to your agent to install and wire Mimir:
+Mimir is a self-hosted memory plane for developer agents.
 
 ```text
-Install and wire Mimir for me.
-
-1. Install the core skill (not a product clone):
-   npx skills add cloudboy-jh/Mimir@mimir -g -y
-2. Load skill and execute bootstrap: control init -> session init.
-3. Automatically configure private sync under your authenticated GitHub (login/mimir-sessions).
-4. Print a ◆ mimir control.init receipt and run status/doctor.
+harness → Mimir Worker → OpenRouter
+              ├─ D1: sessions, searchable metadata, config
+              └─ R2: full redacted request/response archive
 ```
 
-If you prefer custom scoping, install the skill locally:
+The Go binary is a client and local code indexer. The Worker is the product.
+
+## Setup
+
+Install the CLI, then provision and connect a deployment:
 
 ```bash
-npx skills add cloudboy-jh/Mimir@mimir -a promptscript -y
+go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
+mimir setup --quick
 ```
 
-Installing the skill is sufficient for session sync (Git + GitHub). Go CLI indexing binary is optional:
-```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest   # ensure $(go env GOPATH)/bin is on PATH
-```
+It materializes its versioned Worker package under `~/.mimir/worker`, authenticates through Wrangler, provisions D1 and R2, applies migrations, prompts for the OpenRouter key, deploys the Worker, writes `~/.mimir/config`, and verifies `/whoami`. Use `--minimal` to deploy with persistence disabled, or pass `--worker-dir` to use a local Worker checkout.
 
----
-
-## Receipts (Locked UX)
-
-Every action logs a thin, standardized receipt in terminal chat:
-
-```text
-◆ mimir  session.push  workstation-a-hermes-core-v2
-         goal: split adapters
-         ok · abc1234
-```
-
-Durable traces are recorded in `~/.mimir/mimir.log`. Core index binaries do not leak telemetry.
-
----
-
-## Contributor Manual
-
-To hack on the Mimir Go CLI engine directly:
+Connect another machine to the same deployment through the owning Cloudflare account:
 
 ```bash
-git clone https://github.com/cloudboy-jh/mimir.git
-cd mimir
-go test ./cmd/mimir/...
-go build -o mimir ./cmd/mimir
+go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
+mimir login
 ```
+
+Each machine receives an independent token. Only its SHA-256 hash is stored in D1, so connecting another machine does not invalidate existing machines.
+
+## Components
+
+- `worker/`: Hono Worker, OpenRouter-compatible proxy, HTTP API, D1/R2 persistence.
+- `cmd/mimir/`: Go CLI and MCP client, plus the retained local code indexer.
+- `skills/mimir-setup/`: deployment procedure.
+- `skills/mimir-use/`: agent operating procedure.
+
+## Development
+
+```bash
+cd worker
+npm install
+npm run typecheck
+npx wrangler deploy --dry-run
+
+go test ./...
+go build -o /tmp/mimir ./cmd/mimir
+```
+
+## API
+
+All endpoints accept `Authorization: Bearer <machine-token>`. Anthropic-compatible clients may send the same token through `x-api-key`.
+
+- `POST /v1/chat/completions`
+- `POST /v1/messages`
+- `GET /whoami`
+- `GET /sessions`
+- `GET /sessions/:id`
+- `POST /sessions/:id/mark`
+- `POST /sessions/:id/outcome`
+- `GET /log/:key`
+- `POST /search`
+- `GET /config`
+- `PUT /config`
