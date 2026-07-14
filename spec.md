@@ -130,10 +130,34 @@ CREATE TABLE sessions (
   request_count INTEGER DEFAULT 0,
   tokens_in     INTEGER DEFAULT 0,
   tokens_out    INTEGER DEFAULT 0,
-  files         TEXT,                    -- json array, derived
-  errors        TEXT,                    -- json array of signatures, derived
-  intent        TEXT,                    -- short annotation, optional
-  log_refs      TEXT NOT NULL            -- json array of R2 keys
+  intent        TEXT                     -- short annotation, optional
+);
+
+CREATE TABLE exchanges (
+  id               TEXT PRIMARY KEY,
+  session_id       TEXT NOT NULL REFERENCES sessions(id),
+  ts               TEXT NOT NULL,
+  endpoint         TEXT NOT NULL,
+  model            TEXT,
+  request_excerpt  TEXT NOT NULL,
+  response_excerpt TEXT NOT NULL,
+  usage_json       TEXT NOT NULL,
+  latency_ms       INTEGER NOT NULL,
+  repo             TEXT,
+  harness          TEXT,
+  r2_key           TEXT NOT NULL
+);
+
+CREATE TABLE session_files (
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  file       TEXT NOT NULL,
+  PRIMARY KEY (session_id, file)
+);
+
+CREATE TABLE session_errors (
+  session_id TEXT NOT NULL REFERENCES sessions(id),
+  signature  TEXT NOT NULL,
+  PRIMARY KEY (session_id, signature)
 );
 
 CREATE TABLE config (
@@ -218,11 +242,16 @@ session.abandon_days  7
 Default posture: save everything, filter by exception. It's the user's
 bucket and their bill; storage is ~free.
 
-Local `~/.mimir/config` is a pointer only:
+Local state is a deployment pointer plus an isolated machine credential:
 
 ```toml
+# ~/.mimir/config
 url   = "https://mimir.<user>.workers.dev"
-token = "…"
+```
+
+```text
+# ~/.mimir/token (mode 0600)
+<machine token>
 ```
 
 Tokens are independent per machine and D1 stores only their SHA-256 hashes.

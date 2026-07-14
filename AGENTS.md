@@ -13,7 +13,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 ## Commands
 
 ```bash
-cd worker && npm install && npm run typecheck
+cd worker && npm install && npm test && npm run typecheck
 cd worker && npx wrangler deploy --dry-run
 go test ./...
 go build -o /tmp/mimir ./cmd/mimir

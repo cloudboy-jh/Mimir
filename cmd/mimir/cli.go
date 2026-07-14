@@ -155,14 +155,14 @@ func usage(out io.Writer) error {
 	_, err := fmt.Fprintln(out, `mimir remembers
 
 Usage:
-  mimir setup [--quick|--full|--minimal]
-	  mimir login
+  mimir setup [--quick|--minimal] [--json]
+  mimir login [--json]
   mimir whoami
   mimir sessions
   mimir session <id>
   mimir search <query>
   mimir mark <session> <outcome>
-	  mimir outcome git <session>
+  mimir outcome git <session>
   mimir config get
   mimir config set <key> <json-value>
   mimir index [--full]

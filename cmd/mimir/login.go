@@ -9,9 +9,12 @@ import (
 )
 
 func login(ctx context.Context, args []string, ioctx IO) error {
-	printSetupBanner(ioctx.Out)
 	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--json" {
+			opts.JSON = true
+			continue
+		}
 		if i+1 >= len(args) {
 			return fmt.Errorf("%s requires a value", args[i])
 		}
@@ -29,6 +32,9 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		}
 		i++
 	}
+	if !opts.JSON {
+		printSetupBanner(ioctx.Out)
+	}
 	dir, err := workerDir(opts.WorkerDir)
 	if err != nil {
 		return err
@@ -40,16 +46,18 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
 		return err
 	}
-	if err := ensureCloudflareAuth(ctx, dir, ioctx); err != nil {
+	setupStep(ioctx.Out, opts.JSON, "Worker package ready")
+	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON); err != nil {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "Cloudflare authenticated")
 	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
 	if err != nil {
 		return err
 	}
 	opts.DatabaseID = listedDatabaseID(output, opts.DatabaseName)
 	if opts.DatabaseID == "" {
-		return fmt.Errorf("no Mimir deployment found in this Cloudflare account")
+		return setupStateError{State: "deployment_missing", Message: "no Mimir deployment found in this Cloudflare account"}
 	}
 	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
 		return err
@@ -57,6 +65,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "Existing deployment found")
 	url := strings.TrimRight(opts.URL, "/")
 	if url == "" {
 		url, err = deploymentURL(ctx, dir, opts.DatabaseName)
@@ -65,7 +74,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		}
 	}
 	if url == "" {
-		return fmt.Errorf("deployment URL is missing; run mimir login --url <worker-url>")
+		return setupStateError{State: "deployment_url_missing", Message: "run mimir login --url <worker-url>"}
 	}
 	token, err := randomToken()
 	if err != nil {
@@ -74,14 +83,15 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	if err := registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "This machine registered")
 	if err := savePointer(Pointer{URL: url, Token: token}); err != nil {
 		return err
 	}
 	if err := verifyDeployment(ctx); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(ioctx.Out, "Connected this machine to %s\n", url)
-	return err
+	setupStep(ioctx.Out, opts.JSON, "Connection verified")
+	return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "connected", "url": url}, fmt.Sprintf("Connected this machine to %s", url))
 }
 
 func deploymentURL(ctx context.Context, dir, database string) (string, error) {

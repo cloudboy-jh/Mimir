@@ -1,25 +1,27 @@
 ---
 name: mimir-setup
-description: Deploy and connect the self-hosted Mimir Worker memory plane on the user's Cloudflare account.
+description: Set up or reconnect the self-hosted Mimir Cloudflare memory plane and wire the active OpenCode or Claude Code harness. Use when the user explicitly asks to install, set up, connect, or log in to Mimir.
 ---
 
 # Mimir Setup
 
-Mimir is a self-hosted Cloudflare Worker. Its Worker proxies model traffic to OpenRouter, stores full redacted exchanges in R2, and indexes sessions/configuration in D1.
+Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in chat and never print `~/.mimir/token`.
 
-## Setup
+## Procedure
 
-1. Install the CLI and run:
+1. Check for the CLI with `command -v mimir`. If absent and Go is available, run `go install github.com/cloudboy-jh/mimir/cmd/mimir@latest` and use `$(go env GOPATH)/bin/mimir` if PATH has not refreshed.
+2. Run `mimir whoami`.
+3. If connected, skip login.
+4. If disconnected, run `mimir login --json`.
+5. If it returns `cloudflare_auth_required`, tell the user Cloudflare browser approval is required and run `mimir login` in the interactive terminal.
+6. If it returns `deployment_missing`, this is the first machine. Run `mimir setup --json` only when `OPENROUTER_API_KEY` already exists in the process environment.
+7. If setup returns `openrouter_key_required`, tell the user to run `mimir setup` in their terminal and enter the key at the masked prompt. Do not request or transfer the key through chat.
+8. Once `mimir whoami` succeeds, wire only the active harness using the matching reference below.
+9. Run `mimir whoami` through the configured MCP server and report whether session boundaries are exact or heuristic.
 
-```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-mimir setup --quick
-```
+## Harness References
 
-2. Enter the OpenRouter key only at the interactive prompt. Never put it in a command argument or config file.
-3. `mimir setup` authenticates with Wrangler, creates D1/R2, applies migrations, generates the Mimir bearer token, deploys the Worker, writes the local pointer, and verifies `/whoami`.
-4. Use `mimir setup --minimal` for a proxy with `save.enabled=false`. Use `--full` with explicit resource-name flags where required.
+- OpenCode: [`references/opencode.md`](references/opencode.md)
+- Claude Code: [`references/claude-code.md`](references/claude-code.md)
 
-On an additional machine, run `mimir login`. Wrangler authenticates ownership of the existing Cloudflare deployment and Mimir creates an independent machine token without requesting the OpenRouter key again.
-
-Do not create Git session repositories or local session markdown. The deployment owns sessions.
+Do not create Git session repositories, session Markdown, Mimir accounts, or alternate storage. Do not claim unsupported harnesses are wired.

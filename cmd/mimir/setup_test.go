@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +19,15 @@ func TestListedDatabaseID(t *testing.T) {
 	got := listedDatabaseID(`[{"uuid":"123e4567-e89b-12d3-a456-426614174000","name":"mimir"}]`, "mimir")
 	if got != "123e4567-e89b-12d3-a456-426614174000" {
 		t.Fatalf("database ID %q", got)
+	}
+}
+
+func TestListedSecret(t *testing.T) {
+	if !listedSecret(`[{"name":"OPENROUTER_API_KEY","type":"secret_text"}]`, "OPENROUTER_API_KEY") {
+		t.Fatal("secret not found")
+	}
+	if listedSecret(`[]`, "OPENROUTER_API_KEY") {
+		t.Fatal("missing secret found")
 	}
 }
 
@@ -45,5 +56,42 @@ func TestMaterializeWorker(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(target, "src", "index.ts")) {
 		t.Fatal("worker source was not materialized")
+	}
+}
+
+func TestConnectExistingEndpointJSON(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
+	t.Setenv("MIMIR_TOKEN", "machine-token")
+	var output bytes.Buffer
+	if err := setup(context.Background(), []string{"--url", "https://mimir.example.workers.dev", "--json"}, IO{In: bytes.NewBuffer(nil), Out: &output, Err: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "{\"state\":\"connected\",\"url\":\"https://mimir.example.workers.dev\"}\n" {
+		t.Fatalf("output %q", got)
+	}
+	pointer, err := loadPointer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pointer.Token != "machine-token" {
+		t.Fatal("machine token was not persisted")
+	}
+	configPath, _ := pointerPath()
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(config, []byte("machine-token")) {
+		t.Fatal("token leaked into pointer config")
+	}
+}
+
+func TestConnectExistingEndpointJSONNeedsToken(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
+	t.Setenv("MIMIR_TOKEN", "")
+	err := setup(context.Background(), []string{"--url", "https://mimir.example.workers.dev", "--json"}, IO{In: bytes.NewBuffer(nil), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	state, ok := err.(setupStateError)
+	if !ok || state.State != "mimir_token_required" {
+		t.Fatalf("error %#v", err)
 	}
 }

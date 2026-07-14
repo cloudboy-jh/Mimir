@@ -28,10 +28,20 @@ type setupOptions struct {
 	DatabaseID    string
 	BucketName    string
 	OpenRouterKey string
+	JSON          bool
+}
+
+type setupStateError struct {
+	State   string `json:"state"`
+	Message string `json:"message"`
+}
+
+func (e setupStateError) Error() string {
+	data, _ := json.Marshal(e)
+	return string(data)
 }
 
 func setup(ctx context.Context, args []string, ioctx IO) error {
-	printSetupBanner(ioctx.Out)
 	opts := setupOptions{Mode: "quick", WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
 	for i := 0; i < len(args); i++ {
 		value := func() (string, error) {
@@ -42,8 +52,10 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 			return args[i], nil
 		}
 		switch args[i] {
-		case "--quick", "--full", "--minimal":
+		case "--quick", "--minimal":
 			opts.Mode = strings.TrimPrefix(args[i], "--")
+		case "--json":
+			opts.JSON = true
 		case "--url":
 			var err error
 			opts.URL, err = value()
@@ -51,11 +63,7 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 				return err
 			}
 		case "--token":
-			var err error
-			opts.Token, err = value()
-			if err != nil {
-				return err
-			}
+			return fmt.Errorf("do not pass Mimir tokens as command arguments; use MIMIR_TOKEN or the secure prompt")
 		case "--worker-dir":
 			var err error
 			opts.WorkerDir, err = value()
@@ -92,11 +100,25 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 			return fmt.Errorf("unknown setup option %q", args[i])
 		}
 	}
-	if opts.URL != "" || opts.Token != "" {
-		if opts.URL == "" || opts.Token == "" {
-			return fmt.Errorf("--url and --token must be supplied together")
+	if !opts.JSON {
+		printSetupBanner(ioctx.Out)
+	}
+	if opts.URL != "" {
+		opts.Token = strings.TrimSpace(os.Getenv("MIMIR_TOKEN"))
+		if opts.Token == "" && opts.JSON {
+			return setupStateError{State: "mimir_token_required", Message: "set MIMIR_TOKEN to connect an existing endpoint"}
 		}
-		return connectPointer(ioctx.Out, opts.URL, opts.Token)
+		if opts.Token == "" {
+			var err error
+			opts.Token, err = promptSecret(ioctx, "Mimir token: ")
+			if err != nil {
+				return err
+			}
+		}
+		if err := savePointer(Pointer{URL: strings.TrimRight(opts.URL, "/"), Token: opts.Token}); err != nil {
+			return err
+		}
+		return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/")}, "Mimir connected.")
 	}
 	return provision(ctx, opts, ioctx)
 }
@@ -113,9 +135,11 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
 		return fmt.Errorf("installing Worker dependencies: %w", err)
 	}
-	if err := ensureCloudflareAuth(ctx, dir, ioctx); err != nil {
+	setupStep(ioctx.Out, opts.JSON, "Worker package ready")
+	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON); err != nil {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "Cloudflare authenticated")
 	if opts.DatabaseID == "" {
 		output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
 		if err != nil {
@@ -133,14 +157,35 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 			return fmt.Errorf("could not read the D1 database ID; retry with --database-id")
 		}
 	}
+	setupStep(ioctx.Out, opts.JSON, "D1 session index ready")
 	if _, err := runWrangler(ctx, dir, nil, "r2", "bucket", "create", opts.BucketName); err != nil && !alreadyExists(err.Error()) {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "R2 exchange archive ready")
 	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
 		return err
 	}
 	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
 		return err
+	}
+	setupStep(ioctx.Out, opts.JSON, "Database schema current")
+	key := opts.OpenRouterKey
+	if key == "" {
+		key = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+	}
+	secretOutput, secretErr := runWrangler(ctx, dir, nil, "secret", "list", "--format", "json")
+	secretReady := secretErr == nil && listedSecret(secretOutput, "OPENROUTER_API_KEY")
+	if key == "" && !secretReady {
+		if opts.JSON {
+			return setupStateError{State: "openrouter_key_required", Message: "set OPENROUTER_API_KEY and rerun setup"}
+		}
+		key, err = promptSecret(ioctx, "OpenRouter API key: ")
+		if err != nil {
+			return err
+		}
+	}
+	if key == "" && !secretReady {
+		return fmt.Errorf("OpenRouter API key is required")
 	}
 	token, err := randomToken()
 	if err != nil {
@@ -149,26 +194,18 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
 		return err
 	}
-	key := opts.OpenRouterKey
-	if key == "" {
-		key = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
-	}
-	if key == "" {
-		key, err = promptSecret(ioctx, "OpenRouter API key: ")
-		if err != nil {
+	setupStep(ioctx.Out, opts.JSON, "This machine registered")
+	if key != "" {
+		if _, err := runWrangler(ctx, dir, strings.NewReader(key), "secret", "put", "OPENROUTER_API_KEY"); err != nil {
 			return err
 		}
 	}
-	if key == "" {
-		return fmt.Errorf("OpenRouter API key is required")
-	}
-	if _, err := runWrangler(ctx, dir, strings.NewReader(key), "secret", "put", "OPENROUTER_API_KEY"); err != nil {
-		return err
-	}
+	setupStep(ioctx.Out, opts.JSON, "OpenRouter credential ready")
 	output, err := runWrangler(ctx, dir, nil, "deploy")
 	if err != nil {
 		return err
 	}
+	setupStep(ioctx.Out, opts.JSON, "Worker deployed")
 	url := workerURL(output)
 	if url == "" {
 		return fmt.Errorf("deployment succeeded but its workers.dev URL was not found; reconnect with mimir setup --url <url> --token <token>")
@@ -187,13 +224,16 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := verifyDeployment(ctx); err != nil {
 		return fmt.Errorf("Worker deployed but whoami verification failed: %w", err)
 	}
-	_, err = fmt.Fprintln(ioctx.Out, "Mimir connected, deployed, and verified.")
-	return err
+	setupStep(ioctx.Out, opts.JSON, "Deployment verified")
+	return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": opts.Mode != "minimal"}, "Mimir connected, deployed, and verified.")
 }
 
-func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO) error {
+func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO, noninteractive bool) error {
 	if _, err := runWrangler(ctx, dir, nil, "whoami"); err == nil {
 		return nil
+	}
+	if noninteractive {
+		return setupStateError{State: "cloudflare_auth_required", Message: "run wrangler login in an interactive terminal"}
 	}
 	fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
 	if err := runWranglerInteractive(ctx, dir, ioctx, "login"); err != nil {
@@ -203,6 +243,25 @@ func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO) error {
 		return fmt.Errorf("Cloudflare login could not be verified: %w", err)
 	}
 	return nil
+}
+
+func writeSetupResult(out io.Writer, jsonOutput bool, result map[string]any, human string) error {
+	if jsonOutput {
+		data, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, string(data))
+		return err
+	}
+	_, err := fmt.Fprintln(out, human)
+	return err
+}
+
+func setupStep(out io.Writer, jsonOutput bool, label string) {
+	if !jsonOutput {
+		fmt.Fprintf(out, "\x1b[38;5;116m✓\x1b[0m %s\n", label)
+	}
 }
 
 func registerMachineToken(ctx context.Context, dir, database, token string) error {
@@ -241,14 +300,6 @@ func verifyDeployment(ctx context.Context) error {
 		}
 	}
 	return last
-}
-
-func connectPointer(out io.Writer, url, token string) error {
-	if err := savePointer(Pointer{URL: strings.TrimRight(url, "/"), Token: token}); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintln(out, "Mimir connected.")
-	return err
 }
 
 func workerDir(explicit string) (string, error) {
@@ -417,6 +468,20 @@ func listedDatabaseID(output, name string) string {
 		}
 	}
 	return ""
+}
+func listedSecret(output, name string) bool {
+	var secrets []struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal([]byte(output), &secrets) != nil {
+		return false
+	}
+	for _, secret := range secrets {
+		if secret.Name == name {
+			return true
+		}
+	}
+	return false
 }
 func workerURL(output string) string {
 	return regexp.MustCompile(`https://[a-z0-9.-]+\.workers\.dev`).FindString(strings.ToLower(output))

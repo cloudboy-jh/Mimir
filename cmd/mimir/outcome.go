@@ -13,8 +13,8 @@ type remoteSession struct {
 		ID        string `json:"id"`
 		StartedAt string `json:"started_at"`
 		SourceRef string `json:"source_ref"`
-		Files     string `json:"files"`
 	} `json:"session"`
+	Files []string `json:"files"`
 }
 
 // markGitOutcome only applies evidence visible in the current checkout. The
@@ -31,8 +31,6 @@ func markGitOutcome(ctx context.Context, id string) ([]byte, error) {
 	if remote.Session.ID == "" {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
-	var files []string
-	_ = json.Unmarshal([]byte(remote.Session.Files), &files)
 	started, err := time.Parse(time.RFC3339, remote.Session.StartedAt)
 	if err != nil {
 		return nil, fmt.Errorf("invalid session start time: %w", err)
@@ -44,7 +42,7 @@ func markGitOutcome(ctx context.Context, id string) ([]byte, error) {
 	outcome := "unknown"
 	for _, commit := range strings.Fields(commits) {
 		changed, err := runGit(ctx, ".", "show", "--format=", "--name-only", commit)
-		if err != nil || !overlaps(files, strings.Fields(changed)) {
+		if err != nil || !overlaps(remote.Files, strings.Fields(changed)) {
 			continue
 		}
 		branches, err := runGit(ctx, ".", "branch", "-r", "--contains", commit)

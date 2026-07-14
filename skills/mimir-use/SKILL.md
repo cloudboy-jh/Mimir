@@ -11,7 +11,7 @@ Before work, search prior attempts by problem, affected files, errors, or reposi
 mimir search "query"
 ```
 
-Set these headers on model requests routed through Mimir:
+Harness setup is responsible for transport headers. Do not claim a skill can inject them by itself:
 
 ```text
 x-mimir-session: <stable-session-id>
@@ -20,7 +20,7 @@ x-mimir-harness: <harness-name>
 x-mimir-git-ref: <branch-at-session-start>
 ```
 
-The session header is authoritative. Without it, Mimir groups requests heuristically by repository and time gap.
+The session header is authoritative. OpenCode's Mimir plugin injects it dynamically. Harnesses without a dynamic inference-header hook are grouped heuristically by repository and time gap.
 
 After work, mark the outcome:
 

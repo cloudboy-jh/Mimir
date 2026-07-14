@@ -22,6 +22,8 @@ jobs:
         working-directory: worker
       - run: npm run typecheck
         working-directory: worker
+      - run: npm test
+        working-directory: worker
       - run: npx wrangler deploy --dry-run
         working-directory: worker
       - run: go test ./...

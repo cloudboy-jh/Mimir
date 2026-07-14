@@ -25,6 +25,14 @@ func pointerPath() (string, error) {
 	return filepath.Join(home, ".mimir", "config"), nil
 }
 
+func tokenPath() (string, error) {
+	path, err := pointerPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), "token"), nil
+}
+
 func loadPointer() (Pointer, error) {
 	path, err := pointerPath()
 	if err != nil {
@@ -47,10 +55,17 @@ func loadPointer() (Pointer, error) {
 		switch strings.TrimSpace(key) {
 		case "url":
 			p.URL = strings.TrimRight(value, "/")
-		case "token":
-			p.Token = value
 		}
 	}
+	tokenFile, err := tokenPath()
+	if err != nil {
+		return Pointer{}, err
+	}
+	token, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return Pointer{}, fmt.Errorf("Mimir machine token is missing; run mimir login")
+	}
+	p.Token = strings.TrimSpace(string(token))
 	if p.URL == "" || p.Token == "" {
 		return Pointer{}, fmt.Errorf("invalid Mimir pointer config: url and token are required")
 	}
@@ -68,6 +83,13 @@ func savePointer(p Pointer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("url = %q\ntoken = %q\n", strings.TrimRight(p.URL, "/"), p.Token)
-	return os.WriteFile(path, []byte(body), 0o600)
+	body := fmt.Sprintf("url = %q\n", strings.TrimRight(p.URL, "/"))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return err
+	}
+	tokenFile, err := tokenPath()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(tokenFile, []byte(p.Token+"\n"), 0o600)
 }
