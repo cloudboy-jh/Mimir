@@ -2,138 +2,112 @@
 
 ![Mimir](./mimir-readme.png)
 
-**Your coding agents forget everything. Mimir remembers.**
+## Your agents should remember
 
-Mimir is a personal memory plane for developer agents. It runs in your own
-Cloudflare account, sits between your agent harness and OpenRouter, and records
-redacted model exchanges without interrupting the upstream stream.
+Coding agents lose the useful parts of yesterday's work: approaches that
+failed, errors already diagnosed, files that mattered, and fixes that actually
+shipped.
 
-There is no Mimir account, hosted backend, team workspace, or routine workflow
-to manage. Set it up once and keep working in your agent harness.
+Mimir gives them memory.
+
+It captures redacted model exchanges through an OpenRouter-compatible proxy,
+organizes them into searchable sessions, and exposes that memory back to agents
+through MCP. Everything runs in your Cloudflare account.
+
+No Mimir account. No hosted backend. No shared telemetry.
+
+## Stop repeating failed work
+
+Without Mimir:
 
 ```text
-Any OpenAI / Anthropic-compatible harness
-          |
-          v
-  +----------------+
-  |  Mimir Worker  |-------> OpenRouter
-  +-------+--------+
-          |
-     +----+----+
-     |         |
-     v         v
-    D1        R2
-  memory   redacted archive
+User: Fix the authentication regression.
+Agent: I'll replace the token validation path.
 ```
 
-## Set Up
+The agent repeats an approach that already failed in another session.
+
+With Mimir:
+
+```text
+Agent searches memory before changing authentication.
+
+Mimir finds:
+- a discarded attempt touching src/auth.ts
+- the same token-validation error
+- the files and model exchanges from that attempt
+
+Agent avoids the failed approach and continues from what was learned.
+```
+
+Memory access happens inside the agent workflow. The user does not search a
+database, manage transcripts, or operate Mimir between sessions.
+
+## Quick start
+
+Install the setup skill:
+
+```bash
+npx skills add cloudboy-jh/mimir
+```
+
+Then tell your agent:
+
+```text
+Set up Mimir for this harness.
+```
+
+The skill installs the CLI, provisions Mimir in your Cloudflare account, and
+connects the active harness using a standard OpenAI or Anthropic configuration.
+Secrets are entered locally and are never requested through chat.
 
 You need a Cloudflare account, an OpenRouter API key, Go, and Node.js with npm.
+
+To set it up directly instead:
 
 ```bash
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir setup
 ```
 
-Mimir will:
+On another machine, run `mimir login`. That is the complete human CLI workflow.
 
-- authenticate with Cloudflare;
-- provision D1 and R2 in your account;
-- store the OpenRouter key as a Worker secret;
-- deploy and verify the Worker;
-- produce a standard connection manifest for the active harness;
-- create a machine-specific credential.
+## How it works
 
-Setup shows one status indicator while it works and one summary when it is
-finished. The `mimir-setup` skill applies the returned OpenAI/Anthropic base
-URLs, credential-file path, MCP command, and optional telemetry headers to the
-active harness. Mimir does not contain per-harness backend code.
-
-## Connect Another Machine
-
-```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-mimir login
+```mermaid
+flowchart LR
+    H[Agent harness] -->|OpenAI or Anthropic| W[Mimir Worker]
+    W --> O[OpenRouter]
+    W -->|session metadata| D[(D1)]
+    W -->|redacted exchanges| R[(R2)]
+    H <-->|memory through MCP| M[Mimir client]
+    M <--> W
 ```
 
-Login discovers the existing deployment through your Cloudflare account,
-registers an independent credential for the new machine, and returns the same
-connection manifest. Existing machine credentials remain valid.
+For every completed model request, Mimir:
 
-That is the complete human workflow. Memory capture and retrieval happen in the
-background through the configured gateway and MCP server.
+1. preserves the upstream response stream;
+2. reconstructs and redacts a copy asynchronously;
+3. stores the full exchange in R2;
+4. stores searchable session metadata and the R2 reference in D1.
 
-## What Happens In The Background
+Harnesses may provide an exact session ID, repository, and harness name. When
+they do not, Mimir derives sessions from the telemetry stream using a short
+inactivity gap. Either way, capture works without a bespoke backend adapter.
 
-Each completed model request becomes one exchange:
+The connection contract is intentionally small: OpenAI and Anthropic base URLs,
+a local credential source, an MCP command, and optional telemetry headers. Any
+compatible harness can use it.
 
-1. Mimir authenticates the local machine credential.
-2. It replaces that credential with the OpenRouter Worker secret.
-3. The response stream continues directly to the harness.
-4. A second stream branch is reconstructed and redacted asynchronously.
-5. R2 receives the complete redacted exchange.
-6. D1 receives searchable metadata, usage, files, errors, and the R2 reference.
+## Your memory, in your account
 
-Agents search this memory through MCP when prior work is relevant. Users do not
-need to search, index, label, or manage sessions manually.
+Full redacted exchanges live in your R2 bucket. Searchable metadata lives in
+your D1 database. The OpenRouter key is an encrypted Worker secret. Each machine
+gets an independent credential, and only its SHA-256 hash is stored remotely.
 
-## Session Lifecycle
+Mimir is built for personal scale: one developer, one Cloudflare deployment,
+direct writes, and permanent memory. There is no tenancy layer, dashboard,
+retention service, queue, or SaaS control plane.
 
-A Mimir session is derived from proxy telemetry.
-
-- Harnesses may send `x-mimir-session` for exact conversation identity.
-- Harnesses that cannot send it work without an adapter; Mimir groups their
-  traffic using optional repository/harness metadata and a 15-minute gap.
-- Inactive sessions are identified from the log when memory is queried or new
-  traffic arrives.
-- Resuming an exact session ID reactivates the same Mimir session.
-- Outcomes remain `unknown` until Git or an agent has evidence otherwise.
-
-Every completed exchange is persisted immediately and retained indefinitely.
-There is no retention policy, compaction service, queue, or shared storage
-system. This is deliberately optimized for one developer per deployment.
-
-## Ownership And Security
-
-| Data | Location |
-| --- | --- |
-| Full redacted exchanges | Your R2 bucket |
-| Sessions and searchable metadata | Your D1 database |
-| OpenRouter credential | Encrypted Worker secret |
-| Machine credential | `~/.mimir/token`, mode `0600` |
-| Worker URL | `~/.mimir/config` |
-| Repository code index | `<repo>/.mimir/index.json` |
-
-Machine credentials are independent and only their SHA-256 hashes are stored in
-D1. Built-in redaction covers common keys, bearer credentials, tokens,
-passwords, and secrets before anything is written to R2.
-
-At personal scale, direct writes are intentionally boring. One model request
-produces one R2 object and one D1 batch. R2 includes one million writes and 10 GB
-of storage per month before usage charges; no batching infrastructure is needed.
-
-## Scope
-
-- Personal, single-developer deployments
-- Cloudflare Workers, D1, and R2
-- OpenRouter as the model gateway
-- Any OpenAI- or Anthropic-compatible harness
-- Permanent raw memory in the user's account
-- No hosted service, tenancy, dashboard, or normal post-setup CLI workflow
-
-See [`spec.md`](spec.md) for the full design and
-[`next-steps.md`](next-steps.md) for deferred work.
-
-## Development
-
-```bash
-cd worker
-npm install
-npm test
-npm run typecheck
-npx wrangler deploy --dry-run
-
-cd ..
-go test ./...
-go build -o /tmp/mimir ./cmd/mimir
-```
+Read the full architecture in [`spec.md`](spec.md). Deferred work is tracked in
+[`next-steps.md`](next-steps.md).
