@@ -19,3 +19,15 @@ Authentication:
 - Browser code never stores a machine bearer token.
 
 Keep it intentionally narrow: no SaaS tenancy, team management, analytics suite, or separate dashboard backend.
+
+## Consolidate the CLI Package
+
+Reduce the fragmented `cmd/mimir` package from roughly twenty small implementation files to a few cohesive files organized by responsibility.
+
+- Keep command dispatch and user-facing output together.
+- Keep setup, login, connection, and terminal rendering together.
+- Keep remote memory commands and MCP handling together.
+- Keep local indexing, recall, Git, and storage together.
+- Consolidate tests along the same boundaries.
+- Preserve all command behavior, JSON contracts, credential handling, and Worker API boundaries.
+- Do not introduce new packages or dependencies solely to rearrange the code.
