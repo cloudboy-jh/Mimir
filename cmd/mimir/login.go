@@ -22,6 +22,7 @@ type cloudflareIdentity struct {
 
 func login(ctx context.Context, args []string, ioctx IO) error {
 	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
+	forceDiscovery := false
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--json" {
 			opts.JSON = true
@@ -33,12 +34,16 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		switch args[i] {
 		case "--url":
 			opts.URL = args[i+1]
+			forceDiscovery = true
 		case "--worker-dir":
 			opts.WorkerDir = args[i+1]
+			forceDiscovery = true
 		case "--worker-name":
 			opts.WorkerName = args[i+1]
+			forceDiscovery = true
 		case "--database-name":
 			opts.DatabaseName = args[i+1]
+			forceDiscovery = true
 		default:
 			return fmt.Errorf("unknown login option %q", args[i])
 		}
@@ -46,6 +51,15 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !opts.JSON {
 		printSetupBanner(ioctx.Out)
+	}
+	if !forceDiscovery {
+		pointer, pointerErr := loadPointer()
+		identity, identityErr := loadCloudflareIdentity()
+		if pointerErr == nil && identityErr == nil {
+			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
+				return writeLoginResult(ioctx, opts.JSON, identity, pointer.URL)
+			}
+		}
 	}
 	dir, err := workerDir(opts.WorkerDir)
 	if err != nil {
@@ -114,8 +128,53 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 }
 
 func writeLoginResult(ioctx IO, jsonOutput bool, identity cloudflareIdentity, url string) error {
+	if err := saveCloudflareIdentity(identity); err != nil {
+		return err
+	}
 	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity}, url)
 	return writeSetupResult(ioctx.Out, jsonOutput, result, loginSummary(identity, url, terminalColor(ioctx.Out)))
+}
+
+func cloudflareIdentityPath() (string, error) {
+	pointer, err := pointerPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(pointer), "cloudflare-user.json"), nil
+}
+
+func loadCloudflareIdentity() (cloudflareIdentity, error) {
+	path, err := cloudflareIdentityPath()
+	if err != nil {
+		return cloudflareIdentity{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cloudflareIdentity{}, err
+	}
+	var identity cloudflareIdentity
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return cloudflareIdentity{}, err
+	}
+	if !identity.LoggedIn {
+		return cloudflareIdentity{}, fmt.Errorf("cached Cloudflare user is not logged in")
+	}
+	return identity, nil
+}
+
+func saveCloudflareIdentity(identity cloudflareIdentity) error {
+	path, err := cloudflareIdentityPath()
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(identity)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func readCloudflareIdentity(ctx context.Context, dir string) (cloudflareIdentity, error) {

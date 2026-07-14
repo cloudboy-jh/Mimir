@@ -76,3 +76,18 @@ func TestLoginSummaryUsesMimirPalette(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudflareIdentityCacheRoundTrip(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
+	identity := cloudflareIdentity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
+	if err := saveCloudflareIdentity(identity); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadCloudflareIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LoggedIn != identity.LoggedIn || got.AuthType != identity.AuthType || got.Email != identity.Email {
+		t.Fatalf("identity %#v", got)
+	}
+}
