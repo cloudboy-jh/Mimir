@@ -155,6 +155,9 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := ensureWorkerDependencies(ctx, dir); err != nil {
 		return fmt.Errorf("installing Worker dependencies: %w", err)
 	}
+	if err := buildDashboard(ctx, dir); err != nil {
+		return fmt.Errorf("building dashboard: %w", err)
+	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
 	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON, opts.Progress); err != nil {
 		return err
@@ -436,6 +439,11 @@ func ensureWorkerDependencies(ctx context.Context, dir string) error {
 		return err
 	}
 	return os.WriteFile(markerPath, []byte(hash+"\n"), 0o600)
+}
+
+func buildDashboard(ctx context.Context, dir string) error {
+	_, err := runCommand(ctx, filepath.Join(dir, "web"), nil, "bun", "run", "build")
+	return err
 }
 
 func workerDependencyHash(dir string) (string, error) {
@@ -852,13 +860,21 @@ func currentConnectionManifest(url string) (connectionManifest, error) {
 	if err != nil {
 		return connectionManifest{}, err
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return connectionManifest{}, err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return connectionManifest{}, err
+	}
 	base := strings.TrimRight(url, "/")
 	return connectionManifest{
 		OpenAIBaseURL:     base + "/v1",
 		AnthropicBaseURL:  base,
 		CredentialFile:    credential,
 		CredentialCommand: []string{"cat", credential},
-		MCPCommand:        []string{"mimir", "serve"},
+		MCPCommand:        []string{executable, "serve"},
 		OptionalHeaders:   []string{"x-mimir-session", "x-mimir-repo", "x-mimir-harness"},
 	}, nil
 }

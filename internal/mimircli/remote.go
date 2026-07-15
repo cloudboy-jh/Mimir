@@ -95,7 +95,7 @@ type mcpOptions struct {
 
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
@@ -111,7 +111,13 @@ func serveMCP(ctx context.Context, opts mcpOptions) error {
 			return err
 		}
 		var req request
-		if json.Unmarshal(data, &req) != nil {
+		if err := json.Unmarshal(data, &req); err != nil {
+			if err := writeMessage(opts.Out, map[string]any{"jsonrpc": "2.0", "id": nil, "error": map[string]any{"code": -32700, "message": "parse error"}}); err != nil {
+				return err
+			}
+			continue
+		}
+		if req.ID == nil {
 			continue
 		}
 		response := handle(ctx, req)
@@ -129,6 +135,8 @@ func handle(ctx context.Context, req request) map[string]any {
 	switch req.Method {
 	case "initialize":
 		return ok(map[string]any{"protocolVersion": "2024-11-05", "serverInfo": map[string]any{"name": "mimir", "version": versionString()}, "capabilities": map[string]any{"tools": map[string]any{}}})
+	case "ping":
+		return ok(map[string]any{})
 	case "tools/list":
 		return ok(map[string]any{"tools": tools()})
 	case "tools/call":
@@ -213,7 +221,7 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "{") {
+	if !strings.HasPrefix(strings.ToLower(trimmed), "content-length:") {
 		return []byte(trimmed), nil
 	}
 	length := 0
@@ -243,7 +251,7 @@ func writeMessage(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "Content-Length: %d\r\n\r\n%s", len(data), data)
+	_, err = fmt.Fprintf(w, "%s\n", data)
 	return err
 }
 

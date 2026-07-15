@@ -18,12 +18,15 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: worker/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: worker/web
       - run: npm ci
         working-directory: worker
       - run: npm run typecheck
         working-directory: worker
       - run: npm test
         working-directory: worker
-      - run: npx wrangler deploy --dry-run
+      - run: npm run build:dashboard && npx wrangler deploy --dry-run
         working-directory: worker
       - run: go test ./...

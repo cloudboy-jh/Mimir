@@ -104,6 +104,29 @@ func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
 	}
 }
 
+func TestBuildDashboard(t *testing.T) {
+	dir := t.TempDir()
+	web := filepath.Join(dir, "web")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(web, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bun := filepath.Join(bin, "bun")
+	if err := os.WriteFile(bun, []byte("#!/bin/sh\n[ \"$1 $2\" = \"run build\" ] || exit 2\nmkdir -p dist\ntouch dist/index.html\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := buildDashboard(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if !pathExists(filepath.Join(web, "dist", "index.html")) {
+		t.Fatal("dashboard was not built")
+	}
+}
+
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
@@ -252,6 +275,9 @@ func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	}
 	if !strings.HasSuffix(manifest.CredentialFile, "/token") {
 		t.Fatalf("credential file %q", manifest.CredentialFile)
+	}
+	if len(manifest.MCPCommand) != 2 || !filepath.IsAbs(manifest.MCPCommand[0]) || manifest.MCPCommand[1] != "serve" {
+		t.Fatalf("MCP command %#v", manifest.MCPCommand)
 	}
 }
 
