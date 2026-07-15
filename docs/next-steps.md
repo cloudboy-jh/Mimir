@@ -1,21 +1,63 @@
 # Next Steps
 
-## Self-Hosted Dashboard
+This file tracks concrete gaps in the current implementation. It is not a
+second product specification.
 
-Add a small Vue dashboard served by the user's Mimir Worker. It remains a client of the canonical HTTP API and does not introduce a Mimir-hosted backend or account system.
+## 1. Connect The Dashboard
 
-Initial scope:
+- Replace mock data with the existing `/dashboard/api/*` endpoints.
+- Add loading, empty, unavailable, and Access-denied states.
+- Connect session outcome marking.
+- Add cursor pagination and filter serialization.
+- Keep `worker/web/src/lib/mock.ts` as the only fixture source until the live
+  design is explicitly approved.
 
-- Session table with repo, model, outcome, date, request count, and token usage.
-- Filters for repo, model, outcome, and date range.
-- Session detail with files, errors, exchange timeline, and links to redacted R2 objects.
-- Explicit outcome marking.
-- Deployment, D1, and R2 status.
+## 2. Resolve Dashboard Routing
 
-Authentication:
+The SPA uses `/sessions*`, while canonical machine APIs use the same namespace
+and are configured to run Worker-first. Direct page loads therefore bypass the
+SPA.
 
-- `mimir dashboard` creates a short-lived one-time code and opens the deployed dashboard.
-- The Worker exchanges the code for an `HttpOnly`, `Secure`, `SameSite` cookie.
-- Browser code never stores a machine bearer token.
+- Move browser routes or machine APIs to non-conflicting namespaces.
+- Preserve real browser URLs and refresh behavior.
+- Add deployment-level route tests, not only Vue Router tests.
 
-Keep it intentionally narrow: no SaaS tenancy, team management, analytics suite, or separate dashboard backend.
+## 3. Finish Cloudflare Access Setup
+
+- Document or automate creation of the dashboard Access application.
+- Configure `DASHBOARD_ACCESS_AUD` and `DASHBOARD_ACCESS_TEAM_DOMAIN` safely.
+- Verify static asset protection and dashboard API protection together.
+- Keep localhost development access without adding a Mimir password system.
+
+## 4. Release And Update Distribution
+
+- Publish tagged releases with checksums.
+- Make the installed binary independent from a retained Go module cache.
+- Add a verified, atomic `mimir update` flow using a stable executable path.
+- Expose machine-readable version/update diagnostics for setup skills.
+
+## 5. Harden MCP Integration
+
+- Add integration tests against current OpenCode, Hermes, and other supported
+  MCP clients.
+- Validate JSON-RPC versions, IDs, methods, and tool arguments completely.
+- Return tool execution failures as MCP tool errors where appropriate.
+- Add bounded HTTP timeouts.
+- Publish tested harness recipes without putting harness-specific behavior in
+  the Worker.
+
+## 6. Harden Capture And Search
+
+- Define cleanup behavior for R2 writes that fail before D1 indexing completes.
+- Surface capture failures through useful observability.
+- Decide whether large-response capture should truncate or remain all-or-none.
+- Replace ignored search fields or remove them from the request contract.
+- Decide whether `session.abandon_days` should drive an explicit lifecycle job
+  or be removed.
+- Evaluate full-text search before considering vectors or embeddings.
+
+## Boundaries
+
+Do not add SaaS tenancy, team management, a separate backend, browser bearer
+token storage, Git-backed session sync, or migration of local code indexes into
+D1.

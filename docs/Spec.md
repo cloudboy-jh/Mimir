@@ -1,387 +1,365 @@
-# Mimir v2 — Memory Plane
+# Mimir v2 Implementation Specification
 
-**Mimir remembers.**
+This document describes the current implementation. Product intent is defined
+in [`PRODUCT.md`](PRODUCT.md), dashboard visual direction in
+[`DESIGN.md`](DESIGN.md), and installation and usage in the root
+[`README.md`](../README.md).
 
-Mimir stops being a code indexer and becomes a memory plane: one queryable
-surface over everything a developer's agents should remember. No accounts,
-no dashboard, no interface. Self-hosted on the user's own Cloudflare account.
+## 1. Purpose
 
----
+Mimir is a self-hosted memory plane for one developer working across coding
+agents, repositories, and machines. It captures model traffic as sessions and
+makes that history available through HTTP, CLI, and MCP.
 
-## 1. Memory types
+The deployment runs in the developer's Cloudflare account. Mimir has no hosted
+backend, account system, multi-user tenancy, or shared memory service.
 
-| Type | What it is | Written by | Store |
-|------|-----------|------------|-------|
-| `code` | The repo, indexed (v1 behavior, unchanged) | `mimir index` | `.mimir/index.json` (local, v2) |
-| `sessions` | Attempts with outcomes; the log cut into episodes | Indexing pass over the log | D1 |
-| `log` | Full raw model traffic | The Worker, as a byproduct of proxying | R2 |
+## 2. System Boundary
 
-The log is not a product. The Worker proxies requests to OpenRouter and
-saving them is a side effect. There is no separate proxy app, skill, or
-service — deploying Mimir *is* deploying the interceptor.
+One Cloudflare Worker provides:
 
----
+- OpenAI Chat Completions and Anthropic Messages proxy routes
+- Session, search, configuration, and log APIs
+- Cloudflare Access-protected dashboard APIs
+- Static Vue dashboard assets
 
-## 2. Architecture
+The Worker uses:
 
+- **OpenRouter** as the only model upstream
+- **D1** for sessions, searchable exchange metadata, configuration, facets,
+  and machine-token hashes
+- **R2** for complete redacted request/response objects
+- **Cloudflare Access** for deployed dashboard API authentication
+
+The Go binary provides setup, login, diagnostics, local code indexing, and the
+stdio MCP server. Worker HTTP APIs remain canonical; CLI and MCP are clients of
+those APIs.
+
+Local code memory remains `<repo>/.mimir/index.json`. It is never uploaded to
+D1 or R2.
+
+```mermaid
+flowchart LR
+    H[Agent harness] -->|Model request| W[Cloudflare Worker]
+    W --> O[OpenRouter]
+    O -->|Response stream| W
+    W -->|Response stream| H
+    W -.-> D[(D1)]
+    W -.-> R[(R2)]
+    H <-->|stdio MCP| C[Go client]
+    C <-->|Canonical HTTP API| W
+    C -.-> I[(Local code index)]
 ```
-harness (opencode / Claude Code / Cursor / anything)
-   │  base_url = user's Worker URL
-   ▼
-┌─────────────────────────────────────────────┐
-│  Worker (user's Cloudflare account)         │
-│  • OpenAI/Anthropic-compatible proxy        │
-│    → forwards to OpenRouter, streams through│
-│    → saves per config via waitUntil (zero   │
-│      added latency)                         │
-│  • Query endpoints (sessions, search, whoami)│
-│  • Config endpoints (get/set)               │
-└──────┬──────────────────────┬───────────────┘
-       ▼                      ▼
-      R2                     D1
-   raw log            session index + config
-   JSONL, date-
-   partitioned
+
+## 3. Authentication
+
+### 3.1 Machine Requests
+
+Proxy, canonical API, CLI, and MCP requests use a per-machine token supplied as
+either:
+
+```http
+Authorization: Bearer <token>
 ```
 
-**Binary** (Go, zero deps) is the setup/login client and stdio MCP server.
-Operational commands remain available for diagnostics, but normal users only
-run `setup` and `login`. Local state is a pointer file — URL + token — nothing
-else.
+or:
 
-**Ownership:** everything runs in the user's Cloudflare account. Mimir has
-no backend, no tenant, nothing of ours in the loop. Single-dev per
-deployment; a team is N deployments.
-
----
-
-## 3. Worker
-
-### 3.1 Proxy endpoints
-
-- `POST /v1/chat/completions` — OpenAI-compatible
-- `POST /v1/messages` — Anthropic-compatible
-
-Behavior:
-
-1. Authenticate bearer token.
-2. Read config (KV/D1, cached, short TTL).
-3. Apply save filters (§6). If excluded, pure pass-through.
-4. Forward to OpenRouter (key in Worker secrets). Stream response bytes
-   through untouched.
-5. `waitUntil`: reassemble the exchange, apply redaction, write one JSONL
-   object to R2, upsert session row in D1.
-
-Session correlation: optional `x-mimir-session` header. Harnesses that set
-it get exact boundaries. Requests without it are bucketed by heuristic at
-index time (§5.1).
-
-### 3.2 Query endpoints
-
-- `GET /whoami` — deployment identity: URL, created date, counts per type
-- `GET /sessions` — list; filters: repo, model, outcome, date range
-- `GET /sessions/:id` — one episode + trace refs into R2
-- `GET /log/:key` — raw log object fetch
-- `POST /search` — token-budgeted retrieval across types; params: query,
-  types[], budget, filters
-- `GET /config` / `PUT /config`
-
-All endpoints: same bearer token. JSON in, JSON out. This HTTP surface is
-the canonical API; MCP and CLI are clients of it.
-
----
-
-## 4. Schemas
-
-### 4.1 R2 — log
-
+```http
+x-api-key: <token>
 ```
+
+Each machine gets an independent random 32-byte token. D1 stores only its
+SHA-256 hash, label, creation time, and revocation state. The plaintext token is
+stored locally in `~/.mimir/token`, or under `$MIMIR_HOME`, with restrictive
+permissions.
+
+Before forwarding model requests, the Worker removes machine credentials and
+all `x-mimir-*` metadata, then authenticates upstream using the
+`OPENROUTER_API_KEY` Worker secret.
+
+### 3.2 Dashboard Requests
+
+Deployed `/dashboard/api/*` and `/dashboard/log-objects/*` routes require a
+verified `Cf-Access-Jwt-Assertion`. Verification uses:
+
+- `DASHBOARD_ACCESS_AUD`
+- `DASHBOARD_ACCESS_TEAM_DOMAIN`
+
+Localhost dashboard API requests may bypass Access for development. Static SPA
+assets are served separately from dashboard API authentication.
+
+Setup does not currently create a Cloudflare Access application or configure
+these variables.
+
+## 4. HTTP API
+
+### 4.1 Proxy
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| `POST` | `/v1/chat/completions` | OpenAI-style Chat Completions proxy. |
+| `POST` | `/v1/messages` | Anthropic-style Messages proxy. |
+| `GET` | `/v1/models` | OpenRouter model-list pass-through. |
+
+These routes do not implement the complete OpenAI or Anthropic API surfaces.
+
+### 4.2 Canonical Machine API
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| `GET` | `/whoami` | Return deployment URL and session/exchange counts. |
+| `GET` | `/sessions` | List up to 100 recent sessions with optional filters. |
+| `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
+| `POST` | `/sessions/:id/mark` | Set an explicit outcome. |
+| `POST` | `/sessions/:id/outcome` | Set an explicit or Git-derived outcome. |
+| `POST` | `/search` | Search session metadata and excerpts. |
+| `GET` | `/config` | Return defaults merged with persisted configuration. |
+| `PUT` | `/config` | Validate and persist a partial configuration update. |
+| `GET` | `/log/*` | Read one redacted R2 exchange object. |
+
+Session-list filters include repository, model, outcome, and date range.
+
+### 4.3 Dashboard API
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| `GET` | `/dashboard/api/bootstrap` | Return basic request/session totals. |
+| `GET` | `/dashboard/api/log` | Cursor-paginated exchange metadata. |
+| `GET` | `/dashboard/api/log/:id` | Return one exchange and its log-object URL. |
+| `GET` | `/dashboard/log-objects/*` | Return one redacted R2 object. |
+| `GET` | `/dashboard/api/sessions` | List recent sessions. |
+| `GET` | `/dashboard/api/sessions/:id` | Return session evidence and timeline. |
+| `POST` | `/dashboard/api/sessions/:id/mark` | Set an explicit outcome. |
+| `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
+
+The Vue client does not consume these routes yet.
+
+## 5. Capture Lifecycle
+
+For a supported model request, the Worker:
+
+1. Authenticates the machine token.
+2. Reads and bounds the request body at 10 MiB.
+3. Parses optional Mimir session metadata.
+4. Reads capture configuration and lazily expires stale sessions.
+5. Replaces caller credentials with the OpenRouter Worker secret.
+6. Sends the request to OpenRouter.
+7. Returns the upstream response stream to the caller.
+8. Uses a second stream branch and `waitUntil` for persistence.
+9. Bounds the captured response at 20 MiB.
+10. Parses ordinary JSON or reconstructs server-sent events.
+11. Redacts the request and response.
+12. Resolves the session and derives searchable evidence.
+13. Writes the complete redacted exchange to R2.
+14. Writes exchange metadata, facets, and session aggregates to D1.
+
+Capture can be disabled globally or excluded by repository/model. Excluded
+traffic is still proxied but is not persisted.
+
+A response larger than the capture limit can still reach the caller even when
+archive persistence fails. R2 is written before D1, so a later D1 failure may
+leave an orphaned object.
+
+## 6. Redaction And Evidence
+
+Redaction runs before R2 storage and before searchable excerpts are generated.
+Built-in patterns cover common API-key, bearer-token, secret, token, and
+password forms. `redact.patterns` adds user-defined regular expressions.
+
+Mimir derives:
+
+- Request and response excerpts, capped at 8,000 characters each
+- File-like paths, capped at 100 unique values per exchange
+- Error signatures, capped at 20 unique values per exchange
+- Model, provider, finish reason, token usage, latency, endpoint, harness,
+  repository, and machine label
+
+Derivation is regex-based. Redaction reduces accidental retention but cannot
+guarantee removal of every secret or sensitive value.
+
+## 7. Sessions
+
+`x-mimir-session` is authoritative when present. It must be a 1-128 character
+identifier accepted by the Worker. A declared session can be resumed and
+reactivated later.
+
+Without that header, Mimir groups traffic by exact repository/harness metadata
+and a configurable inactivity gap. The default gap is 15 minutes. Expiration
+is lazy and runs during relevant Worker requests rather than on a timer.
+
+Optional metadata headers are:
+
+- `x-mimir-session`
+- `x-mimir-repo`
+- `x-mimir-harness`
+- `x-mimir-git-ref`
+
+Session outcomes are:
+
+- `promoted`
+- `discarded`
+- `abandoned`
+- `unknown`
+
+The Worker does not infer outcomes automatically. Agents or users can mark an
+outcome through HTTP, MCP, or CLI. `mimir outcome git <session>` is an explicit
+local adapter that examines repository history and sends its conclusion to the
+Worker.
+
+## 8. Search And Configuration
+
+Remote search uses SQL substring matching over session intent, exchange
+excerpts, normalized files, and error signatures. It supports repository and
+outcome filters, orders results by recency, and applies an approximate response
+budget. It is not semantic or vector search and does not read complete R2
+objects.
+
+CLI/MCP search federates remote results with local code recall when a usable
+`.mimir/index.json` exists in the MCP process's working repository.
+
+Supported configuration keys are:
+
+| Key | Purpose |
+| --- | --- |
+| `save.enabled` | Enable or disable persistence. |
+| `save.exclude_repos` | Repository exclusion patterns. |
+| `save.exclude_models` | Model exclusion patterns. |
+| `redact.patterns` | Additional redaction expressions. |
+| `session.gap_minutes` | Heuristic inactivity gap. |
+| `session.abandon_days` | Reserved lifecycle setting; not yet applied automatically. |
+
+Configuration is stored in D1 and takes effect without redeployment.
+
+## 9. Storage Model
+
+### 9.1 R2
+
+Each saved exchange is one redacted JSON object under:
+
+```text
 log/YYYY/MM/DD/<ulid>.json
 ```
 
-One object per request/response pair:
-
-```json
-{
-  "id": "ulid",
-  "ts": "iso8601",
-  "session": "header value or null",
-  "model": "anthropic/claude-...",
-  "endpoint": "chat|messages",
-  "request": { "full body, post-redaction" },
-  "response": { "full body, reassembled from stream" },
-  "usage": { "prompt_tokens": 0, "completion_tokens": 0 },
-  "latency_ms": 0,
-  "meta": { "repo": "if derivable", "harness": "if derivable" }
-}
-```
-
-### 4.2 D1 — sessions
-
-```sql
-CREATE TABLE sessions (
-  id            TEXT PRIMARY KEY,        -- ulid
-  started_at    TEXT NOT NULL,
-  ended_at      TEXT,
-  state         TEXT NOT NULL DEFAULT 'active',
-                -- 'active' | 'inactive'; resumable, never terminal
-  last_active_at TEXT,
-  inactive_at   TEXT,
-  boundary      TEXT NOT NULL,           -- 'header' | 'heuristic'
-  outcome       TEXT NOT NULL DEFAULT 'unknown',
-                -- 'promoted' | 'discarded' | 'abandoned' | 'unknown'
-  outcome_src   TEXT,                    -- 'explicit' | 'git' | null
-  repo          TEXT,
-  model_primary TEXT,
-  request_count INTEGER DEFAULT 0,
-  tokens_in     INTEGER DEFAULT 0,
-  tokens_out    INTEGER DEFAULT 0,
-  intent        TEXT                     -- short annotation, optional
-);
-
-CREATE TABLE exchanges (
-  id               TEXT PRIMARY KEY,
-  session_id       TEXT NOT NULL REFERENCES sessions(id),
-  ts               TEXT NOT NULL,
-  endpoint         TEXT NOT NULL,
-  model            TEXT,
-  request_excerpt  TEXT NOT NULL,
-  response_excerpt TEXT NOT NULL,
-  usage_json       TEXT NOT NULL,
-  latency_ms       INTEGER NOT NULL,
-  repo             TEXT,
-  harness          TEXT,
-  r2_key           TEXT NOT NULL
-);
-
-CREATE TABLE session_files (
-  session_id TEXT NOT NULL REFERENCES sessions(id),
-  file       TEXT NOT NULL,
-  PRIMARY KEY (session_id, file)
-);
-
-CREATE TABLE session_errors (
-  session_id TEXT NOT NULL REFERENCES sessions(id),
-  signature  TEXT NOT NULL,
-  PRIMARY KEY (session_id, signature)
-);
-
-CREATE TABLE config (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE access_tokens (
-  token_hash   TEXT PRIMARY KEY,
-  label        TEXT NOT NULL,
-  created_at   TEXT NOT NULL,
-  last_used_at TEXT,
-  revoked_at   TEXT
-);
-```
-
-Episode fields are mechanically derived (files, errors, counts from the
-log; outcome from adapters). A model may annotate `intent` on top of hard
-fields — never replace them. No vibes summaries.
-
-### 4.3 Code (unchanged this version)
-
-`.mimir/index.json` stays local, produced by the v1 indexer. The `/search`
-endpoint federates to it through the CLI/MCP client when the client is on a
-machine with an index. Replatforming code into D1 is v3, contingent on
-evidence it's worth it.
-
----
-
-## 5. Sessions
-
-### 5.1 Boundary
-
-1. **Header** (`x-mimir-session`) — harness-declared. Authoritative.
-2. **Heuristic fallback** — same optional repo/harness metadata plus an
-   inter-request gap < `session_gap` (config, default 15m). Requests without
-   metadata still work and share the default personal telemetry bucket.
+The object includes the parsed request, parsed or reconstructed response,
+usage, latency, model/provider metadata, declared session metadata, and capture
+metadata.
 
-### 5.2 Lifecycle
+### 9.2 D1
 
-Every completed exchange is persisted immediately. Sessions become `inactive`
-after a fifteen-minute telemetry gap. Requests carrying an existing
-authoritative session ID reactivate that same session, including after days or
-weeks. Inactivity is therefore derived state, not a harness lifecycle contract.
-Harnesses without dynamic headers use the heuristic path automatically.
+The migration sequence defines:
 
-Raw R2 exchanges and D1 metadata are retained indefinitely. Personal-scale
-deployments do not add queues, compaction, or retention infrastructure.
+- `sessions`: identity, timing, boundary, lifecycle, context, usage, and outcome
+- `exchanges`: searchable metadata, excerpts, usage, latency, and R2 reference
+- `session_files`: normalized file facets
+- `session_errors`: normalized error facets
+- `config`: persisted deployment configuration
+- `access_tokens`: machine-token hashes and lifecycle fields
+
+D1 remains the searchable source of truth. R2 remains the complete redacted
+archive.
+
+### 9.3 Local Index
 
-### 5.3 Outcomes
-
-Closed enum: `promoted | discarded | abandoned | unknown`.
-
-Adapters (v2 ships two):
-
-- **explicit** — `mimir mark <session> <outcome>`, or the same via
-  MCP/HTTP. An agent can mark its own session. Lowest trust, universal.
-- **git** — post-hoc pass: session's diff landed in a commit that reached
-  a durable branch → `promoted`; branch deleted without merge →
-  `discarded`; neither after `abandon_after` (config, default 7d) →
-  `abandoned`.
-
-Adapter interface is open: gittrix, CI, and anything else are future
-adapters, not core. Each adapter stamps `outcome_src` so consumers can
-filter by label quality.
-
-Unlabeled episodes are still stored — retrieval value doesn't require the
-training label.
-
----
-
-## 6. Config
-
-Lives **in the deployment** (D1 `config` table), read by the Worker
-per-request. Edited through the plane like any other query — MCP, HTTP,
-or CLI sugar (`mimir config set …`). Changes apply on the next request;
-no redeploy. An agent can change prefs mid-session.
-
-Keys (v2):
-
-```
-save.enabled          true
-save.exclude_repos    []          # glob list
-save.exclude_models   []
-redact.patterns       [builtin]   # applied before R2 write; builtins cover
-                                  # common key/token/secret shapes
-session.gap_minutes   15
-session.abandon_days  7
-```
-
-Default posture: save everything, filter by exception. It's the user's
-bucket and their bill; storage is ~free.
-
-Local state is a deployment pointer plus an isolated machine credential:
-
-```toml
-# ~/.mimir/config
-url   = "https://mimir.<user>.workers.dev"
-```
-
-```text
-# ~/.mimir/token (mode 0600)
-<machine token>
-```
-
-Tokens are independent per machine and D1 stores only their SHA-256 hashes.
-`mimir login` uses Cloudflare ownership through Wrangler to discover an
-existing deployment and register another machine without rotating existing
-credentials or requesting the OpenRouter key again.
-
----
-
-## 7. Surfaces
-
-Mimir ships **no interface.** It's endpoints.
-
-- **HTTP** — §3.2. Canonical.
-- **MCP** — one server, tools mirror HTTP 1:1: `whoami`,
-  `sessions_list`, `sessions_get`, `search`, `mark`, `config_get`,
-  `config_set`. Agents use these tools automatically.
-- **CLI** — the promoted human surface is only `mimir setup` and
-  `mimir login`. Diagnostic commands are hidden from normal help. The same
-  binary hosts MCP and exposes a harness-neutral connection manifest.
-
-TUIs, GUIs, dashboards are consumers other people (including us, elsewhere)
-build against the same endpoints. Never part of Mimir.
-
----
-
-## 8. Setup
-
-Onboarding is a first-class feature, not plumbing. Two paths, one
-underlying mechanism.
-
-### 8.1 Human path
-
-`mimir setup` provisions and verifies the deployment. `mimir login` reconnects
-another machine. Both return the same harness-neutral manifest: OpenAI and
-Anthropic base URLs, credential-file path, MCP command, and optional telemetry
-headers. Interactive runs show one status line and one final summary instead of
-printing every provisioning stage.
-
-JSON mode remains the agent-safe automation contract. The `mimir-setup` skill
-applies the manifest to whichever harness is active.
-
-Detects existing state: a v1 `.mimir/index.json` (keep serving it), an
-existing deployment (offer reconnect instead of redeploy).
-
-### 8.2 Agent path
-
-The repo ships a `skills/` folder (agentskills.io format):
-
-- **mimir-setup** — teaches an agent to run setup/login, apply the generic
-  connection manifest to the active harness, and defer secret entry to the
-  local masked prompt.
-- **mimir-use** — teaches agents to use MCP memory automatically. It never asks
-  the user to run search, indexing, or outcome commands.
-
-Distribution: `npx skills add cloudboy-jh/mimir` via skills.sh reaches
-20+ harnesses. Not a dependency — the skill format is the open standard,
-content lives in our repo, and the setup agent installs `mimir-use` while
-applying the connection manifest. skills.sh is passive discovery.
-
----
-
-## 9. Non-goals (v2)
-
-- Code index replatform (stays local; v3 question)
-- Multi-user, sharing, token scoping
-- Any UI
-- gittrix / CI outcome adapters
-- Fine-tuning pipeline (the log makes it *possible*; building it is out
-  of scope)
-- Non-OpenRouter upstreams (adapter seam exists in the Worker; only
-  OpenRouter ships)
-
----
-
-## 10. Build order
-
-1. **Worker proxy + R2 log** — useful alone (one base URL for every
-   machine, cost attribution, debugging). Every day it runs accumulates
-   corpus.
-2. **Session indexing + D1** — boundaries, derivation, explicit adapter.
-3. **Query surface** — HTTP + MCP + CLI.
-4. **git outcome adapter.**
-5. **`mimir setup`** — wizard, both skills, generic connection manifest.
-6. **v1 code index federation** through the client.
-
----
-
-## 11. Open questions
-
-- Heuristic session bucketing quality — evaluate on real traffic and keep the
-  exact header path available for harnesses that expose session IDs.
-- Redaction builtin set — needs a concrete pattern list before the Worker
-  writes anything to R2.
-- `/search` ranking across types — v1 Mimir's ranking applies to code;
-  sessions need their own relevance signals (recency, file overlap,
-  error-signature match). Simplest viable: filter + recency, rank later.
-# Mimir v2
-
-Mimir is a self-hosted Cloudflare Worker memory plane. The Worker proxies OpenAI- and Anthropic-compatible traffic to OpenRouter, archives full redacted exchanges in R2, and indexes sessions/configuration in D1.
-
-## Stores
-
-- `.mimir/index.json`: local code index, produced by the retained Go indexer.
-- D1: sessions, exchanges, outcomes, searchable excerpts, configuration, and references to raw logs.
-- R2: complete redacted request/response JSON objects at `log/YYYY/MM/DD/<ulid>.json`.
-
-## Boundaries
-
-`x-mimir-session` is authoritative. Requests without the header are grouped by optional repository/harness metadata and a configurable fifteen-minute gap. Exact IDs reactivate the same session when resumed.
-
-## Surfaces
-
-The Worker HTTP API is canonical. The Go CLI and stdio MCP server are clients of that API. The local pointer config contains only the Worker URL and bearer token.
-
-## Non-goals
-
-No Git-backed session sync, compatibility layer, UI, multi-user tenancy, or code-index migration to D1.
+`mimir index` writes `<repo>/.mimir/index.json` atomically. It indexes Git
+working files for selected programming-language extensions and records hashes,
+regex-derived symbols, and dependencies. `mimir recall` performs deterministic
+text ranking within an approximate character budget.
+
+The local index is optional and independent from remote session storage.
+
+## 10. MCP
+
+`mimir serve` starts a local stdio MCP server using JSON-RPC 2.0 and MCP protocol
+version `2024-11-05`.
+
+It accepts newline-delimited JSON and legacy `Content-Length`-framed input. It
+emits newline-delimited JSON and does not respond to notifications.
+
+Supported MCP methods are:
+
+- `initialize`
+- `ping`
+- `tools/list`
+- `tools/call`
+
+Tools:
+
+| Tool | Arguments | Worker operation |
+| --- | --- | --- |
+| `whoami` | none | `GET /whoami` |
+| `sessions_list` | none | `GET /sessions` |
+| `sessions_get` | `id` | `GET /sessions/:id` |
+| `search` | `query` | Remote search plus optional local recall |
+| `mark` | `id`, `outcome` | `POST /sessions/:id/mark` |
+| `config_get` | none | `GET /config` |
+| `config_set` | `values` | `PUT /config` |
+
+MCP does not expose complete log retrieval, local indexing, or Git outcome
+inference as standalone tools.
+
+## 11. Setup And Login
+
+`mimir setup`:
+
+1. Locates and materializes the Worker package under `~/.mimir/worker` or
+   `$MIMIR_HOME/worker`.
+2. Installs Worker and dashboard dependencies.
+3. Builds dashboard assets.
+4. Authenticates Wrangler.
+5. Creates or reuses D1 and R2.
+6. Rewrites deployment binding identifiers.
+7. Applies D1 migrations.
+8. Registers the local machine token.
+9. Stores the OpenRouter Worker secret.
+10. Deploys and verifies the Worker.
+11. Saves the local URL/token pointer.
+12. Returns a harness-neutral connection manifest.
+
+`mimir login` reconnects another machine by authenticating with Cloudflare,
+discovering the deployment, registering a new machine token, and returning the
+same connection manifest.
+
+The manifest contains OpenAI and Anthropic base URLs, an absolute credential
+path and command, an absolute MCP command, and optional telemetry header names.
+Mimir does not directly edit every harness's configuration; the setup skill or
+user applies that manifest using the harness's own secure configuration system.
+
+## 12. Dashboard Status
+
+The Vue 3 dashboard is built and deployed as Worker static assets. It includes
+Sessions, Requests, Overview, and detail routes with light/dark themes and the
+design system defined in [`DESIGN.md`](DESIGN.md).
+
+The dashboard currently reads only `worker/web/src/lib/mock.ts`. It does not
+fetch the implemented dashboard API, mutate outcomes, or display captured
+records. `mimir dashboard` only opens `<worker-url>/dashboard`.
+
+Direct SPA routes under `/sessions*` currently collide with canonical Worker
+API routes during page refresh. Live integration must resolve that namespace
+before the dashboard can become the primary operational interface.
+
+## 13. Observability
+
+Wrangler observability is enabled for Worker logs and traces. Logs use full
+head sampling and traces use 1% head sampling. This telemetry stays in the
+developer's Cloudflare account.
+
+## 14. Non-Goals
+
+- Mimir-hosted SaaS infrastructure
+- Multi-user tenancy, teams, roles, or account management
+- Custom browser passwords or browser bearer-token storage
+- Git-backed session synchronization or session Markdown
+- Uploading local code indexes to D1
+- Vector search, embeddings, or a semantic search service
+- Direct model upstreams other than OpenRouter
+- A general analytics suite
+- Automatic retention or deletion workflows
+- Automatic outcome inference services
+
+## 15. Known Incomplete Work
+
+The implementation priorities are tracked in [`next-steps.md`](next-steps.md).
+The largest current gaps are live dashboard integration, dashboard routing and
+Access setup, release/update distribution, broader MCP conformance testing, and
+capture/search lifecycle hardening.

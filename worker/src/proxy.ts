@@ -1,0 +1,65 @@
+import type { Context } from "hono";
+import { capture, readBoundedText } from "./capture";
+import { readSaveConfig, shouldSave } from "./config";
+import { expireSessions } from "./sessions";
+import type { AppEnv } from "./types";
+
+const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
+  const started = Date.now();
+  const declaredLength = Number(c.req.header("content-length") ?? 0);
+  if (declaredLength > MAX_REQUEST_BYTES) return c.json({ error: "request body too large" }, 413);
+  let requestBody: string;
+  try {
+    requestBody = await readBoundedText(c.req.raw.body, MAX_REQUEST_BYTES);
+  } catch {
+    return c.json({ error: "request body too large" }, 413);
+  }
+  let request: Record<string, unknown> = {};
+  try {
+    request = JSON.parse(requestBody) as Record<string, unknown>;
+  } catch {
+    return c.json({ error: "request body must be JSON" }, 400);
+  }
+  const model = typeof request.model === "string" ? request.model : "";
+  const declaredSession = c.req.header("x-mimir-session") ?? null;
+  if (declaredSession && !SESSION_ID.test(declaredSession)) return c.json({ error: "invalid x-mimir-session" }, 400);
+  const repo = metadata(c.req.header("x-mimir-repo"));
+  const harness = metadata(c.req.header("x-mimir-harness"));
+  const config = await readSaveConfig(c.env.DB);
+  await expireSessions(c.env.DB, config.gapMinutes);
+  const save = shouldSave(config, repo, model);
+  const headers = buildUpstreamHeaders(c.req.raw.headers, c.env.OPENROUTER_API_KEY);
+  const upstream = await fetch(`https://openrouter.ai/api/v1${endpoint === "chat" ? "/chat/completions" : "/messages"}`, { method: "POST", headers, body: requestBody });
+  if (!save || !upstream.body) return new Response(upstream.body, upstream);
+  const [clientBody, archiveBody] = upstream.body.tee();
+  const responseHeaders = new Headers(upstream.headers);
+  c.executionCtx.waitUntil(capture(c.env, {
+    request,
+    archiveBody,
+    endpoint,
+    model,
+    repo,
+    harness,
+    accessTokenLabel: c.get("tokenLabel"),
+    declaredSession,
+    sourceRef: metadata(c.req.header("x-mimir-git-ref")),
+    responseType: upstream.headers.get("content-type") ?? "application/json",
+    started,
+  }).catch((error) => console.error(JSON.stringify({ message: "exchange persistence failed", error: error instanceof Error ? error.message : String(error) }))));
+  return new Response(clientBody, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+}
+
+export function buildUpstreamHeaders(source: Headers, openRouterKey: string) {
+  const headers = new Headers(source);
+  headers.set("authorization", `Bearer ${openRouterKey}`);
+  for (const name of ["x-api-key", "x-mimir-session", "x-mimir-repo", "x-mimir-harness", "x-mimir-git-ref", "host"]) headers.delete(name);
+  return headers;
+}
+
+function metadata(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 512) : null;
+}

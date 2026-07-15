@@ -4,11 +4,11 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 
 ## Repository
 
-- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `worker/src/index.ts` is the entrypoint; application routes and capture logic currently live in `worker/src/app.ts`.
+- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` assembles middleware and routes; `routes/`, `auth.ts`, `proxy.ts`, `capture.ts`, `sessions.ts`, and `config.ts` own backend behavior.
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data is intentionally mock-only during design iteration. `worker/web/src/lib/mock.ts` is the single source of UI data; do not reconnect Worker APIs until the mock dashboard is visually approved.
-- CLI/MCP: `cmd/mimir/` is the Go entrypoint; implementation belongs in `internal/mimircli/`. Keep the Go CLI standard-library-only.
-- Project documentation: `docs/`. Product and visual direction are canonical in `docs/PRODUCT.md` and `docs/DESIGN.md`.
+- CLI/MCP: `cmd/mimir/` is the Go entrypoint. Focused implementation files live in `internal/mimircli/`, including `mcp.go`, `client.go`, `connection.go`, `index.go`, `recall.go`, and deployment helpers. Keep the Go CLI standard-library-only.
+- Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
 - Shared PNG assets: `assets/images/`. Worker materialization must preserve assets imported by the dashboard.
 - `AGENTS.md` and `skills/**` Markdown remain at their structural paths for automatic discovery.
 - Local code memory remains `<repo>/.mimir/index.json`.
