@@ -1,4 +1,4 @@
-package main
+package mimircli
 
 import (
 	"context"

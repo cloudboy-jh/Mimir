@@ -1,4 +1,4 @@
-package main
+package mimircli
 
 import (
 	"context"
@@ -143,21 +143,6 @@ func remotePrint(ctx context.Context, out io.Writer, method, path string, body a
 	return err
 }
 
-func federatedSearch(ctx context.Context, query string) ([]byte, error) {
-	remote, err := remoteRequest(ctx, "POST", "/search", map[string]any{"query": query})
-	if err != nil {
-		return nil, err
-	}
-	result := map[string]any{}
-	if err := json.Unmarshal(remote, &result); err != nil {
-		return nil, err
-	}
-	if code, err := queryRecall(ctx, ".", query, 4000); err == nil {
-		result["code"] = code
-	}
-	return json.MarshalIndent(result, "", "  ")
-}
-
 func usage(out io.Writer) error {
 	_, err := fmt.Fprintln(out, `mimir remembers
 
@@ -210,4 +195,23 @@ func parseRecallArgs(args []string) ([]string, int, bool, error) {
 		}
 	}
 	return query, budget, jsonOut, nil
+}
+
+var (
+	version = "0.0.0-dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
+func SetBuildInfo(buildVersion, buildCommit, buildDate string) {
+	version = buildVersion
+	commit = buildCommit
+	date = buildDate
+}
+
+func versionString() string {
+	if commit == "unknown" {
+		return version
+	}
+	return version + " (" + commit + ")"
 }
