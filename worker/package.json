@@ -4,12 +4,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "build:dashboard": "bun --cwd=web run build",
+    "deploy": "bun run build:dashboard && wrangler deploy",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json && bun --cwd=web run typecheck"
   },
   "dependencies": {
-    "hono": "^4.7.0"
+    "hono": "^4.7.0",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

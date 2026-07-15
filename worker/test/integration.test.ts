@@ -6,7 +6,7 @@ const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', outcome_src TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
-CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL);
+ CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session_files (session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(session_id, file));
 CREATE TABLE session_errors (session_id TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(session_id, signature));
@@ -59,8 +59,9 @@ describe("Worker integration", () => {
     const session = await env.DB.prepare("SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'session-1'").first<{ request_count: number; tokens_in: number; tokens_out: number }>();
     expect(session).toEqual({ request_count: 1, tokens_in: 5, tokens_out: 3 });
     expect(await env.DB.prepare("SELECT file FROM session_files WHERE session_id = 'session-1'").first<{ file: string }>()).toEqual({ file: "src/auth.ts" });
-    const exchange = await env.DB.prepare("SELECT r2_key FROM exchanges WHERE session_id = 'session-1'").first<{ r2_key: string }>();
+    const exchange = await env.DB.prepare("SELECT r2_key, input_tokens, output_tokens, access_token_label FROM exchanges WHERE session_id = 'session-1'").first<{ r2_key: string; input_tokens: number; output_tokens: number; access_token_label: string }>();
     expect(exchange?.r2_key).toMatch(/^log\//);
+    expect(exchange).toMatchObject({ input_tokens: 5, output_tokens: 3, access_token_label: "test" });
     const object = await env.LOGS.get(exchange!.r2_key);
     expect(await object!.text()).not.toContain("private-value");
   });
@@ -94,5 +95,10 @@ describe("Worker integration", () => {
     const init = { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ model: "openai/test", messages: [] }) };
     await Promise.all([request("/v1/chat/completions", init), request("/v1/chat/completions", init)]);
     expect(await env.DB.prepare("SELECT COUNT(*) AS sessions, SUM(request_count) AS requests FROM sessions").first()).toEqual({ sessions: 1, requests: 2 });
+  });
+
+  it("requires Cloudflare Access for dashboard APIs", async () => {
+    const response = await request("/dashboard/api/bootstrap");
+    expect(response.status).toBe(403);
   });
 });

@@ -46,7 +46,8 @@ func TestWorkerURL(t *testing.T) {
 }
 
 func TestMaterializeWorker(t *testing.T) {
-	source := t.TempDir()
+	root := t.TempDir()
+	source := filepath.Join(root, "worker")
 	if err := os.MkdirAll(filepath.Join(source, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +55,12 @@ func TestMaterializeWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(source, "src", "index.ts"), []byte("export default {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "assets", "images"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "images", "mimir-readme.png"), []byte("logo"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(envMimirHome, t.TempDir())
@@ -64,12 +71,21 @@ func TestMaterializeWorker(t *testing.T) {
 	if !pathExists(filepath.Join(target, "src", "index.ts")) {
 		t.Fatal("worker source was not materialized")
 	}
+	if !pathExists(filepath.Join(filepath.Dir(target), "assets", "images", "mimir-readme.png")) {
+		t.Fatal("shared dashboard image was not materialized")
+	}
 }
 
 func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
 	dir := t.TempDir()
 	lock := filepath.Join(dir, "package-lock.json")
 	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "web", "bun.lock"), []byte("lockfile"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	first, err := workerDependencyHash(dir)

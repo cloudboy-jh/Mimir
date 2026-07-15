@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-15T19:00:00Z",
+  "title": "Design System: Mimir",
+  "extensions": {
+    "colorMeta": {
+      "action": { "role": "primary", "displayName": "Instrument Teal", "canonical": "#0f766e", "tonalRamp": ["#042f2e", "#134e4a", "#115e59", "#0f766e", "#14b8a6", "#5eead4", "#99f6e4", "#f0fdfa"] },
+      "canvas": { "role": "neutral", "displayName": "Recorder Canvas", "canonical": "#f7f7f5", "tonalRamp": ["#1c1c1a", "#333330", "#62625d", "#8d8d86", "#b8b8b1", "#deded9", "#ededeb", "#f7f7f5"] },
+      "ink": { "role": "neutral", "displayName": "Carbon Ink", "canonical": "#1c1c1a", "tonalRamp": ["#1c1c1a", "#333330", "#4a4a46", "#62625d", "#898983", "#b8b8b1", "#deded9", "#f7f7f5"] }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "Page and session titles." },
+      "body": { "displayName": "Body", "purpose": "Operational prose and table values." },
+      "mono": { "displayName": "Evidence Mono", "purpose": "Identifiers and machine values only." }
+    },
+    "shadows": [
+      { "name": "overlay-separation", "value": "0 18px 50px rgba(0,0,0,0.18)", "purpose": "Temporary detail sheets and menus only." }
+    ],
+    "motion": [
+      { "name": "state-change", "value": "160ms cubic-bezier(.16, 1, .3, 1)", "purpose": "Hover, focus, theme, and disclosure transitions." }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "760px" },
+      { "name": "wide", "value": "1180px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "The Flight Recorder",
+    "overview": "Mimir reconstructs agent work after the fact. The system is technical, quiet, exact, and organized around sessions rather than generic activity analytics.",
+    "keyCharacteristics": ["Sessions are primary", "Dense information uses rules", "Controls are compact and mechanical", "Accent color is rare", "Themes preserve hierarchy"],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Teal communicates interaction or current state only.", "section": "colors" },
+      { "name": "The Evidence Mono Rule", "body": "Use monospace only for character-level evidence.", "section": "typography" },
+      { "name": "The Flat Record Rule", "body": "Persistent information sits on one plane.", "section": "elevation" }
+    ],
+    "dos": ["Do make Sessions the default arrival route.", "Do use rules, alignment, and compact spacing for hierarchy."],
+    "donts": ["Don't resemble a generic SaaS dashboard.", "Don't make the activity table the center of Mimir.", "Don't use teal for decoration or surface blending."]
+  }
+}

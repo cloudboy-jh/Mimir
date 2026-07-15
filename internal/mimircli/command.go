@@ -99,6 +99,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return setup(ctx, args[1:], ioctx)
 	case "login":
 		return login(ctx, args[1:], ioctx)
+	case "dashboard":
+		return dashboard(ctx, ioctx)
 	case "connection":
 		return writeConnectionManifest(ioctx.Out)
 	case "outcome":
@@ -149,6 +151,7 @@ func usage(out io.Writer) error {
 Usage:
   mimir setup [--quick] [--json]
   mimir login [--json]
+  mimir dashboard
 
 Run "mimir help advanced" for diagnostic commands.`)
 	return err

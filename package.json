@@ -1,0 +1,9 @@
+{
+  "name": "mimir",
+  "private": true,
+  "scripts": {
+    "dev": "bun --cwd=worker/web run dev",
+    "build": "bun --cwd=worker/web run build",
+    "typecheck": "bun --cwd=worker/web run typecheck"
+  }
+}

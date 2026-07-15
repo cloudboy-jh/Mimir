@@ -2,6 +2,12 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "mimir",
   "main": "src/index.ts",
+  "assets": {
+    "directory": "./web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/dashboard/api/*", "/dashboard/log-objects/*", "/v1/*", "/whoami", "/sessions*", "/search", "/config", "/log/*"]
+  },
   "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {

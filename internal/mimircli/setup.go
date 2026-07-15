@@ -400,6 +400,20 @@ func materializeWorker(source string) (string, error) {
 	}); err != nil {
 		return "", err
 	}
+	assetSource := filepath.Join(filepath.Dir(source), "assets", "images", "mimir-readme.png")
+	if pathExists(assetSource) {
+		assetTarget := filepath.Join(filepath.Dir(target), "assets", "images", "mimir-readme.png")
+		if err := os.MkdirAll(filepath.Dir(assetTarget), 0o700); err != nil {
+			return "", err
+		}
+		data, err := os.ReadFile(assetSource)
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(assetTarget, data, 0o600); err != nil {
+			return "", err
+		}
+	}
 	return target, nil
 }
 
@@ -411,10 +425,14 @@ func ensureWorkerDependencies(ctx context.Context, dir string) error {
 	markerPath := filepath.Join(dir, ".mimir-dependencies")
 	marker, _ := os.ReadFile(markerPath)
 	wranglerReady := pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler")) || pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler.cmd"))
-	if wranglerReady && strings.TrimSpace(string(marker)) == hash {
+	webReady := pathExists(filepath.Join(dir, "web", "node_modules", ".bin", "vite")) || pathExists(filepath.Join(dir, "web", "node_modules", ".bin", "vite.cmd"))
+	if wranglerReady && webReady && strings.TrimSpace(string(marker)) == hash {
 		return nil
 	}
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
+		return err
+	}
+	if _, err := runCommand(ctx, filepath.Join(dir, "web"), nil, "bun", "install", "--frozen-lockfile"); err != nil {
 		return err
 	}
 	return os.WriteFile(markerPath, []byte(hash+"\n"), 0o600)
@@ -425,7 +443,11 @@ func workerDependencyHash(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading Worker package lock: %w", err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(lock)), nil
+	webLock, err := os.ReadFile(filepath.Join(dir, "web", "bun.lock"))
+	if err != nil {
+		return "", fmt.Errorf("reading dashboard Bun lock: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(append(lock, webLock...))), nil
 }
 
 func runWrangler(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {

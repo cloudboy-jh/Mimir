@@ -1,6 +1,6 @@
 # Mimir
 
-![Mimir](./mimir-readme.png)
+![Mimir](../assets/images/mimir-readme.png)
 
 ## Your agents forget. Mimir doesn't.
 
@@ -109,5 +109,5 @@ Mimir is built for personal scale: one developer, one Cloudflare deployment,
 direct writes, and permanent memory. There is no tenancy layer, dashboard,
 retention service, queue, or SaaS control plane.
 
-Read the full architecture in [`spec.md`](spec.md). Deferred work is tracked in
+Read the full architecture in [`Spec.md`](Spec.md). Deferred work is tracked in
 [`next-steps.md`](next-steps.md).

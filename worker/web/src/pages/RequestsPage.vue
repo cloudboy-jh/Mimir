@@ -1,0 +1,23 @@
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import { ArrowRight, Search } from "lucide-vue-next";
+import IdentityBadge from "@/components/IdentityBadge.vue";
+import { exchanges } from "@/lib/mock";
+import { compactNumber, outputSpeed, shortDate } from "@/lib/format";
+
+const query = ref("");
+const provider = ref("");
+const app = ref("");
+const filtered = computed(() => exchanges.filter((exchange) => {
+  const needle = query.value.toLowerCase();
+  return (!needle || `${exchange.model} ${exchange.repo} ${exchange.provider} ${exchange.harness}`.toLowerCase().includes(needle)) && (!provider.value || exchange.provider === provider.value) && (!app.value || exchange.harness === app.value);
+}));
+</script>
+
+<template>
+  <section>
+    <div class="mb-7 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between"><div><h1 class="text-[28px] font-semibold tracking-[-0.025em] text-zinc-950 dark:text-zinc-50">Requests</h1><p class="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">Model traffic captured as evidence within Mimir sessions.</p></div><div class="font-mono text-xs text-zinc-500">{{ filtered.length }} requests</div></div>
+    <div class="mb-4 flex flex-col gap-2 sm:flex-row"><label class="relative block min-w-0 flex-1 sm:max-w-sm"><span class="sr-only">Search requests</span><Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" /><input v-model="query" type="search" placeholder="Search model, repo, provider..." class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" /></label><select v-model="provider" aria-label="Provider" class="h-8.5 rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"><option value="">All providers</option><option>OpenAI</option><option>Amazon Bedrock</option><option>Google</option></select><select v-model="app" aria-label="App" class="h-8.5 rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"><option value="">All apps</option><option>OpenCode</option><option>Hermes</option><option>Claude Code</option></select></div>
+    <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"><div class="overflow-x-auto"><table class="w-full min-w-[1050px] border-collapse text-left"><thead><tr class="border-b border-zinc-200 bg-zinc-50 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900"><th class="px-4 py-2.5 font-medium">Date</th><th class="px-4 py-2.5 font-medium">Model</th><th class="px-4 py-2.5 font-medium">Provider</th><th class="px-4 py-2.5 font-medium">App</th><th class="px-4 py-2.5 font-medium">Repo</th><th class="px-4 py-2.5 text-right font-medium">Input</th><th class="px-4 py-2.5 text-right font-medium">Output</th><th class="px-4 py-2.5 text-right font-medium">Speed</th><th class="px-4 py-2.5 font-medium">Finish</th><th class="w-10" /></tr></thead><tbody><tr v-for="exchange in filtered" :key="exchange.id" class="group border-b border-zinc-200 text-[13px] last:border-b-0 hover:bg-stone-50 dark:border-zinc-800 dark:hover:bg-zinc-800/70"><td class="px-4 py-3.5 font-mono text-xs text-zinc-500">{{ shortDate(exchange.ts) }}</td><td class="px-4 py-3.5 font-medium text-zinc-900 dark:text-zinc-100"><IdentityBadge :label="exchange.model" /></td><td class="px-4 py-3.5"><IdentityBadge :label="exchange.provider" /></td><td class="px-4 py-3.5"><IdentityBadge :label="exchange.harness" /></td><td class="px-4 py-3.5 text-zinc-600 dark:text-zinc-400">{{ exchange.repo }}</td><td class="px-4 py-3.5 text-right font-mono text-xs">{{ compactNumber(exchange.input_tokens) }}</td><td class="px-4 py-3.5 text-right font-mono text-xs">{{ compactNumber(exchange.output_tokens) }}</td><td class="px-4 py-3.5 text-right font-mono text-xs text-zinc-500">{{ outputSpeed(exchange.output_tokens, exchange.latency_ms) }}</td><td class="px-4 py-3.5 font-mono text-xs text-zinc-500">{{ exchange.finish_reason }}</td><td class="pr-3"><RouterLink :to="`/requests/${exchange.id}`" :aria-label="`Open ${exchange.model} request`" class="grid size-7 place-items-center rounded-[4px] text-zinc-400 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"><ArrowRight class="size-4" /></RouterLink></td></tr><tr v-if="!filtered.length"><td colspan="10" class="py-16 text-center text-sm text-zinc-500">No requests match these filters.</td></tr></tbody></table></div></div>
+  </section>
+</template>
