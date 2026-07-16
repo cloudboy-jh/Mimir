@@ -14,7 +14,7 @@ Mimir is for an individual developer working across coding agents, repositories,
 
 ## Product Purpose
 
-The dashboard turns Mimir's captured model traffic into understandable work sessions. Its primary job is one-click session understanding: what the agent attempted, which models and tools were involved, what files and errors mattered, and whether the work was promoted, discarded, abandoned, or still unknown. The request log is supporting evidence, not the center of the product.
+The dashboard turns Mimir's captured model traffic into understandable work sessions. Its primary job is one-click session understanding: what the agent attempted, which models and tools were involved, what files and errors mattered, and whether the work landed, was discarded, was abandoned, or remains unresolved. The request log is supporting evidence, not the center of the product.
 
 Success means a developer can open Mimir, recognize the relevant session, and understand its shape and outcome without reading a transcript from the beginning.
 
@@ -36,7 +36,7 @@ Do not resemble a generic SaaS dashboard. Avoid pill navigation, decorative grad
 2. Make evidence one click away. Requests, files, errors, models, providers, and raw exchanges should support the session story without overwhelming it.
 3. Preserve operational density. Use familiar tables and controls with clear hierarchy rather than decorative containers.
 4. Let the wordmark carry the identity. Keep the surrounding interface quiet enough that Mimir feels distinctive without themed component gimmicks.
-5. Prefer exact state over inferred polish. Unknown, incomplete, unavailable, and failed states must remain explicit.
+5. Keep persistence and work result separate. Empty, Pending, Saved, Failed, or Partial capture describes durable memory; Landed, Discarded, Abandoned, or Unresolved describes the work outcome.
 
 ## Accessibility & Inclusion
 

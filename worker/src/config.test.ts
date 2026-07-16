@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldSave, validateConfigValues } from "./config";
+import { decideCapture, shouldSave, validateConfigValues } from "./config";
 
 describe("config", () => {
   it("applies repository and model exclusions", () => {
@@ -7,6 +7,8 @@ describe("config", () => {
     expect(shouldSave(config, "private-app", "anthropic/claude")).toBe(false);
     expect(shouldSave(config, "public-app", "model/free")).toBe(false);
     expect(shouldSave(config, "public-app", "anthropic/claude")).toBe(true);
+    expect(decideCapture(config, "private-app", "anthropic/claude", true)).toEqual({ capture: "skipped", reason: "excluded_repository" });
+    expect(decideCapture(config, "public-app", "model/free", true)).toEqual({ capture: "skipped", reason: "excluded_model" });
   });
 
   it("rejects unknown and malformed values", () => {

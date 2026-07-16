@@ -18,7 +18,7 @@ registerMachineRoutes(app);
 
 export { requestToken } from "./auth";
 export { deriveSessionFields, extractUsage, parseCapturedResponse, readBoundedText, redact } from "./capture";
-export { shouldSave, validateConfigValues } from "./config";
+export { decideCapture, shouldSave, validateConfigValues } from "./config";
 export { buildUpstreamHeaders } from "./proxy";
 export { app };
 export default app;

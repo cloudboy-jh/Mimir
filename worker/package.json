@@ -7,6 +7,7 @@
     "build:dashboard": "bun --cwd=web run build",
     "deploy": "bun run build:dashboard && wrangler deploy",
     "test": "vitest run",
+    "test:migrations": "node scripts/verify-migrations.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json && bun --cwd=web run typecheck"
   },
   "dependencies": {

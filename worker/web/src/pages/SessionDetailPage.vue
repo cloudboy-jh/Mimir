@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute } from "vue-router";
-import { ArrowLeft, FileCode2, GitBranch, TriangleAlert } from "lucide-vue-next";
+import { ArrowLeft, Database, FileCode2, GitBranch, TriangleAlert } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import { exchangesForSession, sessionById } from "@/lib/mock";
@@ -30,6 +30,19 @@ const sessionExchanges = computed(() => exchangesForSession(String(route.params.
     </div>
 
     <dl class="grid grid-cols-2 border-b border-zinc-200 md:grid-cols-4 dark:border-zinc-800"><div class="border-r border-zinc-200 py-5 pr-5 dark:border-zinc-800"><dt class="text-xs text-zinc-500">Duration</dt><dd class="mt-1 font-mono text-sm text-zinc-900 dark:text-zinc-100">{{ duration(session.started_at, session.ended_at) }}</dd></div><div class="border-r border-zinc-200 px-5 py-5 dark:border-zinc-800"><dt class="text-xs text-zinc-500">Requests</dt><dd class="mt-1 font-mono text-sm text-zinc-900 dark:text-zinc-100">{{ session.request_count }}</dd></div><div class="border-r border-zinc-200 py-5 pr-5 md:px-5 dark:border-zinc-800"><dt class="text-xs text-zinc-500">Input tokens</dt><dd class="mt-1 font-mono text-sm text-zinc-900 dark:text-zinc-100">{{ compactNumber(session.tokens_in) }}</dd></div><div class="py-5 pl-5"><dt class="text-xs text-zinc-500">Output tokens</dt><dd class="mt-1 font-mono text-sm text-zinc-900 dark:text-zinc-100">{{ compactNumber(session.tokens_out) }}</dd></div></dl>
+
+    <div class="grid gap-6 border-b border-zinc-200 py-6 md:grid-cols-2 dark:border-zinc-800">
+      <section aria-labelledby="capture-heading">
+        <h2 id="capture-heading" class="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100"><Database class="size-4" />Capture</h2>
+        <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-300"><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} saved · {{ session.capture.failed_exchanges }} failed · {{ session.capture.pending_exchanges }} pending</p>
+        <p class="mt-1 text-xs text-zinc-500">Last saved {{ session.capture.last_saved_at ? shortDate(session.capture.last_saved_at) : "Never" }}</p>
+      </section>
+      <section aria-labelledby="outcome-heading">
+        <h2 id="outcome-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Work outcome</h2>
+        <p v-if="session.outcome_reason" class="mt-2 text-sm leading-6 text-zinc-700 dark:text-zinc-300">{{ session.outcome_reason }}</p>
+        <p class="mt-1 text-xs text-zinc-500"><template v-if="session.outcome_src">Set by {{ session.outcome_src }}<template v-if="session.outcome_updated_at"> · {{ shortDate(session.outcome_updated_at) }}</template></template><template v-else>No outcome evidence recorded.</template></p>
+      </section>
+    </div>
 
     <div class="grid gap-8 pt-8 xl:grid-cols-[minmax(0,1fr)_320px]">
       <div><h2 class="mb-4 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Request timeline</h2><div class="border-t border-zinc-200 dark:border-zinc-800"><RouterLink v-for="exchange in sessionExchanges" :key="exchange.id" :to="`/requests/${exchange.id}`" class="grid gap-3 border-b border-zinc-200 py-4 hover:bg-stone-50 sm:grid-cols-[120px_minmax(0,1fr)_100px] sm:px-3 dark:border-zinc-800 dark:hover:bg-zinc-900"><time class="font-mono text-xs text-zinc-500">{{ shortDate(exchange.ts) }}</time><div><div class="flex flex-wrap items-center gap-3"><IdentityBadge :label="exchange.provider" /><IdentityBadge :label="exchange.model" /></div><p class="mt-2 line-clamp-1 text-xs text-zinc-500">{{ JSON.parse(exchange.request).messages[0].content }}</p></div><div class="font-mono text-xs text-zinc-500 sm:text-right">{{ exchange.input_tokens.toLocaleString() }} in</div></RouterLink><p v-if="!sessionExchanges.length" class="py-10 text-sm text-zinc-500">No request evidence is included in this mock session.</p></div></div>

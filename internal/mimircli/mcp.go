@@ -82,12 +82,16 @@ func handle(ctx context.Context, req request) map[string]any {
 }
 
 func tools() []map[string]any {
+	canonical := map[string]any{"type": "string", "enum": []string{"landed", "discarded", "abandoned", "unresolved"}}
+	legacy := map[string]any{"type": "string", "enum": []string{"landed", "discarded", "abandoned", "unresolved", "promoted", "unknown"}}
 	return []map[string]any{
 		{"name": "whoami", "description": "Return deployment identity and counts.", "inputSchema": schema(map[string]any{})},
-		{"name": "sessions_list", "description": "List remembered sessions.", "inputSchema": schema(map[string]any{})},
-		{"name": "sessions_get", "description": "Get one session and its exchanges.", "inputSchema": schema(map[string]any{"id": str()})},
+		{"name": "sessions_list", "description": "List session capture records; use session_status to verify saved capture state.", "inputSchema": schema(map[string]any{})},
+		{"name": "sessions_get", "description": "Read one saved session capture and its exchanges; this does not describe whether the work landed.", "inputSchema": schema(map[string]any{"id": str()})},
+		{"name": "session_status", "description": "Verify the persisted capture status for a session; work outcome is tracked separately.", "inputSchema": schema(map[string]any{"id": str()})},
+		{"name": "session_set_outcome", "description": "Record the result of the work for a session; this does not verify that capture was saved.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": canonical, "reason": str(), "evidence": map[string]any{}}, "id", "outcome")},
 		{"name": "search", "description": "Search session memory.", "inputSchema": schema(map[string]any{"query": str()})},
-		{"name": "mark", "description": "Set a session outcome.", "inputSchema": schema(map[string]any{"id": str(), "outcome": str()})},
+		{"name": "mark", "description": "Deprecated alias for setting a work outcome. Accepts legacy promoted and unknown values; does not verify saved capture.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": legacy}, "id", "outcome")},
 		{"name": "config_get", "description": "Read deployment config.", "inputSchema": schema(map[string]any{})},
 		{"name": "config_set", "description": "Set deployment config values.", "inputSchema": schema(map[string]any{"values": map[string]string{"type": "object"}})},
 	}
@@ -98,6 +102,10 @@ func schema(props map[string]any) map[string]any {
 	for key := range props {
 		required = append(required, key)
 	}
+	return map[string]any{"type": "object", "properties": props, "required": required}
+}
+
+func optionalSchema(props map[string]any, required ...string) map[string]any {
 	return map[string]any{"type": "object", "properties": props, "required": required}
 }
 
@@ -113,6 +121,32 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 		path = "/sessions"
 	case "sessions_get":
 		path = "/sessions/" + fmt.Sprint(args["id"])
+	case "session_status":
+		id, err := requiredToolString(args, "id")
+		if err != nil {
+			return "", err
+		}
+		path = "/sessions/" + id + "/status"
+	case "session_set_outcome":
+		id, err := requiredToolString(args, "id")
+		if err != nil {
+			return "", err
+		}
+		outcome, err := requiredToolString(args, "outcome")
+		if err != nil {
+			return "", err
+		}
+		if !canonicalOutcome(outcome) {
+			return "", fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
+		}
+		method, path = "POST", "/sessions/"+id+"/outcome"
+		body = map[string]any{"outcome": outcome, "source": "agent"}
+		if value, ok := args["reason"].(string); ok && strings.TrimSpace(value) != "" {
+			body.(map[string]any)["reason"] = value
+		}
+		if value, ok := args["evidence"]; ok && value != nil {
+			body.(map[string]any)["evidence"] = value
+		}
 	case "search":
 		data, err := federatedSearch(ctx, fmt.Sprint(args["query"]))
 		if err != nil {
@@ -137,6 +171,14 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 		return output.String(), nil
 	}
 	return string(data), nil
+}
+
+func requiredToolString(args map[string]any, key string) (string, error) {
+	value, ok := args[key].(string)
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	return value, nil
 }
 
 func readMessage(r *bufio.Reader) ([]byte, error) {

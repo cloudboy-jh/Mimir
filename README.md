@@ -40,6 +40,9 @@ The Worker proxies OpenAI Chat Completions and Anthropic Messages requests to
 OpenRouter. It preserves streaming responses, redacts a captured copy, stores
 complete exchanges in R2, and indexes searchable session metadata in D1.
 
+Saved means an exchange is durably persisted; Landed means the work produced a
+kept result. Neither state implies the other.
+
 `x-mimir-session` provides an exact session boundary when a harness supports
 it. Otherwise, Mimir groups requests using repository, harness, and inactivity.
 
@@ -101,15 +104,16 @@ A local MCP registration has this general shape:
 }
 ```
 
-The MCP server gives agents seven tools:
+The compact MCP surface includes:
 
 | Tool | Purpose |
 | --- | --- |
 | `whoami` | Verify the deployment. |
 | `sessions_list` | List captured sessions. |
 | `sessions_get` | Read a session and its exchanges. |
+| `session_status` | Verify saved count and last saved time. |
 | `search` | Search session memory and optional local code recall. |
-| `mark` | Set a session outcome. |
+| `session_set_outcome` | Record a work outcome with evidence. |
 | `config_get` | Read deployment configuration. |
 | `config_set` | Update deployment configuration. |
 

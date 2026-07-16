@@ -39,7 +39,9 @@ func markGitOutcome(ctx context.Context, id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	outcome := "unknown"
+	outcome := "unresolved"
+	reason := "no durable Git evidence found for files captured in the session"
+	evidence := "session started at " + started.Format(time.RFC3339)
 	for _, commit := range strings.Fields(commits) {
 		changed, err := runGit(ctx, ".", "show", "--format=", "--name-only", commit)
 		if err != nil || !overlaps(remote.Files, strings.Fields(changed)) {
@@ -47,19 +49,13 @@ func markGitOutcome(ctx context.Context, id string) ([]byte, error) {
 		}
 		branches, err := runGit(ctx, ".", "branch", "-r", "--contains", commit)
 		if err == nil && durableBranch(strings.Fields(branches)) {
-			outcome = "promoted"
+			outcome = "landed"
+			reason = "a commit touching captured session files is reachable from a durable remote branch"
+			evidence = "commit " + commit
 			break
 		}
 	}
-	if outcome == "unknown" && remote.Session.SourceRef != "" {
-		if _, err := runGit(ctx, ".", "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+remote.Session.SourceRef); err != nil {
-			outcome = "discarded"
-		}
-	}
-	if outcome == "unknown" && time.Since(started) >= 7*24*time.Hour {
-		outcome = "abandoned"
-	}
-	return remoteRequest(ctx, "POST", "/sessions/"+id+"/outcome", map[string]string{"outcome": outcome, "source": "git"})
+	return remoteRequest(ctx, "POST", "/sessions/"+id+"/outcome", map[string]string{"outcome": outcome, "source": "agent", "reason": reason, "evidence": evidence})
 }
 
 func overlaps(expected, changed []string) bool {

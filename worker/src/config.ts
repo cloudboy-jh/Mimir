@@ -5,6 +5,10 @@ export type SaveConfig = {
   gapMinutes: number;
 };
 
+export type CaptureDecision =
+  | { capture: "scheduled"; reason: "enabled" }
+  | { capture: "skipped"; reason: "disabled" | "excluded_repository" | "excluded_model" | "missing_response_body" };
+
 export async function readConfig(db: D1Database) {
   const result = await db.prepare("SELECT key, value FROM config").all<{ key: string; value: string }>();
   const config: Record<string, unknown> = {
@@ -31,6 +35,14 @@ export async function readSaveConfig(db: D1Database): Promise<SaveConfig> {
 
 export function shouldSave(config: SaveConfig, repo: string | null, model: string) {
   return config.enabled && !config.excludeRepos.some((value) => matches(value, repo ?? "")) && !config.excludeModels.some((value) => matches(value, model));
+}
+
+export function decideCapture(config: SaveConfig, repo: string | null, model: string, hasResponseBody: boolean): CaptureDecision {
+  if (!config.enabled) return { capture: "skipped", reason: "disabled" };
+  if (config.excludeRepos.some((value) => matches(value, repo ?? ""))) return { capture: "skipped", reason: "excluded_repository" };
+  if (config.excludeModels.some((value) => matches(value, model))) return { capture: "skipped", reason: "excluded_model" };
+  if (!hasResponseBody) return { capture: "skipped", reason: "missing_response_body" };
+  return { capture: "scheduled", reason: "enabled" };
 }
 
 export function validateConfigValues(values: Record<string, unknown>) {

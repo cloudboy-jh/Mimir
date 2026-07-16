@@ -7,7 +7,7 @@ second product specification.
 
 - Replace mock data with the existing `/dashboard/api/*` endpoints.
 - Add loading, empty, unavailable, and Access-denied states.
-- Connect session outcome marking.
+- Connect capture status and evidenced outcome controls.
 - Add cursor pagination and filter serialization.
 - Keep `worker/web/src/lib/mock.ts` as the only fixture source until the live
   design is explicitly approved.
@@ -48,8 +48,8 @@ SPA.
 
 ## 6. Harden Capture And Search
 
-- Define cleanup behavior for R2 writes that fail before D1 indexing completes.
-- Surface capture failures through useful observability.
+- Define operational cadence and orphan cleanup policy for reconciliation.
+- Add capture-failure alerting and operational views to Worker observability.
 - Decide whether large-response capture should truncate or remain all-or-none.
 - Replace ignored search fields or remove them from the request contract.
 - Decide whether `session.abandon_days` should drive an explicit lifecycle job

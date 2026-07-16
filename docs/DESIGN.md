@@ -141,7 +141,7 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 
 ### Chips
 - **Style:** Small bordered labels for status and filters, with compact 5px corners rather than fully rounded capsules.
-- **State:** Selected filters invert to carbon ink; semantic outcomes retain text labels and restrained semantic color.
+- **State:** Selected filters invert to carbon ink; outcome labels use exactly Landed, Discarded, Abandoned, or Unresolved and retain restrained semantic color plus an icon.
 
 ### Cards / Containers
 - **Corner Style:** Slightly eased panels (7px radius).
@@ -159,7 +159,8 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 - Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, plain route links follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band.
 
 ### Session Record
-- A session row leads with repository and intent, then outcome, recency, app/model evidence, request count, and token totals. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
+- A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
+- Session detail may show outcome source, reason, and timestamp as audit metadata. Unresolved means no evidenced result has been recorded; it does not mean capture failed.
 
 ## Do's and Don'ts
 

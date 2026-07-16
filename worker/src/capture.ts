@@ -18,32 +18,132 @@ type CaptureInput = {
   started: number;
 };
 
-export async function capture(env: Bindings, input: CaptureInput) {
-  const responseText = await readBoundedText(input.archiveBody, MAX_RESPONSE_BYTES);
-  const response = parseCapturedResponse(responseText, input.responseType);
-  const config = await readConfig(env.DB);
-  const patterns = stringArray(config["redact.patterns"]);
+type PreparedCapture = {
+  response: unknown;
+  redactedResponse: unknown;
+  usage: ReturnType<typeof extractUsage>;
+  provider: string | null;
+  finishReason: string | null;
+  responseExcerpt: string;
+  files: string[];
+  errors: string[];
+};
+
+export async function capture(env: Bindings, input: CaptureInput): Promise<void> {
   const id = ulid();
-  const now = new Date().toISOString();
-  const r2Key = `log/${now.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
-  const redactedRequest = redact(input.request, patterns);
-  const redactedResponse = redact(response, patterns);
-  const session = await resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, now);
-  const usage = extractUsage(response);
-  const provider = extractProvider(response);
-  const finishReason = extractFinishReason(response);
-  const derived = deriveSessionFields(redactedRequest, redactedResponse);
-  const latency = Date.now() - input.started;
-  const log = { id, ts: now, session: input.declaredSession, model: input.model, provider, finish_reason: finishReason, endpoint: input.endpoint, request: redactedRequest, response: redactedResponse, usage, latency_ms: latency, meta: { repo: input.repo, harness: input.harness } };
-  await env.LOGS.put(r2Key, JSON.stringify(log), { httpMetadata: { contentType: "application/json" } });
-  const requestExcerpt = excerpt(JSON.stringify(redactedRequest));
-  const responseExcerpt = excerpt(JSON.stringify(redactedResponse));
-  await env.DB.batch([
-    env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(id, session.id, now, input.endpoint, input.model, requestExcerpt, responseExcerpt, JSON.stringify(usage), latency, input.repo, input.harness, r2Key, provider, finishReason, input.accessTokenLabel, usage.prompt_tokens, usage.completion_tokens),
-    env.DB.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = 'active', inactive_at = NULL, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?").bind(now, now, now, now, input.harness, input.model, usage.prompt_tokens, usage.completion_tokens, session.id),
-    ...derived.files.map((file) => env.DB.prepare("INSERT OR IGNORE INTO session_files(session_id, file) VALUES (?, ?)").bind(session.id, file)),
-    ...derived.errors.map((signature) => env.DB.prepare("INSERT OR IGNORE INTO session_errors(session_id, signature) VALUES (?, ?)").bind(session.id, signature)),
+  const activityAt = new Date(input.started).toISOString();
+  const responseResultPromise = readBoundedText(input.archiveBody, MAX_RESPONSE_BYTES)
+    .then((text) => ({ text, error: null as unknown }))
+    .catch((error: unknown) => ({ text: "", error }));
+  const [config, session, responseResult] = await Promise.all([
+    readConfig(env.DB),
+    resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, activityAt),
+    responseResultPromise,
   ]);
+  const patterns = stringArray(config["redact.patterns"]);
+  const redactedRequest = redact(input.request, patterns);
+  const requestExcerpt = excerpt(JSON.stringify(redactedRequest));
+  if (responseResult.error) {
+    const acceptedAt = new Date().toISOString();
+    const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
+    const latency = Date.now() - input.started;
+    const accepted = await acceptExchange(env.DB, input, id, session.id, activityAt, acceptedAt, r2Key, requestExcerpt, "", latency, { prompt_tokens: 0, completion_tokens: 0 }, null, null, [], []);
+    if (!accepted) return;
+    const tooLarge = responseResult.error instanceof Error && responseResult.error.message === "capture limit exceeded";
+    const failureCode = tooLarge ? "response_too_large" : "response_read_failed";
+    await failExchange(env.DB, id, failureCode, tooLarge ? "response_size_limit" : "response_read");
+    logCaptureError(tooLarge ? "capture response exceeded size limit" : "capture response read failed", responseResult.error, id, session.id, failureCode);
+    return;
+  }
+
+  const parsedResponse = parseCapturedResponse(responseResult.text, input.responseType);
+  const redactedResponse = redact(parsedResponse, patterns);
+  const derived = deriveSessionFields(redactedRequest, redactedResponse);
+  const prepared: PreparedCapture = {
+    response: parsedResponse,
+    redactedResponse,
+    usage: extractUsage(parsedResponse),
+    provider: extractProvider(parsedResponse),
+    finishReason: extractFinishReason(parsedResponse),
+    responseExcerpt: excerpt(JSON.stringify(redactedResponse)),
+    files: derived.files,
+    errors: derived.errors,
+  };
+  const acceptedAt = new Date().toISOString();
+  const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
+  const latency = Date.now() - input.started;
+  const accepted = await acceptExchange(env.DB, input, id, session.id, activityAt, acceptedAt, r2Key, requestExcerpt, prepared.responseExcerpt, latency, prepared.usage, prepared.provider, prepared.finishReason, prepared.files, prepared.errors);
+  if (!accepted) return;
+
+  const reconstructed = prepared.redactedResponse as { content?: unknown; events?: unknown };
+  const response = input.responseType.includes("text/event-stream")
+    ? { format: "reconstructed_sse", content: reconstructed.content ?? "", events: reconstructed.events ?? [] }
+    : { format: "json", body: prepared.redactedResponse };
+  const envelope = {
+    schema_version: 1,
+    exchange_id: id,
+    session_id: session.id,
+    declared_session_id: input.declaredSession,
+    captured_at: acceptedAt,
+    endpoint: input.endpoint,
+    request: redactedRequest,
+    response,
+    metadata: { repo: input.repo, harness: input.harness, git_ref: input.sourceRef, model: input.model, provider: prepared.provider, finish_reason: prepared.finishReason },
+    usage: { input_tokens: prepared.usage.prompt_tokens, output_tokens: prepared.usage.completion_tokens },
+    latency_ms: latency,
+    redaction: { version: 1 },
+  };
+  const objectBody = JSON.stringify(envelope);
+  const r2Bytes = new TextEncoder().encode(objectBody).byteLength;
+  try {
+    await env.LOGS.put(r2Key, objectBody, { httpMetadata: { contentType: "application/json" } });
+  } catch (error) {
+    await failExchange(env.DB, id, "r2_write_failed", "r2_write");
+    logCaptureError("capture R2 write failed", error, id, session.id, "r2_write_failed");
+    return;
+  }
+
+  try {
+    await finalizeAcceptedExchange(env.DB, id, session.id, activityAt, new Date().toISOString(), input.harness, input.model, prepared.usage.prompt_tokens, prepared.usage.completion_tokens, r2Bytes, true);
+  } catch (error) {
+    logCaptureError("capture D1 finalization failed", error, id, session.id, "d1_finalize_failed");
+  }
+}
+
+async function acceptExchange(db: D1Database, input: CaptureInput, id: string, sessionId: string, activityAt: string, acceptedAt: string, r2Key: string, requestExcerpt: string, responseExcerpt: string, latency: number, usage: ReturnType<typeof extractUsage>, provider: string | null, finishReason: string | null, files: string[], errors: string[]) {
+  try {
+    await db.batch([
+      db.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'enabled', ?, 1)")
+        .bind(id, sessionId, activityAt, input.endpoint, input.model, requestExcerpt, responseExcerpt, JSON.stringify(usage), latency, input.repo, input.harness, r2Key, provider, finishReason, input.accessTokenLabel, usage.prompt_tokens, usage.completion_tokens, acceptedAt),
+      ...files.map((file) => db.prepare("INSERT INTO exchange_files(exchange_id, session_id, file) VALUES (?, ?, ?)").bind(id, sessionId, file)),
+      ...errors.map((signature) => db.prepare("INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES (?, ?, ?)").bind(id, sessionId, signature)),
+    ]);
+    return true;
+  } catch (error) {
+    logCaptureError("capture D1 acceptance failed", error, id, sessionId, "d1_accept_failed");
+    return false;
+  }
+}
+
+export async function finalizeAcceptedExchange(db: D1Database, exchangeId: string, sessionId: string, activityAt: string, savedAt: string, harness: string | null, model: string, inputTokens: number, outputTokens: number, r2Bytes: number | null, reactivate: boolean) {
+  await db.batch([
+    db.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(activityAt, activityAt, activityAt, activityAt, harness, reactivate ? 1 : 0, reactivate ? 1 : 0, model, inputTokens, outputTokens, sessionId, exchangeId),
+    db.prepare("INSERT OR IGNORE INTO session_files(session_id, file) SELECT session_id, file FROM exchange_files WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
+    db.prepare("INSERT OR IGNORE INTO session_errors(session_id, signature) SELECT session_id, signature FROM exchange_errors WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
+    db.prepare("UPDATE exchanges SET capture_status = 'saved', capture_reason = 'enabled', saved_at = ?, failed_at = NULL, failure_code = NULL, r2_bytes = ? WHERE id = ? AND capture_status = 'accepted'").bind(savedAt, r2Bytes, exchangeId),
+  ]);
+}
+
+async function failExchange(db: D1Database, exchangeId: string, failureCode: string, reason: string) {
+  try {
+    await db.prepare("UPDATE exchanges SET capture_status = 'failed', capture_reason = ?, failed_at = ?, failure_code = ? WHERE id = ? AND capture_status = 'accepted'").bind(reason, new Date().toISOString(), failureCode, exchangeId).run();
+  } catch (error) {
+    logCaptureError("capture failure status update failed", error, exchangeId, null, "d1_failure_update_failed");
+  }
+}
+
+function logCaptureError(message: string, error: unknown, exchangeId: string, sessionId: string | null, failureCode: string) {
+  console.error(JSON.stringify({ message, error: error instanceof Error ? error.message : String(error), exchange_id: exchangeId, session_id: sessionId, failure_code: failureCode }));
 }
 
 export async function readBoundedText(stream: ReadableStream<Uint8Array> | null, limit: number) {

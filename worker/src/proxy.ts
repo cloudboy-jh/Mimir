@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { capture, readBoundedText } from "./capture";
-import { readSaveConfig, shouldSave } from "./config";
+import { decideCapture, readSaveConfig } from "./config";
 import { expireSessions } from "./sessions";
 import type { AppEnv } from "./types";
 
@@ -30,12 +30,14 @@ export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
   const harness = metadata(c.req.header("x-mimir-harness"));
   const config = await readSaveConfig(c.env.DB);
   await expireSessions(c.env.DB, config.gapMinutes);
-  const save = shouldSave(config, repo, model);
   const headers = buildUpstreamHeaders(c.req.raw.headers, c.env.OPENROUTER_API_KEY);
   const upstream = await fetch(`https://openrouter.ai/api/v1${endpoint === "chat" ? "/chat/completions" : "/messages"}`, { method: "POST", headers, body: requestBody });
-  if (!save || !upstream.body) return new Response(upstream.body, upstream);
-  const [clientBody, archiveBody] = upstream.body.tee();
+  const decision = decideCapture(config, repo, model, upstream.body !== null);
   const responseHeaders = new Headers(upstream.headers);
+  responseHeaders.set("x-mimir-capture", decision.capture);
+  responseHeaders.set("x-mimir-capture-reason", decision.reason);
+  if (decision.capture === "skipped" || !upstream.body) return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
+  const [clientBody, archiveBody] = upstream.body.tee();
   c.executionCtx.waitUntil(capture(c.env, {
     request,
     archiveBody,
@@ -48,7 +50,7 @@ export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
     sourceRef: metadata(c.req.header("x-mimir-git-ref")),
     responseType: upstream.headers.get("content-type") ?? "application/json",
     started,
-  }).catch((error) => console.error(JSON.stringify({ message: "exchange persistence failed", error: error instanceof Error ? error.message : String(error) }))));
+  }).catch((error) => console.error(JSON.stringify({ message: "exchange capture failed", error: error instanceof Error ? error.message : String(error) }))));
   return new Response(clientBody, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
 }
 

@@ -74,10 +74,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "sessions":
 		return remotePrint(ctx, ioctx.Out, "GET", "/sessions", nil)
 	case "session":
-		if len(args) != 2 {
-			return fmt.Errorf("usage: mimir session <id>")
-		}
-		return remotePrint(ctx, ioctx.Out, "GET", "/sessions/"+args[1], nil)
+		return cmdSession(ctx, args[1:], ioctx.Out)
 	case "search":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: mimir search <query>")
@@ -90,9 +87,18 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	case "mark":
 		if len(args) != 3 {
-			return fmt.Errorf("usage: mimir mark <session> <promoted|discarded|abandoned|unknown>")
+			return fmt.Errorf("usage: mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>")
 		}
 		return remotePrint(ctx, ioctx.Out, "POST", "/sessions/"+args[1]+"/mark", map[string]string{"outcome": args[2]})
+	case "reconcile":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir reconcile")
+		}
+		data, err := runReconcile(ctx)
+		if err != nil {
+			return err
+		}
+		return printRemoteData(ioctx.Out, data)
 	case "config":
 		return cmdConfig(ctx, args[1:], ioctx.Out)
 	case "setup":
@@ -111,10 +117,116 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(ioctx.Out, string(data))
-		return err
+		return printRemoteData(ioctx.Out, data)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func cmdSession(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "status" && len(args) < 2 {
+		return fmt.Errorf("usage: mimir session status <id> [--json]")
+	}
+	if len(args) == 1 {
+		return remotePrint(ctx, out, "GET", "/sessions/"+args[0], nil)
+	}
+	if len(args) >= 2 && args[0] == "status" {
+		if len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
+			return fmt.Errorf("usage: mimir session status <id> [--json]")
+		}
+		return printSessionStatus(ctx, out, args[1], len(args) == 3)
+	}
+	if len(args) >= 3 && args[0] == "outcome" {
+		id, outcome, reason, err := parseSessionOutcomeArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		body := map[string]any{"outcome": outcome, "source": "agent"}
+		if reason != "" {
+			body["reason"] = reason
+		}
+		return remotePrint(ctx, out, "POST", "/sessions/"+id+"/outcome", body)
+	}
+	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+}
+
+func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutput bool) error {
+	data, err := remoteRequest(ctx, "GET", "/sessions/"+id+"/status", nil)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return printRemoteData(out, data)
+	}
+	var status struct {
+		SessionID string `json:"session_id"`
+		Outcome   string `json:"outcome"`
+		Capture   struct {
+			Status           string `json:"status"`
+			SavedExchanges   int    `json:"saved_exchanges"`
+			FailedExchanges  int    `json:"failed_exchanges"`
+			PendingExchanges int    `json:"pending_exchanges"`
+			LastSavedAt      string `json:"last_saved_at"`
+		} `json:"capture"`
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return fmt.Errorf("decoding session status: %w", err)
+	}
+	lastSaved := status.Capture.LastSavedAt
+	if lastSaved == "" {
+		lastSaved = "never"
+	}
+	_, err = fmt.Fprintf(out, "Session   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
+	return err
+}
+
+func displayState(value string) string {
+	if value == "" {
+		return "Unavailable"
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func parseSessionOutcomeArgs(args []string) (id, outcome, reason string, err error) {
+	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
+		return "", "", "", fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+	}
+	id, outcome = args[0], args[1]
+	if !canonicalOutcome(outcome) {
+		return "", "", "", fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
+	}
+	for i := 2; i < len(args); i++ {
+		switch {
+		case args[i] == "--reason":
+			if reason != "" || i+1 >= len(args) {
+				return "", "", "", fmt.Errorf("--reason requires one value")
+			}
+			reason = args[i+1]
+			if strings.TrimSpace(reason) == "" {
+				return "", "", "", fmt.Errorf("--reason requires one value")
+			}
+			i++
+		case strings.HasPrefix(args[i], "--reason="):
+			if reason != "" {
+				return "", "", "", fmt.Errorf("--reason may only be specified once")
+			}
+			reason = strings.TrimPrefix(args[i], "--reason=")
+			if strings.TrimSpace(reason) == "" {
+				return "", "", "", fmt.Errorf("--reason requires one value")
+			}
+		default:
+			return "", "", "", fmt.Errorf("unexpected argument %q", args[i])
+		}
+	}
+	return id, outcome, reason, nil
+}
+
+func canonicalOutcome(outcome string) bool {
+	switch outcome {
+	case "landed", "discarded", "abandoned", "unresolved":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -137,11 +249,15 @@ func remotePrint(ctx context.Context, out io.Writer, method, path string, body a
 	if err != nil {
 		return err
 	}
+	return printRemoteData(out, data)
+}
+
+func printRemoteData(out io.Writer, data []byte) error {
 	var formatted any
 	if json.Unmarshal(data, &formatted) == nil {
 		data, _ = json.MarshalIndent(formatted, "", "  ")
 	}
-	_, err = fmt.Fprintln(out, string(data))
+	_, err := fmt.Fprintln(out, string(data))
 	return err
 }
 
@@ -152,6 +268,9 @@ Usage:
   mimir setup [--quick] [--json]
   mimir login [--json]
   mimir dashboard
+  mimir session status <id> [--json]
+  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
+  mimir reconcile
 
 Run "mimir help advanced" for diagnostic commands.`)
 	return err
@@ -167,8 +286,11 @@ Usage:
   mimir whoami
   mimir sessions
   mimir session <id>
+  mimir session status <id>
+  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir search <query>
-  mimir mark <session> <outcome>
+  mimir reconcile
+  mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>
   mimir outcome git <session>
   mimir config get
   mimir config set <key> <json-value>
