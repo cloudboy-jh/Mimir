@@ -6,15 +6,14 @@ import RequestDetailPage from "@/pages/RequestDetailPage.vue";
 import OverviewPage from "@/pages/OverviewPage.vue";
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory("/dashboard/"),
   routes: [
-    { path: "/", redirect: "/sessions" },
-    { path: "/dashboard", redirect: "/sessions" },
-    { path: "/sessions", component: SessionsPage },
-    { path: "/sessions/:id", component: SessionDetailPage },
-    { path: "/requests", component: RequestsPage },
-    { path: "/requests/:id", component: RequestDetailPage },
-    { path: "/overview", component: OverviewPage },
+    { path: "/", redirect: { name: "sessions" } },
+    { path: "/sessions", name: "sessions", component: SessionsPage },
+    { path: "/sessions/:id", name: "session-detail", component: SessionDetailPage },
+    { path: "/requests", name: "requests", component: RequestsPage },
+    { path: "/requests/:id", name: "request-detail", component: RequestDetailPage },
+    { path: "/overview", name: "overview", component: OverviewPage },
   ],
   scrollBehavior: () => ({ top: 0 }),
 });

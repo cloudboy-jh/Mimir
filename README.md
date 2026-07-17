@@ -2,6 +2,8 @@
 
 ![Mimir](assets/images/mimir-readme.png)
 
+**Durable session memory for coding agents.**
+
 Mimir is a private memory plane for coding agents. It captures redacted model
 exchanges as searchable sessions and gives agents access to that history
 through MCP. Everything runs in your Cloudflare account.
@@ -42,6 +44,15 @@ complete exchanges in R2, and indexes searchable session metadata in D1.
 
 Saved means an exchange is durably persisted; Landed means the work produced a
 kept result. Neither state implies the other.
+
+After meaningful work, agents can verify capture through `session_status`. The
+harness receives one compact receipt instead of infrastructure output:
+
+```text
+Saved to Mimir · 14 exchanges in this session · View session
+```
+
+The dashboard action appears only when Cloudflare Access is configured.
 
 `x-mimir-session` provides an exact session boundary when a harness supports
 it. Otherwise, Mimir groups requests using repository, harness, and inactivity.
@@ -111,7 +122,7 @@ The compact MCP surface includes:
 | `whoami` | Verify the deployment. |
 | `sessions_list` | List captured sessions. |
 | `sessions_get` | Read a session and its exchanges. |
-| `session_status` | Verify saved count and last saved time. |
+| `session_status` | Show a verified capture receipt and, when Access is configured, a dashboard link. |
 | `search` | Search session memory and optional local code recall. |
 | `session_set_outcome` | Record a work outcome with evidence. |
 | `config_get` | Read deployment configuration. |
@@ -126,9 +137,12 @@ automatically during normal work.
 mimir dashboard
 ```
 
-The dashboard is currently a deployed design preview backed by mock data. The
-CLI and MCP are the working interfaces for captured memory while live dashboard
-integration is completed.
+The session list, request log, and overview remain a deployed design preview
+backed by mock data. Browser routes live under `/dashboard/*`, so direct session
+links refresh safely without colliding with machine APIs. When Cloudflare Access
+is configured, a receipt link opens a live status view for that exact session
+with capture counts, last-saved time, outcome evidence, and expandable session
+details.
 
 ## Documentation
 

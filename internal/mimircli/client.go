@@ -11,6 +11,16 @@ import (
 	"strings"
 )
 
+type apiError struct {
+	StatusCode int
+	Status     string
+	Body       string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("Mimir API %s: %s", e.Status, e.Body)
+}
+
 func remoteRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
 	p, err := loadPointer()
 	if err != nil {
@@ -49,7 +59,7 @@ func remoteRequestWithPointer(ctx context.Context, p Pointer, method, path strin
 		return nil, err
 	}
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return nil, fmt.Errorf("Mimir API %s: %s", res.Status, strings.TrimSpace(string(data)))
+		return nil, &apiError{StatusCode: res.StatusCode, Status: res.Status, Body: strings.TrimSpace(string(data))}
 	}
 	return data, nil
 }

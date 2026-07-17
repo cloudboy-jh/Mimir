@@ -35,20 +35,23 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
   const responseResultPromise = readBoundedText(input.archiveBody, MAX_RESPONSE_BYTES)
     .then((text) => ({ text, error: null as unknown }))
     .catch((error: unknown) => ({ text: "", error }));
-  const [config, session, responseResult] = await Promise.all([
+  const [config, session] = await Promise.all([
     readConfig(env.DB),
     resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, activityAt),
-    responseResultPromise,
   ]);
   const patterns = stringArray(config["redact.patterns"]);
   const redactedRequest = redact(input.request, patterns);
   const requestExcerpt = excerpt(JSON.stringify(redactedRequest));
+  const acceptedAt = new Date().toISOString();
+  const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
+  const accepted = await acceptExchange(env.DB, input, id, session.id, activityAt, acceptedAt, r2Key, requestExcerpt);
+  if (!accepted) {
+    await responseResultPromise;
+    return;
+  }
+
+  const responseResult = await responseResultPromise;
   if (responseResult.error) {
-    const acceptedAt = new Date().toISOString();
-    const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
-    const latency = Date.now() - input.started;
-    const accepted = await acceptExchange(env.DB, input, id, session.id, activityAt, acceptedAt, r2Key, requestExcerpt, "", latency, { prompt_tokens: 0, completion_tokens: 0 }, null, null, [], []);
-    if (!accepted) return;
     const tooLarge = responseResult.error instanceof Error && responseResult.error.message === "capture limit exceeded";
     const failureCode = tooLarge ? "response_too_large" : "response_read_failed";
     await failExchange(env.DB, id, failureCode, tooLarge ? "response_size_limit" : "response_read");
@@ -69,11 +72,8 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
     files: derived.files,
     errors: derived.errors,
   };
-  const acceptedAt = new Date().toISOString();
-  const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${id}.json`;
   const latency = Date.now() - input.started;
-  const accepted = await acceptExchange(env.DB, input, id, session.id, activityAt, acceptedAt, r2Key, requestExcerpt, prepared.responseExcerpt, latency, prepared.usage, prepared.provider, prepared.finishReason, prepared.files, prepared.errors);
-  if (!accepted) return;
+  if (!await prepareAcceptedExchange(env.DB, id, session.id, prepared, latency)) return;
 
   const reconstructed = prepared.redactedResponse as { content?: unknown; events?: unknown };
   const response = input.responseType.includes("text/event-stream")
@@ -110,17 +110,29 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
   }
 }
 
-async function acceptExchange(db: D1Database, input: CaptureInput, id: string, sessionId: string, activityAt: string, acceptedAt: string, r2Key: string, requestExcerpt: string, responseExcerpt: string, latency: number, usage: ReturnType<typeof extractUsage>, provider: string | null, finishReason: string | null, files: string[], errors: string[]) {
+async function acceptExchange(db: D1Database, input: CaptureInput, id: string, sessionId: string, activityAt: string, acceptedAt: string, r2Key: string, requestExcerpt: string) {
   try {
-    await db.batch([
-      db.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'enabled', ?, 1)")
-        .bind(id, sessionId, activityAt, input.endpoint, input.model, requestExcerpt, responseExcerpt, JSON.stringify(usage), latency, input.repo, input.harness, r2Key, provider, finishReason, input.accessTokenLabel, usage.prompt_tokens, usage.completion_tokens, acceptedAt),
-      ...files.map((file) => db.prepare("INSERT INTO exchange_files(exchange_id, session_id, file) VALUES (?, ?, ?)").bind(id, sessionId, file)),
-      ...errors.map((signature) => db.prepare("INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES (?, ?, ?)").bind(id, sessionId, signature)),
-    ]);
+    await db.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version) VALUES (?, ?, ?, ?, ?, ?, '', '{}', 0, ?, ?, ?, ?, 0, 0, 'accepted', 'enabled', ?, 1)")
+      .bind(id, sessionId, activityAt, input.endpoint, input.model, requestExcerpt, input.repo, input.harness, r2Key, input.accessTokenLabel, acceptedAt).run();
     return true;
   } catch (error) {
     logCaptureError("capture D1 acceptance failed", error, id, sessionId, "d1_accept_failed");
+    return false;
+  }
+}
+
+async function prepareAcceptedExchange(db: D1Database, exchangeId: string, sessionId: string, prepared: PreparedCapture, latency: number) {
+  try {
+    await db.batch([
+      db.prepare("UPDATE exchanges SET response_excerpt = ?, usage_json = ?, latency_ms = ?, provider = ?, finish_reason = ?, input_tokens = ?, output_tokens = ? WHERE id = ? AND capture_status = 'accepted'")
+        .bind(prepared.responseExcerpt, JSON.stringify(prepared.usage), latency, prepared.provider, prepared.finishReason, prepared.usage.prompt_tokens, prepared.usage.completion_tokens, exchangeId),
+      ...prepared.files.map((file) => db.prepare("INSERT INTO exchange_files(exchange_id, session_id, file) VALUES (?, ?, ?)").bind(exchangeId, sessionId, file)),
+      ...prepared.errors.map((signature) => db.prepare("INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES (?, ?, ?)").bind(exchangeId, sessionId, signature)),
+    ]);
+    return true;
+  } catch (error) {
+    await failExchange(db, exchangeId, "d1_prepare_failed", "d1_prepare");
+    logCaptureError("capture D1 preparation failed", error, exchangeId, sessionId, "d1_prepare_failed");
     return false;
   }
 }

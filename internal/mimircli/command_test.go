@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExecuteVersion(t *testing.T) {
@@ -116,11 +117,14 @@ func TestExecuteSessionCommandsAndReconcile(t *testing.T) {
 }
 
 func TestExecuteSessionStatusHumanAndJSON(t *testing.T) {
+	oldSchedule := sessionStatusPollSchedule
+	sessionStatusPollSchedule = []time.Duration{0}
+	t.Cleanup(func() { sessionStatusPollSchedule = oldSchedule })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/sessions/session-1/status" {
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"saved","saved_exchanges":14,"failed_exchanges":1,"pending_exchanges":0,"last_saved_at":"2026-07-15T23:42:00Z"},"outcome":"unresolved"}`))
+		_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"saved","saved_exchanges":14,"failed_exchanges":1,"pending_exchanges":0,"last_saved_at":"2026-07-15T23:42:00Z"},"receipt":{"label":"Saved to Mimir","detail":"14 exchanges in this session","action_label":"View session"},"dashboard_url":"https://mimir.example/dashboard/sessions/session-1","outcome":"unresolved"}`))
 	}))
 	defer server.Close()
 	t.Setenv(envMimirHome, t.TempDir())
@@ -131,7 +135,7 @@ func TestExecuteSessionStatusHumanAndJSON(t *testing.T) {
 	if err := ExecuteIO(context.Background(), []string{"session", "status", "session-1"}, IO{Out: &human}); err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"Session   session-1", "Capture   Saved", "Saved     14", "Failed    1", "Outcome   Unresolved"} {
+	for _, value := range []string{"Saved to Mimir · 14 exchanges in this session", "Session   session-1", "Capture   Saved", "Saved     14", "Failed    1", "Outcome   Unresolved", "Dashboard https://mimir.example/dashboard/sessions/session-1"} {
 		if !strings.Contains(human.String(), value) {
 			t.Fatalf("human status missing %q: %s", value, human.String())
 		}

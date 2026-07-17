@@ -151,32 +151,25 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutput bool) error {
-	data, err := remoteRequest(ctx, "GET", "/sessions/"+id+"/status", nil)
+	status, err := getSessionStatus(ctx, id)
 	if err != nil {
 		return err
 	}
 	if jsonOutput {
+		data, err := sessionStatusJSON(status)
+		if err != nil {
+			return err
+		}
 		return printRemoteData(out, data)
 	}
-	var status struct {
-		SessionID string `json:"session_id"`
-		Outcome   string `json:"outcome"`
-		Capture   struct {
-			Status           string `json:"status"`
-			SavedExchanges   int    `json:"saved_exchanges"`
-			FailedExchanges  int    `json:"failed_exchanges"`
-			PendingExchanges int    `json:"pending_exchanges"`
-			LastSavedAt      string `json:"last_saved_at"`
-		} `json:"capture"`
+	lastSaved := "never"
+	if status.Capture.LastSavedAt != nil {
+		lastSaved = *status.Capture.LastSavedAt
 	}
-	if err := json.Unmarshal(data, &status); err != nil {
-		return fmt.Errorf("decoding session status: %w", err)
+	_, err = fmt.Fprintf(out, "%s\nSession   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", receiptSummary(status), status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
+	if err == nil && status.DashboardURL != nil {
+		_, err = fmt.Fprintf(out, "Dashboard %s\n", *status.DashboardURL)
 	}
-	lastSaved := status.Capture.LastSavedAt
-	if lastSaved == "" {
-		lastSaved = "never"
-	}
-	_, err = fmt.Fprintf(out, "Session   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
 	return err
 }
 

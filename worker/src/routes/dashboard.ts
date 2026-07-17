@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import { canonicalOutcome, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
-import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary } from "../storage";
+import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, sessionStatusResponse } from "../storage";
 import type { AppEnv } from "../types";
 
 export function registerDashboardRoutes(app: Hono<AppEnv>) {
@@ -91,7 +91,9 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/api/sessions/:id/status", async (c) => {
     const session = await c.env.DB.prepare("SELECT work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
-    return c.json({ session_id: c.req.param("id"), capture: await captureSummary(c.env.DB, c.req.param("id")), ...session });
+    const capture = await captureSummary(c.env.DB, c.req.param("id"));
+    c.header("cache-control", "no-store");
+    return c.json(sessionStatusResponse(c.req.url, c.req.param("id"), capture, session, true));
   });
 
   app.post("/dashboard/api/sessions/:id/mark", async (c) => {

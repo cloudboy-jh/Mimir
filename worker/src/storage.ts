@@ -9,6 +9,12 @@ export type CaptureSummary = {
   status: "empty" | "pending" | "saved" | "failed" | "partial";
 };
 
+export type CaptureReceipt = {
+  label: string;
+  detail: string;
+  action_label: "View session" | "View details" | null;
+};
+
 export const CAPTURE_SUMMARY_COLUMNS = "(SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_saved_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'failed') AS capture_failed_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'accepted') AS capture_pending_exchanges, (SELECT MAX(e.saved_at) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_last_saved_at";
 
 export type ReconcileResponse = {
@@ -52,6 +58,37 @@ export function attachCaptureSummary(row: Record<string, unknown>) {
   return { ...session, capture: captureSummaryValues(saved, failed, pending, lastSaved) };
 }
 
+export function captureReceipt(summary: CaptureSummary): CaptureReceipt {
+  const total = summary.saved_exchanges + summary.failed_exchanges + summary.pending_exchanges;
+  if (summary.pending_exchanges > 0 && summary.failed_exchanges > 0) {
+    return { label: "Partially saved", detail: `${summary.saved_exchanges} saved · ${summary.failed_exchanges} failed · ${summary.pending_exchanges} pending`, action_label: "View details" };
+  }
+  if (summary.status === "pending") {
+    return { label: "Saving to Mimir...", detail: exchangeDetail(total), action_label: "View session" };
+  }
+  if (summary.status === "partial") {
+    return { label: "Partially saved", detail: `${summary.saved_exchanges} of ${total} exchanges`, action_label: "View details" };
+  }
+  if (summary.status === "failed") {
+    return { label: "Mimir couldn't save this session", detail: exchangeDetail(summary.failed_exchanges), action_label: "View details" };
+  }
+  if (summary.status === "saved") {
+    return { label: "Saved to Mimir", detail: `${exchangeDetail(summary.saved_exchanges)} in this session`, action_label: "View session" };
+  }
+  return { label: "Not captured", detail: "No exchanges in this session", action_label: "View session" };
+}
+
+export function sessionStatusResponse(requestURL: string, sessionID: string, summary: CaptureSummary, session: Record<string, unknown>, dashboardAvailable: boolean) {
+  const receipt = captureReceipt(summary);
+  return {
+    session_id: sessionID,
+    capture: summary,
+    ...session,
+    receipt: dashboardAvailable ? receipt : { ...receipt, action_label: null },
+    dashboard_url: dashboardAvailable ? new URL(`/dashboard/sessions/${encodeURIComponent(sessionID)}`, requestURL).toString() : null,
+  };
+}
+
 function captureSummaryValues(saved: number, failed: number, accepted: number, lastSavedAt: string | null): CaptureSummary {
   let status: CaptureSummary["status"] = "empty";
   if (accepted > 0) status = "pending";
@@ -59,6 +96,10 @@ function captureSummaryValues(saved: number, failed: number, accepted: number, l
   else if (failed > 0) status = "failed";
   else if (saved > 0) status = "saved";
   return { saved_exchanges: saved, failed_exchanges: failed, pending_exchanges: accepted, last_saved_at: lastSavedAt, status };
+}
+
+function exchangeDetail(count: number) {
+  return `${count} ${count === 1 ? "exchange" : "exchanges"}`;
 }
 
 export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?: string, databaseCursor?: string, scanDatabase = true, scanR2 = true): Promise<ReconcileResponse> {

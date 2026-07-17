@@ -24,6 +24,10 @@ type request struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+type toolCallOutput struct {
+	Text string
+}
+
 func serveMCP(ctx context.Context, opts mcpOptions) error {
 	r := bufio.NewReader(opts.In)
 	for {
@@ -75,7 +79,8 @@ func handle(ctx context.Context, req request) map[string]any {
 		if err != nil {
 			return fail(err)
 		}
-		return ok(map[string]any{"content": []map[string]string{{"type": "text", "text": out}}})
+		result := map[string]any{"content": []map[string]string{{"type": "text", "text": out.Text}}, "isError": false}
+		return ok(result)
 	default:
 		return map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "method not found"}}
 	}
@@ -88,7 +93,7 @@ func tools() []map[string]any {
 		{"name": "whoami", "description": "Return deployment identity and counts.", "inputSchema": schema(map[string]any{})},
 		{"name": "sessions_list", "description": "List session capture records; use session_status to verify saved capture state.", "inputSchema": schema(map[string]any{})},
 		{"name": "sessions_get", "description": "Read one saved session capture and its exchanges; this does not describe whether the work landed.", "inputSchema": schema(map[string]any{"id": str()})},
-		{"name": "session_status", "description": "Verify the persisted capture status for a session; work outcome is tracked separately.", "inputSchema": schema(map[string]any{"id": str()})},
+		{"name": "session_status", "description": "Wait briefly for capture to settle, then return a compact receipt from authoritative session storage with a dashboard link when Access is configured. Work outcome is tracked separately.", "inputSchema": schema(map[string]any{"id": str()})},
 		{"name": "session_set_outcome", "description": "Record the result of the work for a session; this does not verify that capture was saved.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": canonical, "reason": str(), "evidence": map[string]any{}}, "id", "outcome")},
 		{"name": "search", "description": "Search session memory.", "inputSchema": schema(map[string]any{"query": str()})},
 		{"name": "mark", "description": "Deprecated alias for setting a work outcome. Accepts legacy promoted and unknown values; does not verify saved capture.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": legacy}, "id", "outcome")},
@@ -111,7 +116,7 @@ func optionalSchema(props map[string]any, required ...string) map[string]any {
 
 func str() map[string]string { return map[string]string{"type": "string"} }
 
-func callTool(ctx context.Context, name string, args map[string]any) (string, error) {
+func callTool(ctx context.Context, name string, args map[string]any) (toolCallOutput, error) {
 	method, path := "GET", ""
 	var body any
 	switch name {
@@ -124,20 +129,24 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	case "session_status":
 		id, err := requiredToolString(args, "id")
 		if err != nil {
-			return "", err
+			return toolCallOutput{}, err
 		}
-		path = "/sessions/" + id + "/status"
+		status, err := getSessionStatus(ctx, id)
+		if err != nil {
+			return toolCallOutput{}, err
+		}
+		return toolCallOutput{Text: receiptText(status)}, nil
 	case "session_set_outcome":
 		id, err := requiredToolString(args, "id")
 		if err != nil {
-			return "", err
+			return toolCallOutput{}, err
 		}
 		outcome, err := requiredToolString(args, "outcome")
 		if err != nil {
-			return "", err
+			return toolCallOutput{}, err
 		}
 		if !canonicalOutcome(outcome) {
-			return "", fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
+			return toolCallOutput{}, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
 		}
 		method, path = "POST", "/sessions/"+id+"/outcome"
 		body = map[string]any{"outcome": outcome, "source": "agent"}
@@ -150,9 +159,9 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	case "search":
 		data, err := federatedSearch(ctx, fmt.Sprint(args["query"]))
 		if err != nil {
-			return "", err
+			return toolCallOutput{}, err
 		}
-		return string(data), nil
+		return toolCallOutput{Text: string(data)}, nil
 	case "mark":
 		method, path, body = "POST", "/sessions/"+fmt.Sprint(args["id"])+"/mark", map[string]any{"outcome": args["outcome"]}
 	case "config_get":
@@ -160,17 +169,17 @@ func callTool(ctx context.Context, name string, args map[string]any) (string, er
 	case "config_set":
 		method, path, body = "PUT", "/config", args["values"]
 	default:
-		return "", fmt.Errorf("unknown tool: %s", name)
+		return toolCallOutput{}, fmt.Errorf("unknown tool: %s", name)
 	}
 	data, err := remoteRequest(ctx, method, path, body)
 	if err != nil {
-		return "", err
+		return toolCallOutput{}, err
 	}
 	var output bytes.Buffer
 	if json.Indent(&output, data, "", "  ") == nil {
-		return output.String(), nil
+		return toolCallOutput{Text: output.String()}, nil
 	}
-	return string(data), nil
+	return toolCallOutput{Text: string(data)}, nil
 }
 
 func requiredToolString(args map[string]any, key string) (string, error) {

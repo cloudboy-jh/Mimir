@@ -110,7 +110,7 @@ These routes do not implement the complete OpenAI or Anthropic API surfaces.
 | `GET` | `/whoami` | Return deployment URL and session/exchange counts. |
 | `GET` | `/sessions` | List up to 100 recent sessions with optional filters. |
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
-| `GET` | `/sessions/:id/status` | Return the derived capture summary. |
+| `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
 | `POST` | `/sessions/:id/outcome` | Append an evidenced work-outcome event. |
 | `POST` | `/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `POST` | `/reconcile` | Reconcile bounded D1 capture rows against R2 and report orphans. |
@@ -136,7 +136,9 @@ Session-list filters include repository, model, outcome, and date range.
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
 
-The Vue client does not consume these routes yet.
+The Vue client remains mock-backed except for an exact unknown session deep
+link, which consumes only `/dashboard/api/sessions/:id/status` to show its
+capture receipt and outcome.
 
 ## 5. Capture Lifecycle
 
@@ -150,10 +152,10 @@ For a supported model request, the Worker:
 6. Sends the request to OpenRouter.
 7. Returns the upstream response stream to the caller.
 8. Uses a second stream branch and `waitUntil` for persistence.
-9. Bounds the captured response at 20 MiB.
-10. Parses ordinary JSON or reconstructs server-sent events.
-11. Redacts the request and response.
-12. Resolves the session and records an accepted exchange in D1.
+9. Resolves the session, redacts the request, and records an accepted exchange in D1 while the archive stream is still being consumed.
+10. Bounds the captured response at 20 MiB.
+11. Parses ordinary JSON or reconstructs server-sent events.
+12. Redacts the response and derives searchable evidence.
 13. Writes the complete redacted v1 envelope to R2.
 14. Finalizes the exchange as saved and updates facets and session aggregates in D1.
 
@@ -222,6 +224,16 @@ separate capture object with `saved_exchanges`, `failed_exchanges`,
 `pending` means at least one accepted exchange remains; `partial` means both
 saved and failed exchanges exist; `empty` means none of those states exists.
 The Worker does not infer work outcomes from capture success.
+
+Status responses also contain a compact `receipt` with `label`, `detail`, and
+`action_label`. When Cloudflare Access is configured, they include a
+credential-free `dashboard_url` under `/dashboard/sessions/:id` and a `View
+session` or `View details` action. Without Access configuration, both fields are
+`null` rather than advertising a broken link. Receipt copy is intended for
+harness tool chrome: `Saved to Mimir · 14 exchanges in this session`. Raw IDs,
+timestamps, and failure codes remain available in API data and, when linked, on
+the session page rather than in normal agent prose. Status responses use
+`Cache-Control: no-store`.
 
 Outcome changes append immutable events containing `id`, `session_id`,
 `outcome`, `source`, optional `reason`, optional `evidence_json`, and
@@ -369,14 +381,17 @@ Tools:
 | `sessions_list` | none | `GET /sessions` |
 | `sessions_get` | `id` | `GET /sessions/:id` |
 | `search` | `query` | Remote search plus optional local recall |
-| `session_status` | `id` | `GET /sessions/:id/status` |
+| `session_status` | `id` | Bounded verification of `GET /sessions/:id/status` with a compact receipt and an optional Access-backed link |
 | `session_set_outcome` | `id`, `outcome`, optional `reason` and `evidence` | `POST /sessions/:id/outcome` |
 | `mark` | `id`, `outcome` | Deprecated legacy alias for `POST /sessions/:id/mark` |
 | `config_get` | none | `GET /config` |
 | `config_set` | `values` | `PUT /config` |
 
-MCP does not expose complete log retrieval or local indexing as standalone
-tools.
+`session_status` performs an immediate read followed by a bounded settle/poll
+while capture is pending or the latest exchange has not appeared yet. It
+returns the compact receipt as text for harness presentation. A still-pending
+final read remains pending; the tool never upgrades it optimistically. MCP does
+not expose complete log retrieval or local indexing as standalone tools.
 
 During migration, the deprecated API and MCP aliases accept `promoted` for
 `landed` and `unknown` for `unresolved`. Canonical APIs, projections, filters,
@@ -415,14 +430,14 @@ The Vue 3 dashboard is built and deployed as Worker static assets. It includes
 Sessions, Requests, Overview, and detail routes with light/dark themes and the
 design system defined in [`DESIGN.md`](DESIGN.md).
 
-The dashboard currently reads only `worker/web/src/lib/mock.ts`. Its capture
-and outcome lifecycle presentation previews the approved contract; it does not
-fetch dashboard APIs, mutate outcomes, or display captured records. `mimir
-dashboard` only opens `<worker-url>/dashboard`.
-
-Direct SPA routes under `/sessions*` currently collide with canonical Worker
-API routes during page refresh. Live integration must resolve that namespace
-before the dashboard can become the primary operational interface.
+The dashboard uses `/dashboard/*` for browser routes and keeps `/sessions*`
+reserved for the canonical machine API. Direct loads and receipt links use
+`/dashboard/sessions/:id`. Approved mock session reconstructions continue to
+come from `worker/web/src/lib/mock.ts`; an unknown deep-linked ID reads only the
+Access-protected status contract to render its capture receipt and outcome.
+Session lists, request records, overview data, and outcome mutation remain
+mock-only until full dashboard integration is approved. `mimir dashboard`
+opens `<worker-url>/dashboard`.
 
 ## 13. Observability
 

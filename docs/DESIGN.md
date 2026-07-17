@@ -162,6 +162,11 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 - A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
 - Session detail may show outcome source, reason, and timestamp as audit metadata. Unresolved means no evidenced result has been recorded; it does not mean capture failed.
 
+### Capture Receipt
+- The harness-facing receipt is one quiet line attached to the completed response, not agent prose: `Saved to Mimir · 14 exchanges`. Add `View session` only when dashboard Access is configured and the destination is usable.
+- Pending, partial, and failed states remain visible with direct language. Never replace them with optimistic success copy.
+- Keep raw session IDs, exact timestamps, failure codes, and storage metadata behind the session link. The linked session view uses inline disclosure for those details rather than a modal.
+
 ## Do's and Don'ts
 
 ### Do:

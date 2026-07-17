@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeMCPUsesNewlineDelimitedJSON(t *testing.T) {
@@ -67,12 +68,21 @@ func TestMCPListsSessionStatusAndOutcomeTools(t *testing.T) {
 }
 
 func TestMCPCallsSessionStatusAndOutcomeTools(t *testing.T) {
+	oldSchedule := sessionStatusPollSchedule
+	sessionStatusPollSchedule = []time.Duration{0}
+	t.Cleanup(func() { sessionStatusPollSchedule = oldSchedule })
 	requests := make(chan struct {
 		method string
 		path   string
 		body   map[string]any
-	}, 2)
+	}, 1)
+	statusCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sessions/session-1/status" {
+			statusCalls++
+			_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"saved","saved_exchanges":2,"failed_exchanges":0,"pending_exchanges":0,"last_saved_at":"2026-07-16T00:00:00Z"},"receipt":{"label":"Saved to Mimir","detail":"2 exchanges in this session","action_label":"View session"},"dashboard_url":"https://mimir.example/dashboard/sessions/session-1","outcome":"unresolved"}`))
+			return
+		}
 		request := struct {
 			method string
 			path   string
@@ -92,12 +102,12 @@ func TestMCPCallsSessionStatusAndOutcomeTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := callTool(context.Background(), "session_status", map[string]any{"id": "session-1"}); err != nil {
+	statusOutput, err := callTool(context.Background(), "session_status", map[string]any{"id": "session-1"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	statusRequest := <-requests
-	if statusRequest.method != http.MethodGet || statusRequest.path != "/sessions/session-1/status" {
-		t.Fatalf("status request %s %s", statusRequest.method, statusRequest.path)
+	if statusCalls != 2 || !strings.Contains(statusOutput.Text, "Saved to Mimir · 2 exchanges in this session · [View session]") {
+		t.Fatalf("calls=%d output=%#v", statusCalls, statusOutput)
 	}
 
 	if _, err := callTool(context.Background(), "session_set_outcome", map[string]any{"id": "session-1", "outcome": "landed", "reason": "merged", "evidence": "commit abc123"}); err != nil {
@@ -110,6 +120,30 @@ func TestMCPCallsSessionStatusAndOutcomeTools(t *testing.T) {
 	want := map[string]any{"outcome": "landed", "source": "agent", "reason": "merged", "evidence": "commit abc123"}
 	if got := mustJSON(t, outcomeRequest.body); got != mustJSON(t, want) {
 		t.Fatalf("outcome body %s, want %s", got, mustJSON(t, want))
+	}
+}
+
+func TestMCPStatusResultIsCompact(t *testing.T) {
+	oldSchedule := sessionStatusPollSchedule
+	sessionStatusPollSchedule = []time.Duration{0}
+	t.Cleanup(func() { sessionStatusPollSchedule = oldSchedule })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"partial","saved_exchanges":2,"failed_exchanges":1,"pending_exchanges":0,"last_saved_at":"2026-07-16T00:00:00Z"},"receipt":{"label":"Partially saved","detail":"2 of 3 exchanges","action_label":"View details"},"dashboard_url":"https://mimir.example/dashboard/sessions/session-1","outcome":"unresolved"}`))
+	}))
+	defer server.Close()
+	t.Setenv(envMimirHome, t.TempDir())
+	if err := savePointer(Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+	params, _ := json.Marshal(map[string]any{"name": "session_status", "arguments": map[string]any{"id": "session-1"}})
+	response := handle(context.Background(), request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "tools/call", Params: params})
+	result := response["result"].(map[string]any)
+	content := result["content"].([]map[string]string)
+	if got := content[0]["text"]; got != "Partially saved · 2 of 3 exchanges · [View details](https://mimir.example/dashboard/sessions/session-1)" {
+		t.Fatalf("text=%q", got)
+	}
+	if _, exists := result["structuredContent"]; exists || result["isError"] != false {
+		t.Fatalf("result=%#v", result)
 	}
 }
 

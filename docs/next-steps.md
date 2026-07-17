@@ -12,15 +12,11 @@ second product specification.
 - Keep `worker/web/src/lib/mock.ts` as the only fixture source until the live
   design is explicitly approved.
 
-## 2. Resolve Dashboard Routing
+## 2. Verify Dashboard Routing
 
-The SPA uses `/sessions*`, while canonical machine APIs use the same namespace
-and are configured to run Worker-first. Direct page loads therefore bypass the
-SPA.
-
-- Move browser routes or machine APIs to non-conflicting namespaces.
-- Preserve real browser URLs and refresh behavior.
-- Add deployment-level route tests, not only Vue Router tests.
+Browser routes now live under `/dashboard/*`, while canonical machine APIs keep
+the `/sessions*` namespace. Keep deployment-level route tests covering direct
+session receipt links, static assets, machine authentication, and Access APIs.
 
 ## 3. Finish Cloudflare Access Setup
 

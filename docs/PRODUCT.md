@@ -37,6 +37,7 @@ Do not resemble a generic SaaS dashboard. Avoid pill navigation, decorative grad
 3. Preserve operational density. Use familiar tables and controls with clear hierarchy rather than decorative containers.
 4. Let the wordmark carry the identity. Keep the surrounding interface quiet enough that Mimir feels distinctive without themed component gimmicks.
 5. Keep persistence and work result separate. Empty, Pending, Saved, Failed, or Partial capture describes durable memory; Landed, Discarded, Abandoned, or Unresolved describes the work outcome.
+6. Make persistence visible without turning it into log output. After meaningful work, the harness should show one compact receipt such as `Saved to Mimir · 14 exchanges`; when dashboard Access is configured, a `View session` action provides exact IDs, timestamps, and failure details.
 
 ## Accessibility & Inclusion
 

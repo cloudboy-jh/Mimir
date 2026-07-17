@@ -78,6 +78,34 @@ describe("Worker integration", () => {
     expect(envelope).toMatchObject({ schema_version: 1, exchange_id: exchange?.id, session_id: "session-1", declared_session_id: "session-1", response: { format: "reconstructed_sse", content: "src/auth.ts failed: boom" }, usage: { input_tokens: 5, output_tokens: 3 }, redaction: { version: 1 } });
   });
 
+  it("records an accepted exchange before the upstream archive finishes", async () => {
+    let closeStream: (() => void) | undefined;
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"choices":['));
+        closeStream = () => {
+          controller.enqueue(new TextEncoder().encode(']}'));
+          controller.close();
+        };
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(upstream, { headers: { "content-type": "application/json" } })));
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request("https://mimir.test/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "early-accepted" },
+      body: JSON.stringify({ model: "openai/test", messages: [] }),
+    }), env as Env & { OPENROUTER_API_KEY: string }, ctx);
+
+    await vi.waitFor(async () => {
+      expect(await env.DB.prepare("SELECT capture_status FROM exchanges WHERE session_id = 'early-accepted'").first()).toEqual({ capture_status: "accepted" });
+    });
+    closeStream?.();
+    await response.text();
+    await waitOnExecutionContext(ctx);
+    expect(await env.DB.prepare("SELECT capture_status FROM exchanges WHERE session_id = 'early-accepted'").first()).toEqual({ capture_status: "saved" });
+  });
+
   it("does not persist when saving is disabled", async () => {
     await env.DB.prepare("INSERT INTO config(key, value) VALUES('save.enabled', 'false')").run();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ choices: [] })));
@@ -145,7 +173,25 @@ describe("Worker integration", () => {
     await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('status-session', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')").run();
     await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, capture_reason, accepted_at, saved_at, schema_version) VALUES ('saved-status', 'status-session', '2026-01-01T00:00:00Z', 'chat', 1, 'log/status.json', 'saved', 'enabled', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z', 1)").run();
     const status = await request("/sessions/status-session/status", { headers: { authorization: "Bearer machine-token" } });
-    expect(await status.json()).toEqual({ session_id: "status-session", capture: { saved_exchanges: 1, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: "2026-01-01T00:00:01Z", status: "saved" }, outcome: "unresolved", outcome_src: null, outcome_updated_at: null, outcome_reason: null });
+    expect(await status.json()).toEqual({
+      session_id: "status-session",
+      capture: { saved_exchanges: 1, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: "2026-01-01T00:00:01Z", status: "saved" },
+      outcome: "unresolved",
+      outcome_src: null,
+      outcome_updated_at: null,
+      outcome_reason: null,
+      receipt: { label: "Saved to Mimir", detail: "1 exchange in this session", action_label: null },
+      dashboard_url: null,
+    });
+
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('pending-status', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('pending-exchange', 'pending-status', '2026-01-01T00:00:00Z', 'chat', 1, 'log/pending.json', 'accepted', '2026-01-01T00:00:00Z', 1)").run();
+    const pendingStatus = await request("/sessions/pending-status/status", { headers: { authorization: "Bearer machine-token" } });
+    expect(await pendingStatus.json()).toMatchObject({
+      capture: { status: "pending", pending_exchanges: 1 },
+      receipt: { label: "Saving to Mimir...", detail: "1 exchange", action_label: null },
+      dashboard_url: null,
+    });
 
     const marked = await request("/sessions/status-session/outcome", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ outcome: "promoted", source: "git", reason: "merged", evidence: { commit: "abc123" } }) });
     expect(await marked.json()).toMatchObject({ outcome: "landed", outcome_src: "agent", outcome_reason: "merged", evidence: { commit: "abc123" } });

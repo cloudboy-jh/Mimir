@@ -2,7 +2,7 @@ import type { Hono } from "hono";
 import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
 import { canonicalOutcome, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
-import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile } from "../storage";
+import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
 import type { AppEnv } from "../types";
 
 export function registerMachineRoutes(app: Hono<AppEnv>) {
@@ -64,7 +64,11 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   app.get("/sessions/:id/status", async (c) => {
     const session = await c.env.DB.prepare("SELECT work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
-    return c.json({ session_id: c.req.param("id"), capture: await captureSummary(c.env.DB, c.req.param("id")), ...session });
+    const capture = await captureSummary(c.env.DB, c.req.param("id"));
+    const hostname = new URL(c.req.url).hostname;
+    const dashboardAvailable = (hostname === "localhost" || hostname === "127.0.0.1") || !!(c.env.DASHBOARD_ACCESS_AUD && c.env.DASHBOARD_ACCESS_TEAM_DOMAIN);
+    c.header("cache-control", "no-store");
+    return c.json(sessionStatusResponse(c.req.url, c.req.param("id"), capture, session, dashboardAvailable));
   });
 
   app.post("/sessions/:id/mark", async (c) => {

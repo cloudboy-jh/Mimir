@@ -22,7 +22,9 @@ Exact session identity is optional. Harnesses without dynamic request headers us
 
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that an exchange was saved. Never report persistence from transport activity alone.
 
-After meaningful work, when the exact session ID is available, call `session_status`. Report the session ID, saved exchange count, and last saved timestamp from that result. Do not add noisy status messages during routine tool use or when no meaningful unit of work has completed.
+After meaningful work, when the exact session ID is available, call `session_status`. The tool waits briefly for background capture and returns a compact receipt such as `Saved to Mimir · 14 exchanges in this session`. When dashboard Access is configured, the receipt also includes `View session`. Let the harness display that tool result near the completed response; do not repeat the session ID, timestamp, counts, or receipt in agent prose unless the user explicitly asks for storage details.
+
+Treat `Saving to Mimir...`, `Partially saved`, and `Mimir couldn't save this session` as real user-visible states. Never rewrite them as saved. Do not call `session_status` during routine tool use or when no meaningful unit of work has completed.
 
 Set an outcome only when the completed work provides evidence. Use `session_set_outcome` with one canonical value:
 
