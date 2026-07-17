@@ -12,27 +12,52 @@ second product specification.
 - Keep `worker/web/src/lib/mock.ts` as the only fixture source until the live
   design is explicitly approved.
 
-## 2. Verify Dashboard Routing
+## 2. Add Session Listing And Browsing
+
+Add `mimir list` as a non-interactive, human-readable view of the 20 most
+recent sessions across all capture states. Each default row shows only the
+authoritative session ID and compact receipt, for example:
+
+```text
+Saved to Mimir · 1 exchange in this session · View session
+mimir-receipt-verification-20260716
+```
+
+- Add `--json` for scripts and automation while preserving future API fields.
+- Upgrade the existing MCP `sessions_list` tool to return the same compact
+  receipt-oriented records; agents should not shell out to the CLI.
+- Include pending, partial, failed, and empty sessions with the same honest copy
+  used by `session_status`.
+- Make the dashboard session link the only direct list action. Do not add
+  outcome mutation, reconciliation, copying, or interactive filtering to the
+  first version.
+- Keep the first implementation standard-library-only.
+- Add `mimir browse` later as a separate interactive command using BentoTUI for
+  keyboard navigation, filtering, and session selection. Revisit the
+  standard-library-only CLI constraint when that work begins; do not make
+  `mimir list` itself a TUI.
+
+## 3. Verify Dashboard Routing
 
 Browser routes now live under `/dashboard/*`, while canonical machine APIs keep
 the `/sessions*` namespace. Keep deployment-level route tests covering direct
 session receipt links, static assets, machine authentication, and Access APIs.
 
-## 3. Finish Cloudflare Access Setup
+## 4. Finish Cloudflare Access Setup
 
 - Document or automate creation of the dashboard Access application.
 - Configure `DASHBOARD_ACCESS_AUD` and `DASHBOARD_ACCESS_TEAM_DOMAIN` safely.
 - Verify static asset protection and dashboard API protection together.
 - Keep localhost development access without adding a Mimir password system.
 
-## 4. Release And Update Distribution
+## 5. Release And Update Distribution
 
 - Publish tagged releases with checksums.
 - Make the installed binary independent from a retained Go module cache.
 - Add a verified, atomic `mimir update` flow using a stable executable path.
 - Expose machine-readable version/update diagnostics for setup skills.
 
-## 5. Harden MCP Integration
+## 6. Harden MCP Integration
 
 - Add integration tests against current OpenCode, Hermes, and other supported
   MCP clients.
@@ -42,7 +67,7 @@ session receipt links, static assets, machine authentication, and Access APIs.
 - Publish tested harness recipes without putting harness-specific behavior in
   the Worker.
 
-## 6. Harden Capture And Search
+## 7. Harden Capture And Search
 
 - Define operational cadence and orphan cleanup policy for reconciliation.
 - Add capture-failure alerting and operational views to Worker observability.
