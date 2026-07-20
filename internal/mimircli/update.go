@@ -230,7 +230,7 @@ func extractZip(archive []byte) ([]byte, error) {
 // or nix; replacing those binaries directly would corrupt the manager's
 // bookkeeping.
 func managedByPackageManager(path string) bool {
-	lower := strings.ToLower(filepath.ToSlash(path))
+	lower := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
 	for _, marker := range []string{"/homebrew/", "/cellar/", "/linuxbrew/", "/scoop/", "/chocolatey/", "/nix/store/"} {
 		if strings.Contains(lower, marker) {
 			return true
