@@ -15,10 +15,11 @@ This file tracks concrete implementation gaps and technical debt remaining from 
 - **Index/recall coverage** — unit and end-to-end tests for `saveIndexAtomic`, `parseFile`, `score`, `rank`, `fit`, `locateSymbol`, and `queryRecall`.
 - **Release automation** — `.github/workflows/release.yml` runs the full suite on `v*` tags, then GoReleaser in a gated `release` environment.
 - **`mimir update`** — verified, atomic self-update from GitHub release assets with SHA-256 checks; refuses package-manager-owned installs.
+- **Live dashboard** — Sessions, Requests, Overview, R2 payload detail, pagination, and user outcome updates now read the Access-protected Worker APIs.
 
 ## Remaining
 
-- **`mimir browse`** — parked. A TUI requires a dependency, which conflicts with the standard-library-only CLI constraint, and the dashboard is still mock-only so there is nothing to deep-link into. Revisit after the dashboard connects to live Worker APIs; decide then whether the constraint gets a carve-out.
+- **`mimir browse`** — parked. A TUI requires a dependency, which conflicts with the standard-library-only CLI constraint. Decide whether the constraint gets a carve-out before implementation.
 
 ## Operational Follow-ups
 

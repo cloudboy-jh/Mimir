@@ -432,12 +432,10 @@ design system defined in [`DESIGN.md`](DESIGN.md).
 
 The dashboard uses `/dashboard/*` for browser routes and keeps `/sessions*`
 reserved for the canonical machine API. Direct loads and receipt links use
-`/dashboard/sessions/:id`. Approved mock session reconstructions continue to
-come from `worker/web/src/lib/mock.ts`; an unknown deep-linked ID reads only the
-Access-protected status contract to render its capture receipt and outcome.
-Session lists, request records, overview data, and outcome mutation remain
-mock-only until full dashboard integration is approved. `mimir dashboard`
-opens `<worker-url>/dashboard`.
+`/dashboard/sessions/:id`. Sessions, request metadata, overview aggregates, and
+outcome mutation read the Access-protected dashboard API. Full redacted request
+and response payloads are loaded from R2 through `/dashboard/log-objects/*`.
+`mimir dashboard` opens `<worker-url>/dashboard`.
 
 ## 13. Observability
 
@@ -461,6 +459,5 @@ developer's Cloudflare account.
 ## 15. Known Incomplete Work
 
 The implementation priorities are tracked in [`next-steps.md`](next-steps.md).
-The largest current gaps are live dashboard integration, dashboard routing and
-Access setup, release/update distribution, broader MCP conformance testing, and
-capture/search lifecycle hardening.
+The largest current gaps are release operations, broader MCP conformance
+testing, and capture/search lifecycle hardening.

@@ -78,9 +78,12 @@ func materializeWorker(source string) (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	assetSource := filepath.Join(filepath.Dir(source), "assets", "images", "mimir-readme.png")
-	if pathExists(assetSource) {
-		assetTarget := filepath.Join(filepath.Dir(target), "assets", "images", "mimir-readme.png")
+	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
+		assetSource := filepath.Join(filepath.Dir(source), "assets", "images", name)
+		if !pathExists(assetSource) {
+			continue
+		}
+		assetTarget := filepath.Join(filepath.Dir(target), "assets", "images", name)
 		if err := os.MkdirAll(filepath.Dir(assetTarget), 0o700); err != nil {
 			return "", err
 		}

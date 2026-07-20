@@ -137,12 +137,11 @@ automatically during normal work.
 mimir dashboard
 ```
 
-The session list, request log, and overview remain a deployed design preview
-backed by mock data. Browser routes live under `/dashboard/*`, so direct session
-links refresh safely without colliding with machine APIs. When Cloudflare Access
-is configured, a receipt link opens a live status view for that exact session
-with capture counts, last-saved time, outcome evidence, and expandable session
-details.
+The dashboard reads live session metadata from D1 and redacted request and
+response payloads from R2. Browser routes live under `/dashboard/*`, so direct
+session links refresh safely without colliding with machine APIs. Cloudflare
+Access protects dashboard data and receipt links without storing machine tokens
+in the browser.
 
 ## Documentation
 

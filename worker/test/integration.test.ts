@@ -28,6 +28,13 @@ async function request(path: string, init?: RequestInit) {
   return response;
 }
 
+async function dashboardRequest(path: string, init?: RequestInit) {
+  const ctx = createExecutionContext();
+  const response = await worker.fetch(new Request(`http://localhost${path}`, init), env as Env & { OPENROUTER_API_KEY: string }, ctx);
+  await waitOnExecutionContext(ctx);
+  return response;
+}
+
 beforeAll(async () => {
   await env.DB.exec(schema);
 });
@@ -245,6 +252,39 @@ describe("Worker integration", () => {
   it("requires Cloudflare Access for dashboard APIs", async () => {
     const response = await request("/dashboard/api/bootstrap");
     expect(response.status).toBe(403);
+  });
+
+  it("serves live dashboard sessions, requests, objects, overview, and outcome updates", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, harness, boundary, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent) VALUES ('dashboard-session', '2099-01-01T00:00:00Z', '2099-01-01T00:01:00Z', 'inactive', '2099-01-01T00:01:00Z', 'OpenCode', 'header', 'mimir', 'master', 'openai/test', 1, 7, 3, 'Connect live dashboard data')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, saved_at) VALUES ('dashboard-exchange', 'dashboard-session', '2099-01-01T00:00:30Z', '/v1/chat/completions', 'openai/test', 250, 'mimir', 'OpenCode', 'log/2099/01/01/dashboard-exchange.json', 'OpenAI', 'stop', 'test', 7, 3, 'saved', 'enabled', '2099-01-01T00:00:30Z', '2099-01-01T00:00:31Z')").run();
+    await env.DB.prepare("INSERT INTO session_files(session_id, file) VALUES ('dashboard-session', 'worker/web/src/lib/api.ts')").run();
+    await env.DB.prepare("INSERT INTO session_errors(session_id, signature) VALUES ('dashboard-session', 'example failure')").run();
+    const envelope = { schema_version: 1, exchange_id: "dashboard-exchange", session_id: "dashboard-session", captured_at: "2099-01-01T00:00:30Z", endpoint: "/v1/chat/completions", request: { messages: [{ role: "user", content: "Connect live dashboard data" }] }, response: { format: "json", body: { choices: [] } } };
+    await env.LOGS.put("log/2099/01/01/dashboard-exchange.json", JSON.stringify(envelope));
+
+    const sessions = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; capture: { status: string } }> };
+    expect(sessions.sessions).toContainEqual(expect.objectContaining({ id: "dashboard-session", capture: expect.objectContaining({ status: "saved" }) }));
+
+    const session = await (await dashboardRequest("/dashboard/api/sessions/dashboard-session")).json() as { files: string[]; errors: string[]; exchanges: Array<{ id: string }> };
+    expect(session.files).toEqual(["worker/web/src/lib/api.ts"]);
+    expect(session.errors).toEqual(["example failure"]);
+    expect(session.exchanges).toContainEqual(expect.objectContaining({ id: "dashboard-exchange" }));
+
+    const log = await (await dashboardRequest("/dashboard/api/log?limit=50")).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
+    expect(log.exchanges).toContainEqual(expect.objectContaining({ id: "dashboard-exchange" }));
+    expect(log.next_cursor).toBeNull();
+
+    const detail = await (await dashboardRequest("/dashboard/api/log/dashboard-exchange")).json() as { log_url: string };
+    expect(detail.log_url).toBe("/dashboard/log-objects/log/2099/01/01/dashboard-exchange.json");
+    expect(await (await dashboardRequest(detail.log_url)).json()).toEqual(envelope);
+
+    const overview = await (await dashboardRequest("/dashboard/api/overview")).json() as { totals: { requests: number; sessions: number; saved_exchanges: number }; models: Array<{ name: string }> };
+    expect(overview.totals).toMatchObject({ requests: 1, sessions: 1, saved_exchanges: 1 });
+    expect(overview.models).toContainEqual(expect.objectContaining({ name: "openai/test" }));
+
+    const updated = await dashboardRequest("/dashboard/api/sessions/dashboard-session/outcome", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ outcome: "landed", reason: "Live data verified" }) });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ id: "dashboard-session", outcome: "landed", outcome_src: "user", outcome_reason: "Live data verified" });
   });
 
   it("derives session intent from the first user message and keeps it sticky", async () => {

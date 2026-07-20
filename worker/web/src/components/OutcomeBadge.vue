@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CircleCheck, CircleDashed, CircleOff, CircleX } from "lucide-vue-next";
-import type { Outcome } from "@/lib/mock";
+import type { Outcome } from "@/lib/api";
 defineProps<{ outcome: Outcome }>();
 const outcomes = {
   landed: { icon: CircleCheck, label: "Landed" },

@@ -1,24 +1,47 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { ArrowRight, GitBranch, Search } from "lucide-vue-next";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { ArrowRight, GitBranch, RotateCw, Search } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
-import { sessions } from "@/lib/mock";
+import { errorMessage, listSessions, type Session } from "@/lib/api";
 import { compactNumber, duration, relativeDate } from "@/lib/format";
 
+const sessions = ref<Session[]>([]);
 const query = ref("");
 const outcome = ref("");
-const filtered = computed(() => sessions.filter((session) => {
-  const needle = query.value.toLowerCase();
-  return (!needle || `${session.intent} ${session.repo} ${session.harness} ${session.model_primary}`.toLowerCase().includes(needle)) && (!outcome.value || session.outcome === outcome.value);
+const loading = ref(true);
+const error = ref("");
+let controller: AbortController | null = null;
+
+const filtered = computed(() => sessions.value.filter((session) => {
+  const needle = query.value.trim().toLowerCase();
+  const haystack = [session.intent, session.repo, session.harness, session.model_primary].filter(Boolean).join(" ").toLowerCase();
+  return (!needle || haystack.includes(needle)) && (!outcome.value || session.outcome === outcome.value);
 }));
+
+async function load() {
+  controller?.abort();
+  controller = new AbortController();
+  loading.value = true;
+  error.value = "";
+  try {
+    sessions.value = await listSessions(controller.signal);
+  } catch (cause) {
+    if (!controller.signal.aborted) error.value = errorMessage(cause, "Sessions could not be loaded.");
+  } finally {
+    if (!controller.signal.aborted) loading.value = false;
+  }
+}
+
+onMounted(load);
+onBeforeUnmount(() => controller?.abort());
 </script>
 
 <template>
   <section>
     <div class="mb-7 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
       <div><h1 class="text-[28px] font-semibold tracking-[-0.025em] text-zinc-950 dark:text-zinc-50">Sessions</h1><p class="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">Understand what your agents attempted, what changed, and which work was worth keeping.</p></div>
-      <div class="font-mono text-xs text-zinc-500 dark:text-zinc-400">{{ filtered.length }} of {{ sessions.length }} sessions</div>
+      <div v-if="!loading" class="font-mono text-xs text-zinc-500 dark:text-zinc-400">{{ filtered.length }} of {{ sessions.length }} sessions</div>
     </div>
 
     <div class="mb-4 flex flex-col gap-2 sm:flex-row">
@@ -28,27 +51,20 @@ const filtered = computed(() => sessions.filter((session) => {
 
     <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div class="hidden grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] gap-4 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5 text-xs font-medium text-zinc-500 lg:grid dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"><span>Session</span><span>App / model</span><span>Outcome</span><span>Capture</span><span class="text-right">Tokens</span><span /></div>
-      <RouterLink v-for="session in filtered" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <span v-if="session.state === 'active'" class="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label="Active session" />
-            <h2 class="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ session.intent }}</h2>
-          </div>
-          <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-            <span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo }}</span>
-            <span class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span>
-            <span>{{ relativeDate(session.started_at) }}</span>
-            <span>{{ duration(session.started_at, session.ended_at) }}</span>
-            <span class="font-mono">{{ session.id }}</span>
-          </div>
-        </div>
-        <div class="min-w-0 space-y-1.5"><IdentityBadge :label="session.harness" /><IdentityBadge :label="session.model_primary" /></div>
-        <div><OutcomeBadge :outcome="session.outcome" /></div>
-        <div class="text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} saved<span v-if="session.capture.failed_exchanges"> · {{ session.capture.failed_exchanges }} failed</span></div>
-        <div class="text-left font-mono text-xs text-zinc-700 lg:text-right dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Tokens</span>{{ compactNumber(session.tokens_in + session.tokens_out) }}</div>
-        <ArrowRight class="hidden size-4 text-zinc-400 transition-transform group-hover:translate-x-0.5 lg:block" />
-      </RouterLink>
-      <div v-if="!filtered.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">No matching sessions</p><p class="mt-1 text-sm text-zinc-500">Clear a filter or try a broader search.</p></div>
+      <div v-if="loading" aria-busy="true" aria-label="Loading sessions">
+        <div v-for="index in 5" :key="index" class="grid gap-3 border-b border-zinc-200 px-4 py-5 last:border-b-0 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] dark:border-zinc-800"><div class="h-4 w-3/5 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-24 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-20 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div>
+      </div>
+      <div v-else-if="error" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load"><RotateCw class="size-3.5" />Retry</button></div>
+      <template v-else>
+        <RouterLink v-for="session in filtered" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
+          <div class="min-w-0"><div class="flex items-center gap-2"><span v-if="session.state === 'active'" class="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label="Active session" /><h2 class="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ session.intent || "Untitled session" }}</h2></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span class="font-mono">{{ session.id }}</span></div></div>
+          <div class="min-w-0 space-y-1.5"><IdentityBadge :label="session.harness || 'Unknown app'" /><IdentityBadge :label="session.model_primary || 'Unknown model'" /></div>
+          <div><OutcomeBadge :outcome="session.outcome" /></div>
+          <div class="text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} saved<span v-if="session.capture.failed_exchanges"> · {{ session.capture.failed_exchanges }} failed</span></div>
+          <div class="text-left font-mono text-xs text-zinc-700 lg:text-right dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Tokens</span>{{ compactNumber(session.tokens_in + session.tokens_out) }}</div><ArrowRight class="hidden size-4 text-zinc-400 transition-transform group-hover:translate-x-0.5 lg:block" />
+        </RouterLink>
+        <div v-if="!filtered.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">{{ sessions.length ? "No matching sessions" : "No sessions captured yet" }}</p><p class="mt-1 text-sm text-zinc-500">{{ sessions.length ? "Clear a filter or try a broader search." : "Captured model traffic will appear here as work sessions." }}</p></div>
+      </template>
     </div>
   </section>
 </template>

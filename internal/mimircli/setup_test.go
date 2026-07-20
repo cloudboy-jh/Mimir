@@ -60,8 +60,10 @@ func TestMaterializeWorker(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "assets", "images"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "assets", "images", "mimir-readme.png"), []byte("logo"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
+		if err := os.WriteFile(filepath.Join(root, "assets", "images", name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv(envMimirHome, t.TempDir())
 	target, err := materializeWorker(source)
@@ -71,8 +73,10 @@ func TestMaterializeWorker(t *testing.T) {
 	if !pathExists(filepath.Join(target, "src", "index.ts")) {
 		t.Fatal("worker source was not materialized")
 	}
-	if !pathExists(filepath.Join(filepath.Dir(target), "assets", "images", "mimir-readme.png")) {
-		t.Fatal("shared dashboard image was not materialized")
+	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
+		if !pathExists(filepath.Join(filepath.Dir(target), "assets", "images", name)) {
+			t.Fatalf("shared dashboard image %s was not materialized", name)
+		}
 	}
 }
 
