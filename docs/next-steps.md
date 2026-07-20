@@ -1,84 +1,23 @@
 # Next Steps
 
-This file tracks concrete gaps in the current implementation. It is not a
-second product specification.
+This file tracks concrete implementation gaps and technical debt remaining from the Mimir v2 architecture transition. The core Cloudflare Worker backend and capture proxy are complete; the remaining work focuses on CLI listing, test coverage, and environment hardening.
 
-## 1. Connect The Dashboard
+## 1. Implement Session Listing & Browsing
+- **`mimir list`**: Write a standard-library-only command displaying the 20 most recent captures and outcomes as compact, human-readable receipts.
+- **MCP `sessions_list`**: Upgrade the tool to return identical receipt-oriented summaries instead of raw, unformatted JSON.
+- **`mimir browse`**: Plan the BentoTUI interactive terminal browser for rich keyboard navigation, filtering, and deep-linking into mock/live dashboards.
 
-- Replace mock data with the existing `/dashboard/api/*` endpoints.
-- Add loading, empty, unavailable, and Access-denied states.
-- Connect capture status and evidenced outcome controls.
-- Add cursor pagination and filter serialization.
-- Keep `worker/web/src/lib/mock.ts` as the only fixture source until the live
-  design is explicitly approved.
+## 2. Technical Debt & API Cleanup
+- **`sessions.intent`**: Connect intent extraction to the capture lifecycle or remove the dead property field from queries/indexes.
+- **`POST /search`**: Align request contract parameter deserialization on the Worker; remove or implement ignored search filtering parameters.
+- **Wrangler JSONC Parsing**: Fix parser crash when trailing commas or comments exist in `wrangler.jsonc` (currently parsed as strict JSON).
+- **Network Timeouts**: Add bounded HTTP timeouts on all CLI and MCP requests to the Worker.
 
-## 2. Add Session Listing And Browsing
+## 3. Harden Audits & Security
+- **Cloudflare Access Automation**: Standardize setup of the Access application and configuration of `DASHBOARD_ACCESS_AUD` and `DASHBOARD_ACCESS_TEAM_DOMAIN`.
+- **JWT Verification Tests**: Cover the Cloudflare Access JWT validation path with automated tests (currently untested in Worker integration suite).
+- **Index/Recall Coverage**: Add unit and execution tests for local code indexing (`saveIndexAtomic`, symbol ranking, lookup fit, and lexical scoring).
 
-Add `mimir list` as a non-interactive, human-readable view of the 20 most
-recent sessions across all capture states. Each default row shows only the
-authoritative session ID and compact receipt, for example:
-
-```text
-Saved to Mimir · 1 exchange in this session · View session
-mimir-receipt-verification-20260716
-```
-
-- Add `--json` for scripts and automation while preserving future API fields.
-- Upgrade the existing MCP `sessions_list` tool to return the same compact
-  receipt-oriented records; agents should not shell out to the CLI.
-- Include pending, partial, failed, and empty sessions with the same honest copy
-  used by `session_status`.
-- Make the dashboard session link the only direct list action. Do not add
-  outcome mutation, reconciliation, copying, or interactive filtering to the
-  first version.
-- Keep the first implementation standard-library-only.
-- Add `mimir browse` later as a separate interactive command using BentoTUI for
-  keyboard navigation, filtering, and session selection. Revisit the
-  standard-library-only CLI constraint when that work begins; do not make
-  `mimir list` itself a TUI.
-
-## 3. Verify Dashboard Routing
-
-Browser routes now live under `/dashboard/*`, while canonical machine APIs keep
-the `/sessions*` namespace. Keep deployment-level route tests covering direct
-session receipt links, static assets, machine authentication, and Access APIs.
-
-## 4. Finish Cloudflare Access Setup
-
-- Document or automate creation of the dashboard Access application.
-- Configure `DASHBOARD_ACCESS_AUD` and `DASHBOARD_ACCESS_TEAM_DOMAIN` safely.
-- Verify static asset protection and dashboard API protection together.
-- Keep localhost development access without adding a Mimir password system.
-
-## 5. Release And Update Distribution
-
-- Publish tagged releases with checksums.
-- Make the installed binary independent from a retained Go module cache.
-- Add a verified, atomic `mimir update` flow using a stable executable path.
-- Expose machine-readable version/update diagnostics for setup skills.
-
-## 6. Harden MCP Integration
-
-- Add integration tests against current OpenCode, Hermes, and other supported
-  MCP clients.
-- Validate JSON-RPC versions, IDs, methods, and tool arguments completely.
-- Return tool execution failures as MCP tool errors where appropriate.
-- Add bounded HTTP timeouts.
-- Publish tested harness recipes without putting harness-specific behavior in
-  the Worker.
-
-## 7. Harden Capture And Search
-
-- Define operational cadence and orphan cleanup policy for reconciliation.
-- Add capture-failure alerting and operational views to Worker observability.
-- Decide whether large-response capture should truncate or remain all-or-none.
-- Replace ignored search fields or remove them from the request contract.
-- Decide whether `session.abandon_days` should drive an explicit lifecycle job
-  or be removed.
-- Evaluate full-text search before considering vectors or embeddings.
-
-## Boundaries
-
-Do not add SaaS tenancy, team management, a separate backend, browser bearer
-token storage, Git-backed session sync, or migration of local code indexes into
-D1.
+## 4. Release & Delivery
+- **Release Automation**: Configure Gated GitHub actions triggering GoReleaser builds for tagged releases.
+- **`mimir update`**: Add secure, atomic local binary self-updating from stable compiled checksum paths.
