@@ -26,6 +26,7 @@ type setupOptions struct {
 	DatabaseID    string
 	BucketName    string
 	OpenRouterKey string
+	AccessEmail   string
 	JSON          bool
 	Progress      *setupProgress
 }
@@ -90,6 +91,12 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 		case "--bucket-name":
 			var err error
 			opts.BucketName, err = value()
+			if err != nil {
+				return err
+			}
+		case "--access-email":
+			var err error
+			opts.AccessEmail, err = value()
 			if err != nil {
 				return err
 			}
@@ -237,9 +244,24 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err
 	}
+	access, err := setupDashboardAccess(ctx, dir, opts, url)
+	if err != nil {
+		return fmt.Errorf("configuring dashboard Access: %w", err)
+	}
+	if access.State == "configured" {
+		if _, err := runWrangler(ctx, dir, nil, "deploy"); err != nil {
+			return fmt.Errorf("applying dashboard Access configuration: %w", err)
+		}
+		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Dashboard Access configured")
+	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 	opts.Progress.Stop()
-	return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true}, url), connectionSummary(url))
+	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access}
+	human := connectionSummary(url)
+	if access.State == "manual" && !opts.JSON {
+		human += "\n\n" + accessChecklist(url)
+	}
+	return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(result, url), human)
 }
 
 func ensureCloudflareAuth(ctx context.Context, dir string, ioctx IO, noninteractive bool, progress *setupProgress) error {

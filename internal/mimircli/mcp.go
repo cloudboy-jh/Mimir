@@ -91,7 +91,7 @@ func tools() []map[string]any {
 	legacy := map[string]any{"type": "string", "enum": []string{"landed", "discarded", "abandoned", "unresolved", "promoted", "unknown"}}
 	return []map[string]any{
 		{"name": "whoami", "description": "Return deployment identity and counts.", "inputSchema": schema(map[string]any{})},
-		{"name": "sessions_list", "description": "List session capture records; use session_status to verify saved capture state.", "inputSchema": schema(map[string]any{})},
+		{"name": "sessions_list", "description": "List the 20 most recent sessions as compact receipts (time, id, outcome, capture state, model, intent); use session_status to verify saved capture state.", "inputSchema": schema(map[string]any{})},
 		{"name": "sessions_get", "description": "Read one saved session capture and its exchanges; this does not describe whether the work landed.", "inputSchema": schema(map[string]any{"id": str()})},
 		{"name": "session_status", "description": "Wait briefly for capture to settle, then return a compact receipt from authoritative session storage with a dashboard link when Access is configured. Work outcome is tracked separately.", "inputSchema": schema(map[string]any{"id": str()})},
 		{"name": "session_set_outcome", "description": "Record the result of the work for a session; this does not verify that capture was saved.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": canonical, "reason": str(), "evidence": map[string]any{}}, "id", "outcome")},
@@ -123,7 +123,11 @@ func callTool(ctx context.Context, name string, args map[string]any) (toolCallOu
 	case "whoami":
 		path = "/whoami"
 	case "sessions_list":
-		path = "/sessions"
+		receipts, err := fetchSessionReceipts(ctx, "", "")
+		if err != nil {
+			return toolCallOutput{}, err
+		}
+		return toolCallOutput{Text: formatSessionReceipts(receipts, 20)}, nil
 	case "sessions_get":
 		path = "/sessions/" + fmt.Sprint(args["id"])
 	case "session_status":

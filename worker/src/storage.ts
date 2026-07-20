@@ -128,7 +128,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
         continue;
       }
       const recent = !!row.accepted_at && Date.parse(row.accepted_at) >= staleCutoff;
-      await finalizeAcceptedExchange(env.DB, row.id, row.session_id, row.ts, now, row.harness, row.model ?? "", row.input_tokens, row.output_tokens, object.size, recent);
+      await finalizeAcceptedExchange(env.DB, row.id, row.session_id, row.ts, now, row.harness, row.model ?? "", row.input_tokens, row.output_tokens, object.size, recent, null);
       finalized.push(row.id);
       continue;
     }

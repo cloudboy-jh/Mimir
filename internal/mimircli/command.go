@@ -71,6 +71,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return serveMCP(ctx, mcpOptions{Dir: ".", In: ioctx.In, Out: ioctx.Out})
 	case "whoami":
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
+	case "list":
+		return cmdList(ctx, args[1:], ioctx.Out)
 	case "sessions":
 		return remotePrint(ctx, ioctx.Out, "GET", "/sessions", nil)
 	case "session":
@@ -109,6 +111,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return dashboard(ctx, ioctx)
 	case "connection":
 		return writeConnectionManifest(ioctx.Out)
+	case "update":
+		return cmdUpdate(ctx, args[1:], ioctx.Out)
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
 			return fmt.Errorf("usage: mimir outcome git <session>")
@@ -261,9 +265,11 @@ Usage:
   mimir setup [--quick] [--json]
   mimir login [--json]
   mimir dashboard
+  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
   mimir session status <id> [--json]
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir reconcile
+  mimir update [--check]
 
 Run "mimir help advanced" for diagnostic commands.`)
 	return err
@@ -277,6 +283,7 @@ These commands support harness integrations, diagnostics, and development.
 Usage:
   mimir connection
   mimir whoami
+  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
   mimir sessions
   mimir session <id>
   mimir session status <id>

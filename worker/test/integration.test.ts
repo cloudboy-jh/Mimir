@@ -1,4 +1,5 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 
@@ -244,5 +245,72 @@ describe("Worker integration", () => {
   it("requires Cloudflare Access for dashboard APIs", async () => {
     const response = await request("/dashboard/api/bootstrap");
     expect(response.status).toBe(403);
+  });
+
+  it("derives session intent from the first user message and keeps it sticky", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "intent-session" };
+    await request("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "openai/test", messages: [{ role: "system", content: "ignored" }, { role: "user", content: "  Fix the   login redirect\nloop " }] }) });
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'intent-session'").first()).toEqual({ intent: "Fix the login redirect loop" });
+    await request("/v1/chat/completions", { method: "POST", headers, body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Something else entirely" }] }) });
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'intent-session'").first()).toEqual({ intent: "Fix the login redirect loop" });
+    const found = await request("/search", { method: "POST", headers, body: JSON.stringify({ query: "login redirect", types: ["intent"] }) });
+    const result = await found.json() as { matches: { session_id: string }[] };
+    expect(result.matches.map((match) => match.session_id)).toContain("intent-session");
+  });
+
+  it("filters search matches by requested types", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary, intent) VALUES ('typed-session', '2026-01-01T00:00:00Z', 'inactive', '2026-01-01T00:00:00Z', 'header', 'zebra intent only')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at, request_excerpt, response_excerpt) VALUES ('typed-exchange', 'typed-session', '2026-01-01T00:00:00Z', 'chat', 1, 'log/typed.json', 'saved', '2026-01-01T00:00:01Z', 'plain request', 'plain response')").run();
+    await env.DB.prepare("INSERT INTO session_files(session_id, file) VALUES ('typed-session', 'src/zebra.ts')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const search = (body: unknown) => request("/search", { method: "POST", headers, body: JSON.stringify(body) });
+    const files = await (await search({ query: "zebra", types: ["files"] })).json() as { matches: unknown[] };
+    expect(files.matches).toHaveLength(1);
+    const excerpts = await (await search({ query: "zebra", types: ["excerpts"] })).json() as { matches: unknown[] };
+    expect(excerpts.matches).toHaveLength(0);
+    const intent = await (await search({ query: "zebra", types: ["intent"] })).json() as { matches: unknown[] };
+    expect(intent.matches).toHaveLength(1);
+    const invalid = await search({ query: "zebra", types: ["bogus"] });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("verifies Cloudflare Access JWTs for dashboard APIs", async () => {
+    const teamDomain = "https://team.cloudflareaccess.com";
+    const { publicKey, privateKey } = await generateKeyPair("RS256");
+    const jwk = await exportJWK(publicKey);
+    jwk.kid = "test-key";
+    jwk.alg = "RS256";
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `${teamDomain}/cdn-cgi/access/certs`) return Promise.resolve(Response.json({ keys: [jwk] }));
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+    const bindings = env as Env & { DASHBOARD_ACCESS_AUD?: string; DASHBOARD_ACCESS_TEAM_DOMAIN?: string };
+    bindings.DASHBOARD_ACCESS_AUD = "test-aud";
+    bindings.DASHBOARD_ACCESS_TEAM_DOMAIN = teamDomain;
+    const sign = (init: { audience?: string; issuer?: string; expiration?: number } = {}) =>
+      new SignJWT({})
+        .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+        .setIssuer(init.issuer ?? teamDomain)
+        .setAudience(init.audience ?? "test-aud")
+        .setIssuedAt()
+        .setExpirationTime(init.expiration ?? Math.floor(Date.now() / 1000) + 300)
+        .sign(privateKey);
+    try {
+      const valid = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign() } });
+      expect(valid.status).toBe(200);
+      const wrongAudience = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign({ audience: "other-aud" }) } });
+      expect(wrongAudience.status).toBe(403);
+      const wrongIssuer = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign({ issuer: "https://evil.example.com" }) } });
+      expect(wrongIssuer.status).toBe(403);
+      const expired = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign({ expiration: Math.floor(Date.now() / 1000) - 300 }) } });
+      expect(expired.status).toBe(403);
+      const garbage = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": "not-a-jwt" } });
+      expect(garbage.status).toBe(403);
+    } finally {
+      delete bindings.DASHBOARD_ACCESS_AUD;
+      delete bindings.DASHBOARD_ACCESS_TEAM_DOMAIN;
+    }
   });
 });

@@ -46,7 +46,7 @@ func updateWranglerConfig(path string, opts setupOptions) error {
 		return err
 	}
 	var config map[string]any
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := json.Unmarshal(stripJSONC(data), &config); err != nil {
 		return err
 	}
 	config["name"] = opts.WorkerName
@@ -65,6 +65,84 @@ func updateWranglerConfig(path string, opts setupOptions) error {
 		return err
 	}
 	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+}
+
+// updateWranglerVars merges Worker environment variables into wrangler.jsonc.
+func updateWranglerVars(path string, vars map[string]string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var config map[string]any
+	if err := json.Unmarshal(stripJSONC(data), &config); err != nil {
+		return err
+	}
+	existing, _ := config["vars"].(map[string]any)
+	if existing == nil {
+		existing = map[string]any{}
+	}
+	for key, value := range vars {
+		existing[key] = value
+	}
+	config["vars"] = existing
+	encoded, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+}
+
+// stripJSONC converts JSONC to strict JSON by removing comments outside
+// strings and dropping trailing commas, so hand-edited wrangler.jsonc files
+// parse with encoding/json.
+func stripJSONC(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	escaped := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		switch {
+		case inString:
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+			out = append(out, c)
+		case c == '/' && i+1 < len(data) && data[i+1] == '/':
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+			if i < len(data) {
+				out = append(out, '\n')
+			}
+		case c == '/' && i+1 < len(data) && data[i+1] == '*':
+			i += 2
+			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+				i++
+			}
+			i++
+		case c == ',':
+			// Drop the comma when the next significant byte closes an
+			// object or array (trailing comma).
+			j := i + 1
+			for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\r' || data[j] == '\n') {
+				j++
+			}
+			if j < len(data) && (data[j] == '}' || data[j] == ']') {
+				continue
+			}
+			out = append(out, c)
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func databaseID(output string) string {

@@ -5,6 +5,20 @@ import { canonicalOutcome, expireSessions, SESSION_COLUMNS, updateOutcome } from
 import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
 import type { AppEnv } from "../types";
 
+const SEARCH_TYPES = ["intent", "excerpts", "files", "errors"] as const;
+type SearchType = (typeof SEARCH_TYPES)[number];
+
+// searchTypes resolves the requested column groups, defaulting to all.
+// A null entry signals an unknown type and the route rejects the request.
+function searchTypes(types: string[] | undefined): (SearchType | null)[] {
+  if (!types?.length) return [...SEARCH_TYPES];
+  return types.map((type) => (SEARCH_TYPES as readonly string[]).includes(type) ? type as SearchType : null);
+}
+
+function clauseNeedles(type: SearchType) {
+  return type === "excerpts" ? 2 : 1;
+}
+
 export function registerMachineRoutes(app: Hono<AppEnv>) {
   app.get("/whoami", async (c) => {
     const [sessions, exchanges] = await Promise.all([
@@ -104,9 +118,18 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const query = body.query?.trim() ?? "";
     const budget = Math.max(1, Math.min(body.budget ?? 4000, 16000));
     const filters = body.filters ?? {};
-    const where = ["(s.intent LIKE ? OR e.request_excerpt LIKE ? OR e.response_excerpt LIKE ? OR EXISTS (SELECT 1 FROM session_files sf WHERE sf.session_id = s.id AND sf.file LIKE ?) OR EXISTS (SELECT 1 FROM session_errors se WHERE se.session_id = s.id AND se.signature LIKE ?))"];
+    const clauses: string[] = [];
+    const values: string[] = [];
     const needle = `%${query}%`;
-    const values: string[] = [needle, needle, needle, needle, needle];
+    for (const type of searchTypes(body.types)) {
+      if (!type) return c.json({ error: "invalid search type" }, 400);
+      if (type === "intent") clauses.push("s.intent LIKE ?");
+      if (type === "excerpts") clauses.push("(e.request_excerpt LIKE ? OR e.response_excerpt LIKE ?)");
+      if (type === "files") clauses.push("EXISTS (SELECT 1 FROM session_files sf WHERE sf.session_id = s.id AND sf.file LIKE ?)");
+      if (type === "errors") clauses.push("EXISTS (SELECT 1 FROM session_errors se WHERE se.session_id = s.id AND se.signature LIKE ?)");
+      values.push(...Array(clauseNeedles(type)).fill(needle));
+    }
+    const where = [`(${clauses.join(" OR ")})`];
     if (filters.repo) {
       where.push("s.repo = ?");
       values.push(filters.repo);

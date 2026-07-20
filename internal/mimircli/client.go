@@ -9,7 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// httpClient bounds every Worker request so CLI and MCP calls cannot hang
+// indefinitely on a stalled connection.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type apiError struct {
 	StatusCode int
@@ -49,7 +54,7 @@ func remoteRequestWithPointer(ctx context.Context, p Pointer, method, path strin
 	if body != nil {
 		req.Header.Set("content-type", "application/json")
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

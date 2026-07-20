@@ -62,6 +62,7 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
   const parsedResponse = parseCapturedResponse(responseResult.text, input.responseType);
   const redactedResponse = redact(parsedResponse, patterns);
   const derived = deriveSessionFields(redactedRequest, redactedResponse);
+  const intent = deriveIntent(redactedRequest);
   const prepared: PreparedCapture = {
     response: parsedResponse,
     redactedResponse,
@@ -104,7 +105,7 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
   }
 
   try {
-    await finalizeAcceptedExchange(env.DB, id, session.id, activityAt, new Date().toISOString(), input.harness, input.model, prepared.usage.prompt_tokens, prepared.usage.completion_tokens, r2Bytes, true);
+    await finalizeAcceptedExchange(env.DB, id, session.id, activityAt, new Date().toISOString(), input.harness, input.model, prepared.usage.prompt_tokens, prepared.usage.completion_tokens, r2Bytes, true, intent);
   } catch (error) {
     logCaptureError("capture D1 finalization failed", error, id, session.id, "d1_finalize_failed");
   }
@@ -137,9 +138,10 @@ async function prepareAcceptedExchange(db: D1Database, exchangeId: string, sessi
   }
 }
 
-export async function finalizeAcceptedExchange(db: D1Database, exchangeId: string, sessionId: string, activityAt: string, savedAt: string, harness: string | null, model: string, inputTokens: number, outputTokens: number, r2Bytes: number | null, reactivate: boolean) {
+export async function finalizeAcceptedExchange(db: D1Database, exchangeId: string, sessionId: string, activityAt: string, savedAt: string, harness: string | null, model: string, inputTokens: number, outputTokens: number, r2Bytes: number | null, reactivate: boolean, intent: string | null = null) {
   await db.batch([
     db.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(activityAt, activityAt, activityAt, activityAt, harness, reactivate ? 1 : 0, reactivate ? 1 : 0, model, inputTokens, outputTokens, sessionId, exchangeId),
+    db.prepare("UPDATE sessions SET intent = COALESCE(intent, ?) WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(intent, sessionId, exchangeId),
     db.prepare("INSERT OR IGNORE INTO session_files(session_id, file) SELECT session_id, file FROM exchange_files WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
     db.prepare("INSERT OR IGNORE INTO session_errors(session_id, signature) SELECT session_id, signature FROM exchange_errors WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
     db.prepare("UPDATE exchanges SET capture_status = 'saved', capture_reason = 'enabled', saved_at = ?, failed_at = NULL, failure_code = NULL, r2_bytes = ? WHERE id = ? AND capture_status = 'accepted'").bind(savedAt, r2Bytes, exchangeId),
@@ -240,6 +242,30 @@ export function deriveSessionFields(...values: unknown[]) {
   const files = text.match(/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:tsx|ts|jsx|js|cpp|hpp|json|yaml|yml|sql|java|go|py|rs|cs|md|c|h)(?![A-Za-z0-9_.-])/g) ?? [];
   const errors = text.match(/(?:error|exception|panic|failed)[:\s][^\n"}]{1,160}/gi) ?? [];
   return { files: unique(files, 100), errors: unique(errors, 20) };
+}
+
+// deriveIntent summarizes the session's purpose from the first user message
+// of the redacted request. Only the first captured exchange wins; later
+// exchanges cannot overwrite the session intent.
+export function deriveIntent(request: unknown): string | null {
+  const messages = typeof request === "object" && request ? (request as Record<string, unknown>).messages : null;
+  if (!Array.isArray(messages)) return null;
+  for (const message of messages) {
+    const record = typeof message === "object" && message ? message as Record<string, unknown> : {};
+    if (record.role !== "user") continue;
+    const collapsed = messageText(record.content).replace(/\s+/g, " ").trim();
+    if (collapsed) return collapsed.slice(0, 200);
+  }
+  return null;
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    const record = typeof part === "object" && part ? part as Record<string, unknown> : {};
+    return typeof record.text === "string" ? record.text : "";
+  }).join(" ");
 }
 
 function extractProvider(response: unknown) {
