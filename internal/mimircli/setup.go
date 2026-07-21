@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -333,17 +332,14 @@ func promptSecret(ioctx IO, label string) (string, error) {
 	}
 	file, terminal := ioctx.In.(*os.File)
 	if terminal && isTerminal(file) {
-		disable := exec.Command("stty", "-echo")
-		disable.Stdin = file
-		if err := disable.Run(); err != nil {
-			return "", fmt.Errorf("cannot securely hide secret input: %w", err)
+		// Fall back to visible input when echo cannot be disabled; failing the
+		// prompt outright would block the whole flow on exotic terminals.
+		if restore, err := disableEcho(file); err == nil {
+			defer func() {
+				restore()
+				fmt.Fprintln(ioctx.Out)
+			}()
 		}
-		defer func() {
-			restore := exec.Command("stty", "echo")
-			restore.Stdin = file
-			_ = restore.Run()
-			fmt.Fprintln(ioctx.Out)
-		}()
 	}
 	line, err := bufio.NewReader(ioctx.In).ReadString('\n')
 	if err != nil && err != io.EOF {
