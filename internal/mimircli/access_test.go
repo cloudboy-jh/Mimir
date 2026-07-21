@@ -115,11 +115,54 @@ func TestAccessAPIErrorSurfaced(t *testing.T) {
 
 func TestAccessChecklistUsesBareHost(t *testing.T) {
 	checklist := accessChecklist("https://mimir.example.workers.dev")
-	if !strings.Contains(checklist, "Application domain: mimir.example.workers.dev (leave the path blank)") {
+	if !strings.Contains(checklist, "Domain: mimir.example.workers.dev (leave the path blank)") {
 		t.Fatalf("checklist scopes the app incorrectly:\n%s", checklist)
 	}
-	if strings.Contains(checklist, "mimir.example.workers.dev/dashboard") || strings.Contains(checklist, "wrangler deploy") {
+	if !strings.Contains(checklist, "mimir.example.workers.dev/v1") || !strings.Contains(checklist, "Bypass") {
+		t.Fatalf("checklist is missing the machine bypass application:\n%s", checklist)
+	}
+	if strings.Contains(checklist, "Domain: mimir.example.workers.dev/dashboard") || strings.Contains(checklist, "wrangler deploy") {
 		t.Fatalf("checklist still carries the broken manual flow:\n%s", checklist)
+	}
+}
+
+func TestEnsureMachineBypassApp(t *testing.T) {
+	var appBody map[string]any
+	var policyBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acc-1/access/apps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/acc-1/access/apps":
+			if err := json.NewDecoder(r.Body).Decode(&appBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": accessApp{UID: "uid-2", Aud: "aud-2", Name: machineAccessAppName}})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policies"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []any{}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policies"):
+			if err := json.NewDecoder(r.Body).Decode(&policyBody); err != nil {
+				t.Fatal(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{"uid": "pol-2"}})
+		default:
+			t.Fatalf("request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	api := accessAPI{base: server.URL, token: "cf-token"}
+	if err := api.ensureMachineBypassApp(context.Background(), "acc-1", "mimir.example.workers.dev"); err != nil {
+		t.Fatal(err)
+	}
+	if appBody["name"] != machineAccessAppName || appBody["domain"] != "mimir.example.workers.dev/v1" {
+		t.Fatalf("bypass app body %v", appBody)
+	}
+	domains, _ := appBody["self_hosted_domains"].([]any)
+	if len(domains) != len(machineAccessPaths) {
+		t.Fatalf("bypass app domains %v", domains)
+	}
+	if policyBody["decision"] != "bypass" {
+		t.Fatalf("bypass policy body %v", policyBody)
 	}
 }
 

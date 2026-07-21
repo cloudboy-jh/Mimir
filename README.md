@@ -163,18 +163,20 @@ Access protects dashboard data and receipt links without storing machine tokens
 in the browser.
 
 The Access application must cover the whole Worker hostname with no path
-restriction. Scoping the app to `/dashboard` makes the page authenticate while
-`/dashboard/api/*` fetches bounce into a second Access login flow and fail on
-CORS. If you skipped Access automation during setup, finish it with:
+restriction, paired with a second application that lets machine traffic
+bypass the login flow (the Worker enforces bearer tokens on those routes
+itself). Scoping a single app to `/dashboard` breaks the page's API fetches;
+covering the bare hostname without the bypass app blocks the proxy, CLI, and
+MCP. `mimir access` creates both applications correctly:
 
 ```bash
 mimir access
 ```
 
 With a Cloudflare API token (flag, env, or masked prompt), `mimir access`
-creates the application and allow policy, writes the verification variables,
-and redeploys. Without a token it prints the two-step manual checklist; a
-manually created application still protects the dashboard at the edge.
+creates the dashboard application and allow policy, the machine bypass
+application, writes the verification variables, and redeploys. Without a
+token it prints the manual two-application checklist.
 
 The token needs exactly two permission rows, account-scoped with no zones:
 `Access: Apps and Policies → Edit` and
