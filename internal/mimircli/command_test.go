@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,36 @@ func TestExecuteVersion(t *testing.T) {
 	}
 	if got, want := output.String(), "1.2.3 (abc123)\n"; got != want {
 		t.Fatalf("version output %q, want %q", got, want)
+	}
+}
+
+func TestResolveBuildInfoFromGoInstallMetadata(t *testing.T) {
+	info := &debug.BuildInfo{
+		Main: debug.Module{Version: "v1.2.3"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "abcdef1234567890"},
+			{Key: "vcs.time", Value: "2026-07-15T12:00:00Z"},
+		},
+	}
+
+	gotVersion, gotCommit, gotDate := resolveBuildInfo("0.0.0-dev", "unknown", "unknown", info)
+	if gotVersion != "1.2.3" || gotCommit != "abcdef123456" || gotDate != "2026-07-15T12:00:00Z" {
+		t.Fatalf("build info = %q, %q, %q", gotVersion, gotCommit, gotDate)
+	}
+}
+
+func TestResolveBuildInfoKeepsLinkerValues(t *testing.T) {
+	info := &debug.BuildInfo{
+		Main: debug.Module{Version: "v9.9.9"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "metadata-commit"},
+			{Key: "vcs.time", Value: "metadata-date"},
+		},
+	}
+
+	gotVersion, gotCommit, gotDate := resolveBuildInfo("1.2.3", "release-commit", "release-date", info)
+	if gotVersion != "1.2.3" || gotCommit != "release-commit" || gotDate != "release-date" {
+		t.Fatalf("build info = %q, %q, %q", gotVersion, gotCommit, gotDate)
 	}
 }
 

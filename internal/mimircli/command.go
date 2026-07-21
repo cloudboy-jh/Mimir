@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 )
 
@@ -335,9 +336,34 @@ var (
 )
 
 func SetBuildInfo(buildVersion, buildCommit, buildDate string) {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		buildVersion, buildCommit, buildDate = resolveBuildInfo(buildVersion, buildCommit, buildDate, info)
+	}
 	version = buildVersion
 	commit = buildCommit
 	date = buildDate
+}
+
+func resolveBuildInfo(buildVersion, buildCommit, buildDate string, info *debug.BuildInfo) (string, string, string) {
+	if (buildVersion == "" || buildVersion == "0.0.0" || buildVersion == "0.0.0-dev") && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		buildVersion = strings.TrimPrefix(info.Main.Version, "v")
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			if (buildCommit == "" || buildCommit == "unknown") && setting.Value != "" {
+				buildCommit = setting.Value
+				if len(buildCommit) > 12 {
+					buildCommit = buildCommit[:12]
+				}
+			}
+		case "vcs.time":
+			if buildDate == "" || buildDate == "unknown" {
+				buildDate = setting.Value
+			}
+		}
+	}
+	return buildVersion, buildCommit, buildDate
 }
 
 func versionString() string {

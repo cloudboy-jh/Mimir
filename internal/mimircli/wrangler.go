@@ -9,15 +9,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
 func runWrangler(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
-	local := filepath.Join(dir, "node_modules", ".bin", "wrangler")
-	if pathExists(local) {
+	if local := localWranglerPath(dir); local != "" {
 		return runCommand(ctx, dir, stdin, local, args...)
 	}
 	return runCommand(ctx, dir, stdin, "npx", append([]string{"wrangler"}, args...)...)
+}
+
+func localWranglerPath(dir string) string {
+	local := filepath.Join(dir, "node_modules", ".bin", "wrangler")
+	if runtime.GOOS == "windows" && pathExists(local+".cmd") {
+		return local + ".cmd"
+	}
+	if pathExists(local) {
+		return local
+	}
+	return ""
 }
 
 func runCommand(ctx context.Context, dir string, stdin io.Reader, name string, args ...string) (string, error) {
@@ -31,8 +42,8 @@ func runCommand(ctx context.Context, dir string, stdin io.Reader, name string, a
 }
 
 func runWranglerInteractive(ctx context.Context, dir string, ioctx IO, args ...string) error {
-	name, commandArgs := filepath.Join(dir, "node_modules", ".bin", "wrangler"), args
-	if !pathExists(name) {
+	name, commandArgs := localWranglerPath(dir), args
+	if name == "" {
 		name, commandArgs = "npx", append([]string{"wrangler"}, args...)
 	}
 	cmd := exec.CommandContext(ctx, name, commandArgs...)

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -128,8 +129,12 @@ func TestBuildDashboard(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	bun := filepath.Join(bin, "bun")
-	if err := os.WriteFile(bun, []byte("#!/bin/sh\n[ \"$1 $2\" = \"run build\" ] || exit 2\nmkdir -p dist\ntouch dist/index.html\n"), 0o700); err != nil {
+	bun, script := filepath.Join(bin, "bun"), "#!/bin/sh\n[ \"$1 $2\" = \"run build\" ] || exit 2\nmkdir -p dist\ntouch dist/index.html\n"
+	if runtime.GOOS == "windows" {
+		bun += ".cmd"
+		script = "@echo off\r\nif not \"%1 %2\"==\"run build\" exit /b 2\r\nif not exist dist mkdir dist\r\ntype nul > dist\\index.html\r\n"
+	}
+	if err := os.WriteFile(bun, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -212,12 +217,17 @@ func TestSQLQuote(t *testing.T) {
 
 func TestReadCloudflareIdentity(t *testing.T) {
 	dir := t.TempDir()
-	wrangler := filepath.Join(dir, "node_modules", ".bin")
-	if err := os.MkdirAll(wrangler, 0o755); err != nil {
+	bin := filepath.Join(dir, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	wrangler := filepath.Join(bin, "wrangler")
 	script := "#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"authType\":\"OAuth Token\",\"email\":\"user@example.com\",\"accounts\":[{\"id\":\"abc\",\"name\":\"Example Account\"}]}'\n"
-	if err := os.WriteFile(filepath.Join(wrangler, "wrangler"), []byte(script), 0o755); err != nil {
+	if runtime.GOOS == "windows" {
+		wrangler += ".cmd"
+		script = "@echo off\r\necho {\"loggedIn\":true,\"authType\":\"OAuth Token\",\"email\":\"user@example.com\",\"accounts\":[{\"id\":\"abc\",\"name\":\"Example Account\"}]}\r\n"
+	}
+	if err := os.WriteFile(wrangler, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	identity, err := readCloudflareIdentity(context.Background(), dir)
@@ -279,7 +289,8 @@ func TestCloudflareIdentityCacheRoundTrip(t *testing.T) {
 }
 
 func TestConnectionManifestContainsNoCredential(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
+	home := t.TempDir()
+	t.Setenv(envMimirHome, home)
 	manifest, err := currentConnectionManifest("https://mimir.example.workers.dev")
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +298,7 @@ func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	if manifest.OpenAIBaseURL != "https://mimir.example.workers.dev/v1" || manifest.AnthropicBaseURL != "https://mimir.example.workers.dev" {
 		t.Fatalf("manifest %#v", manifest)
 	}
-	if !strings.HasSuffix(manifest.CredentialFile, "/token") {
+	if manifest.CredentialFile != filepath.Join(home, "token") {
 		t.Fatalf("credential file %q", manifest.CredentialFile)
 	}
 	if len(manifest.MCPCommand) != 2 || !filepath.IsAbs(manifest.MCPCommand[0]) || manifest.MCPCommand[1] != "serve" {
