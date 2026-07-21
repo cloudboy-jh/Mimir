@@ -434,17 +434,17 @@ path and command, an absolute MCP command, and optional telemetry header names.
 For non-opencode harnesses, the setup skill or user applies that manifest using
 the harness's own secure configuration system.
 
-Cloudflare Access protects the dashboard with two applications: an allow
-application covering the whole Worker hostname, and a bypass application
-covering the machine API prefixes (`/v1`, `/whoami`, `/sessions`, `/search`,
-`/config`, `/reconcile`, `/log`) so proxy, CLI, and MCP traffic is never
-intercepted by the interactive login flow. The Worker enforces bearer tokens
-on machine routes itself. A single application scoped to `/dashboard` breaks
-the page's API fetches; a bare-hostname application without the bypass blocks
-the machine API. Setup prompts for an optional Cloudflare API token and
-automates both applications when provided; `mimir access` runs the same
-automation later, or applies a manually created application's AUD tag and team
-domain via `--aud` and `--team-domain`.
+Cloudflare Access protects the dashboard with one self-hosted application
+covering exactly `/dashboard` and `/dashboard/*`. Access paths are exact
+matches, so both destinations are required; a `/dashboard`-only application
+authenticates the page but not its API fetches, and a bare-hostname
+application blocks the machine API (`/v1`, `/sessions`, ...) that the proxy,
+CLI, and MCP use. Machine routes stay outside Access and are authenticated by
+the Worker with bearer tokens. Setup prompts for an optional Cloudflare API
+token and automates the application when provided; `mimir access` runs the
+same automation later (correcting wrong destinations in place), or applies a
+manually created application's AUD tag and team domain via `--aud` and
+`--team-domain`.
 
 ## 12. Dashboard Status
 

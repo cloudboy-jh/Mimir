@@ -27,10 +27,14 @@ func TestAccessAPIEnsureAppIsIdempotent(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["domain"] != "mimir.example.workers.dev" || body["type"] != "self_hosted" {
+			if body["domain"] != "mimir.example.workers.dev/dashboard" || body["type"] != "self_hosted" {
 				t.Fatalf("app body %v", body)
 			}
-			app := accessApp{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev"}
+			domains, _ := body["self_hosted_domains"].([]any)
+			if len(domains) != 2 || domains[1] != "mimir.example.workers.dev/dashboard/*" {
+				t.Fatalf("app destinations %v", domains)
+			}
+			app := accessApp{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard", SelfHostedDomains: []string{"mimir.example.workers.dev/dashboard", "mimir.example.workers.dev/dashboard/*"}}
 			apps = append(apps, app)
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": app})
 		default:
@@ -52,6 +56,38 @@ func TestAccessAPIEnsureAppIsIdempotent(t *testing.T) {
 	}
 	if app.Aud != "aud-1" || created != 1 {
 		t.Fatalf("idempotent app %+v created=%d", app, created)
+	}
+}
+
+func TestAccessAPIEnsureAppCorrectsBareHostApp(t *testing.T) {
+	updated := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acc-1/access/apps":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []accessApp{{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev"}}})
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acc-1/access/apps/uid-1":
+			updated++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			domains, _ := body["self_hosted_domains"].([]any)
+			if body["domain"] != "mimir.example.workers.dev/dashboard" || len(domains) != 2 {
+				t.Fatalf("update body %v", body)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": accessApp{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard", SelfHostedDomains: []string{"mimir.example.workers.dev/dashboard", "mimir.example.workers.dev/dashboard/*"}}})
+		default:
+			t.Fatalf("request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	api := accessAPI{base: server.URL, token: "cf-token"}
+	app, err := api.ensureApp(context.Background(), "acc-1", "mimir.example.workers.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 1 || app.Aud != "aud-1" {
+		t.Fatalf("bare-host app was not corrected: updated=%d app=%+v", updated, app)
 	}
 }
 
@@ -113,56 +149,13 @@ func TestAccessAPIErrorSurfaced(t *testing.T) {
 	}
 }
 
-func TestAccessChecklistUsesBareHost(t *testing.T) {
+func TestAccessChecklistScopesToDashboard(t *testing.T) {
 	checklist := accessChecklist("https://mimir.example.workers.dev")
-	if !strings.Contains(checklist, "Domain: mimir.example.workers.dev (leave the path blank)") {
-		t.Fatalf("checklist scopes the app incorrectly:\n%s", checklist)
+	if !strings.Contains(checklist, "mimir.example.workers.dev/dashboard and mimir.example.workers.dev/dashboard/*") {
+		t.Fatalf("checklist is missing the exact destinations:\n%s", checklist)
 	}
-	if !strings.Contains(checklist, "mimir.example.workers.dev/v1") || !strings.Contains(checklist, "Bypass") {
-		t.Fatalf("checklist is missing the machine bypass application:\n%s", checklist)
-	}
-	if strings.Contains(checklist, "Domain: mimir.example.workers.dev/dashboard") || strings.Contains(checklist, "wrangler deploy") {
-		t.Fatalf("checklist still carries the broken manual flow:\n%s", checklist)
-	}
-}
-
-func TestEnsureMachineBypassApp(t *testing.T) {
-	var appBody map[string]any
-	var policyBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acc-1/access/apps":
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []any{}})
-		case r.Method == http.MethodPost && r.URL.Path == "/accounts/acc-1/access/apps":
-			if err := json.NewDecoder(r.Body).Decode(&appBody); err != nil {
-				t.Fatal(err)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": accessApp{UID: "uid-2", Aud: "aud-2", Name: machineAccessAppName}})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policies"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": []any{}})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policies"):
-			if err := json.NewDecoder(r.Body).Decode(&policyBody); err != nil {
-				t.Fatal(err)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{"uid": "pol-2"}})
-		default:
-			t.Fatalf("request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer server.Close()
-	api := accessAPI{base: server.URL, token: "cf-token"}
-	if err := api.ensureMachineBypassApp(context.Background(), "acc-1", "mimir.example.workers.dev"); err != nil {
-		t.Fatal(err)
-	}
-	if appBody["name"] != machineAccessAppName || appBody["domain"] != "mimir.example.workers.dev/v1" {
-		t.Fatalf("bypass app body %v", appBody)
-	}
-	domains, _ := appBody["self_hosted_domains"].([]any)
-	if len(domains) != len(machineAccessPaths) {
-		t.Fatalf("bypass app domains %v", domains)
-	}
-	if policyBody["decision"] != "bypass" {
-		t.Fatalf("bypass policy body %v", policyBody)
+	if strings.Contains(checklist, "leave the path blank") || strings.Contains(checklist, "Bypass") || strings.Contains(checklist, "wrangler deploy") {
+		t.Fatalf("checklist still carries a broken manual flow:\n%s", checklist)
 	}
 }
 

@@ -16,13 +16,6 @@ import (
 
 const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
 const dashboardAccessAppName = "mimir-dashboard"
-const machineAccessAppName = "mimir-machine"
-
-// machineAccessPaths are the Worker's bearer-token API prefixes. They get an
-// Access bypass application so machine traffic (proxy, CLI, MCP) is never
-// intercepted by the interactive login flow; the Worker itself authenticates
-// these routes.
-var machineAccessPaths = []string{"v1", "whoami", "sessions", "search", "config", "reconcile", "log"}
 
 // accessTokenHint is printed wherever the CLI asks for a Cloudflare API token
 // so users know exactly which two permission rows the token needs.
@@ -110,10 +103,11 @@ func (api accessAPI) authDomain(ctx context.Context, accountID string) (string, 
 }
 
 type accessApp struct {
-	UID    string `json:"uid"`
-	Aud    string `json:"aud"`
-	Name   string `json:"name"`
-	Domain string `json:"domain"`
+	UID               string   `json:"uid"`
+	Aud               string   `json:"aud"`
+	Name              string   `json:"name"`
+	Domain            string   `json:"domain"`
+	SelfHostedDomains []string `json:"self_hosted_domains"`
 }
 
 func (api accessAPI) listApps(ctx context.Context, accountID string) ([]accessApp, error) {
@@ -128,44 +122,47 @@ func (api accessAPI) listApps(ctx context.Context, accountID string) ([]accessAp
 	return apps, nil
 }
 
-func (api accessAPI) ensureApp(ctx context.Context, accountID, domain string) (accessApp, error) {
-	return api.ensureNamedApp(ctx, accountID, dashboardAccessAppName, domain, nil)
+// dashboardAccessDomains returns the exact destinations the dashboard app must
+// cover. Access paths are exact matches, so both the page path and the
+// wildcard are required; machine API routes stay outside Access entirely.
+func dashboardAccessDomains(host string) []string {
+	return []string{host + "/dashboard", host + "/dashboard/*"}
 }
 
-// ensureMachineBypassApp keeps machine API prefixes out of the interactive
-// Access flow with an Everyone bypass policy. The Worker enforces bearer
-// tokens on these routes itself.
-func (api accessAPI) ensureMachineBypassApp(ctx context.Context, accountID, host string) error {
-	domains := make([]string, 0, len(machineAccessPaths))
-	for _, path := range machineAccessPaths {
-		domains = append(domains, host+"/"+path)
-	}
-	app, err := api.ensureNamedApp(ctx, accountID, machineAccessAppName, domains[0], domains)
-	if err != nil {
-		return err
-	}
-	return api.ensureBypassPolicy(ctx, accountID, app.UID)
-}
-
-func (api accessAPI) ensureNamedApp(ctx context.Context, accountID, name, domain string, domains []string) (accessApp, error) {
+// ensureApp creates or corrects the dashboard Access application so it covers
+// exactly /dashboard and /dashboard/*. Existing apps with wrong destinations
+// (bare hostname or missing wildcard) are updated in place, keeping their AUD.
+func (api accessAPI) ensureApp(ctx context.Context, accountID, host string) (accessApp, error) {
+	desired := dashboardAccessDomains(host)
 	apps, err := api.listApps(ctx, accountID)
 	if err != nil {
 		return accessApp{}, err
 	}
-	for _, app := range apps {
-		if app.Name == name || strings.TrimRight(app.Domain, "/") == strings.TrimRight(domain, "/") {
-			return app, nil
-		}
-	}
 	body := map[string]any{
-		"name":                 name,
-		"domain":               domain,
+		"name":                 dashboardAccessAppName,
+		"domain":               desired[0],
 		"type":                 "self_hosted",
 		"session_duration":     "24h",
 		"app_launcher_visible": false,
+		"self_hosted_domains":  desired,
 	}
-	if len(domains) > 0 {
-		body["self_hosted_domains"] = domains
+	for _, app := range apps {
+		primary := strings.TrimRight(app.Domain, "/")
+		if app.Name != dashboardAccessAppName && primary != host && primary != desired[0] {
+			continue
+		}
+		if sameStrings(app.SelfHostedDomains, desired) {
+			return app, nil
+		}
+		result, err := api.call(ctx, "PUT", "/accounts/"+url.PathEscape(accountID)+"/access/apps/"+url.PathEscape(app.UID), body)
+		if err != nil {
+			return accessApp{}, err
+		}
+		var updated accessApp
+		if err := json.Unmarshal(result, &updated); err != nil || updated.UID == "" {
+			return accessApp{}, fmt.Errorf("Cloudflare API update access app: invalid response")
+		}
+		return updated, nil
 	}
 	result, err := api.call(ctx, "POST", "/accounts/"+url.PathEscape(accountID)+"/access/apps", body)
 	if err != nil {
@@ -178,27 +175,16 @@ func (api accessAPI) ensureNamedApp(ctx context.Context, accountID, name, domain
 	return app, nil
 }
 
-func (api accessAPI) ensureBypassPolicy(ctx context.Context, accountID, appUID string) error {
-	result, err := api.call(ctx, "GET", "/accounts/"+url.PathEscape(accountID)+"/access/apps/"+url.PathEscape(appUID)+"/policies", nil)
-	if err != nil {
-		return err
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	var policies []struct {
-		UID string `json:"uid"`
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
-	if err := json.Unmarshal(result, &policies); err != nil {
-		return fmt.Errorf("Cloudflare API access policies: invalid response")
-	}
-	if len(policies) > 0 {
-		return nil
-	}
-	_, err = api.call(ctx, "POST", "/accounts/"+url.PathEscape(accountID)+"/access/apps/"+url.PathEscape(appUID)+"/policies", map[string]any{
-		"name":       machineAccessAppName + "-bypass",
-		"decision":   "bypass",
-		"precedence": 1,
-		"include":    []map[string]any{{"everyone": map[string]any{}}},
-	})
-	return err
+	return true
 }
 
 func (api accessAPI) ensureEmailPolicy(ctx context.Context, accountID, appUID, email string) (string, error) {
@@ -251,9 +237,6 @@ func setupDashboardAccess(ctx context.Context, dir string, opts setupOptions, wo
 	if err != nil {
 		return accessOutcome{}, err
 	}
-	if err := api.ensureMachineBypassApp(ctx, accountID, host); err != nil {
-		return accessOutcome{}, fmt.Errorf("configuring machine API bypass: %w", err)
-	}
 	outcome := accessOutcome{State: "configured", TeamDomain: teamDomain, Aud: app.Aud, Policy: "skipped"}
 	email := strings.TrimSpace(opts.AccessEmail)
 	if email == "" {
@@ -282,12 +265,12 @@ Recommended: mimir access --token <cloudflare-api-token>  (does all of this)
 Manual steps in Zero Trust → Access → Applications:
   1. Add a self-hosted application
        Name: %s
-       Domain: %s (leave the path blank)
-       Policy: Allow → your email
-  2. Add a second self-hosted application so machine traffic bypasses login
-       Name: %s
-       Domains: %s/v1, %s/whoami, %s/sessions, %s/search, %s/config, %s/reconcile, %s/log
-       Policy: Bypass → Everyone`, dashboardAccessAppName, host, machineAccessAppName, host, host, host, host, host, host, host)
+       Destinations: %s/dashboard and %s/dashboard/*
+       (both are required; Access paths are exact matches)
+  2. Add an Allow policy for your email
+
+Machine API routes (/v1, /sessions, ...) stay outside Access; the Worker
+authenticates them with bearer tokens.`, dashboardAccessAppName, host, host)
 }
 
 // cmdAccess finishes dashboard Access configuration after setup or login,

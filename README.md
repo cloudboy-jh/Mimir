@@ -162,21 +162,20 @@ session links refresh safely without colliding with machine APIs. Cloudflare
 Access protects dashboard data and receipt links without storing machine tokens
 in the browser.
 
-The Access application must cover the whole Worker hostname with no path
-restriction, paired with a second application that lets machine traffic
-bypass the login flow (the Worker enforces bearer tokens on those routes
-itself). Scoping a single app to `/dashboard` breaks the page's API fetches;
-covering the bare hostname without the bypass app blocks the proxy, CLI, and
-MCP. `mimir access` creates both applications correctly:
+The Access application must cover exactly two destinations: `/dashboard` and
+`/dashboard/*` (Access paths are exact matches, so the wildcard is required
+for the API routes underneath). Machine API routes stay outside Access; the
+Worker authenticates them with bearer tokens. Covering the bare hostname
+blocks the proxy, CLI, and MCP. `mimir access` creates or corrects the
+application automatically:
 
 ```bash
 mimir access
 ```
 
 With a Cloudflare API token (flag, env, or masked prompt), `mimir access`
-creates the dashboard application and allow policy, the machine bypass
-application, writes the verification variables, and redeploys. Without a
-token it prints the manual two-application checklist.
+creates or fixes the application and allow policy, writes the verification
+variables, and redeploys. Without a token it prints the manual checklist.
 
 The token needs exactly two permission rows, account-scoped with no zones:
 `Access: Apps and Policies → Edit` and
