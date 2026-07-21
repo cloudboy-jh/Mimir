@@ -176,6 +176,11 @@ creates the application and allow policy, writes the verification variables,
 and redeploys. Without a token it prints the two-step manual checklist; a
 manually created application still protects the dashboard at the edge.
 
+The token needs exactly two permission rows, account-scoped with no zones:
+`Access: Apps and Policies → Edit` and
+`Access: Organizations, Identity Providers, and Groups → Read`. Create it at
+<https://dash.cloudflare.com/profile/api-tokens>.
+
 ## Documentation
 
 - [`docs/Spec.md`](docs/Spec.md): architecture, APIs, storage, security, and current limitations

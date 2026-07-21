@@ -247,6 +247,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	accessToken := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 	if accessToken == "" && !opts.JSON {
 		opts.Progress.Pause()
+		fmt.Fprint(ioctx.Out, accessTokenHint)
 		accessToken, err = promptSecret(ioctx, "Cloudflare API token (enables automatic dashboard Access; Enter to skip): ")
 		opts.Progress.Resume()
 		if err != nil {

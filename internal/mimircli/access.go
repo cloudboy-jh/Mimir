@@ -17,6 +17,14 @@ import (
 const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
 const dashboardAccessAppName = "mimir-dashboard"
 
+// accessTokenHint is printed wherever the CLI asks for a Cloudflare API token
+// so users know exactly which two permission rows the token needs.
+const accessTokenHint = `Dashboard Access automation uses a Cloudflare API token with exactly:
+  Account → Access: Apps and Policies → Edit
+  Account → Access: Organizations, Identity Providers, and Groups → Read
+Create one at https://dash.cloudflare.com/profile/api-tokens (account-scoped, no zones).
+`
+
 type accessOutcome struct {
 	State      string `json:"state"` // configured | manual
 	TeamDomain string `json:"team_domain,omitempty"`
@@ -291,6 +299,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 			token = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 		}
 		if token == "" && !jsonOut {
+			fmt.Fprint(ioctx.Out, accessTokenHint)
 			if token, err = promptSecret(ioctx, "Cloudflare API token (Enter to print manual steps): "); err != nil {
 				return err
 			}
