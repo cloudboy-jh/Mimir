@@ -78,6 +78,16 @@ func TestMaterializeWorker(t *testing.T) {
 			t.Fatalf("shared dashboard image %s was not materialized", name)
 		}
 	}
+	if err := updateWranglerVars(filepath.Join(target, "wrangler.jsonc"), map[string]string{"DASHBOARD_ACCESS_AUD": "aud-1", "DASHBOARD_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := materializeWorker(source); err != nil {
+		t.Fatal(err)
+	}
+	vars := preservedWranglerVars(filepath.Join(target, "wrangler.jsonc"))
+	if vars["DASHBOARD_ACCESS_AUD"] != "aud-1" || vars["DASHBOARD_ACCESS_TEAM_DOMAIN"] != "https://team.cloudflareaccess.com" {
+		t.Fatalf("access vars were not preserved across materialization: %v", vars)
+	}
 }
 
 func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {

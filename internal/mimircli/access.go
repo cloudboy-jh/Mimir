@@ -95,7 +95,11 @@ func (api accessAPI) authDomain(ctx context.Context, accountID string) (string, 
 	if err := json.Unmarshal(result, &org); err != nil || org.AuthDomain == "" {
 		return "", fmt.Errorf("Cloudflare Access team domain not found; is Zero Trust enabled on this account?")
 	}
-	return strings.TrimRight(org.AuthDomain, "/"), nil
+	domain := strings.TrimRight(org.AuthDomain, "/")
+	if !strings.HasPrefix(domain, "https://") && !strings.HasPrefix(domain, "http://") {
+		domain = "https://" + domain
+	}
+	return domain, nil
 }
 
 type accessApp struct {

@@ -92,13 +92,13 @@ func TestAccessAPIAuthDomain(t *testing.T) {
 		if r.URL.Path != "/accounts/acc-1/access/organizations" {
 			t.Fatalf("path %s", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{"auth_domain": "https://team.cloudflareaccess.com"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": map[string]any{"auth_domain": "team.cloudflareaccess.com"}})
 	}))
 	defer server.Close()
 	api := accessAPI{base: server.URL, token: "cf-token"}
 	domain, err := api.authDomain(context.Background(), "acc-1")
 	if err != nil || domain != "https://team.cloudflareaccess.com" {
-		t.Fatalf("domain %q %v", domain, err)
+		t.Fatalf("scheme-less auth domain %q %v", domain, err)
 	}
 }
 

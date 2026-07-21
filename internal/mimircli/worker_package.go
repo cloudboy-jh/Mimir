@@ -3,6 +3,7 @@ package mimircli
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,13 +44,15 @@ func workerDir(explicit string) (string, error) {
 }
 
 // materializeWorker keeps Wrangler's generated config and node modules outside
-// the source checkout and Go's read-only module cache.
+// the source checkout and Go's read-only module cache. Configured Worker vars
+// (dashboard Access) survive re-materialization.
 func materializeWorker(source string) (string, error) {
 	pointer, err := pointerPath()
 	if err != nil {
 		return "", err
 	}
 	target := filepath.Join(filepath.Dir(pointer), "worker")
+	preserved := preservedWranglerVars(filepath.Join(target, "wrangler.jsonc"))
 	if err := filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -95,7 +98,34 @@ func materializeWorker(source string) (string, error) {
 			return "", err
 		}
 	}
+	if len(preserved) > 0 {
+		if err := updateWranglerVars(filepath.Join(target, "wrangler.jsonc"), preserved); err != nil {
+			return "", err
+		}
+	}
 	return target, nil
+}
+
+// preservedWranglerVars reads Worker vars that must survive re-materialization
+// from an existing materialized config.
+func preservedWranglerVars(path string) map[string]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var config struct {
+		Vars map[string]any `json:"vars"`
+	}
+	if json.Unmarshal(stripJSONC(data), &config) != nil {
+		return nil
+	}
+	preserved := map[string]string{}
+	for _, key := range []string{"DASHBOARD_ACCESS_AUD", "DASHBOARD_ACCESS_TEAM_DOMAIN"} {
+		if value, ok := config.Vars[key].(string); ok && value != "" {
+			preserved[key] = value
+		}
+	}
+	return preserved
 }
 
 func ensureWorkerDependencies(ctx context.Context, dir string) error {
