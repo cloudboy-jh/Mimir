@@ -1,31 +1,73 @@
 # Next Steps
 
-This file tracks concrete implementation gaps and technical debt remaining from the Mimir v2 architecture transition. The core Cloudflare Worker backend and capture proxy are complete.
+This file tracks concrete unfinished work and operational decisions. Completed
+architecture-transition work belongs in git history and the implementation
+specification rather than an expanding completion log.
 
-## Done
+## Active Implementation Work
 
-- **`mimir list`** — receipt-oriented session listing with `--repo`, `--outcome`, and `--limit` filters (`internal/mimircli/receipts.go`).
-- **MCP `sessions_list`** — returns the same compact receipts as `mimir list` instead of raw JSON.
-- **`sessions.intent`** — populated on capture from the first redacted user message (`deriveIntent` in `worker/src/capture.ts`); first exchange wins, searchable via `/search`.
-- **`POST /search`** — the `types` parameter now filters match sources (`intent`, `excerpts`, `files`, `errors`); unknown types return 400.
-- **Wrangler JSONC parsing** — `stripJSONC` tolerates comments and trailing commas before strict decoding.
-- **Network timeouts** — all CLI/MCP Worker calls use a 30s `http.Client`; release downloads use a 5m client.
-- **Cloudflare Access automation** — `mimir setup` provisions the `mimir-dashboard` Access application, an allow policy (`--access-email` or `MIMIR_ACCESS_EMAIL`), and writes `DASHBOARD_ACCESS_AUD`/`DASHBOARD_ACCESS_TEAM_DOMAIN` into `wrangler.jsonc` when `CLOUDFLARE_API_TOKEN` is set; otherwise it prints the manual checklist.
-- **JWT verification tests** — the Access JWT path is covered with in-test RS256 keys and a stubbed JWKS endpoint (valid, wrong audience, wrong issuer, expired, garbage).
-- **Index/recall coverage** — unit and end-to-end tests for `saveIndexAtomic`, `parseFile`, `score`, `rank`, `fit`, `locateSymbol`, and `queryRecall`.
-- **Release automation** — `.github/workflows/release.yml` runs the full suite on `v*` tags, then GoReleaser in a gated `release` environment.
-- **`mimir update`** — verified, atomic self-update from GitHub release assets with SHA-256 checks; refuses package-manager-owned installs.
-- **Live dashboard** — Sessions, Requests, Overview, R2 payload detail, pagination, and user outcome updates now read the Access-protected Worker APIs.
-- **`mimir deploy`** — single supported deploy path: materialize Worker, build dashboard, write the real D1 ID into the materialized config, `wrangler deploy`.
-- **opencode integration** — `mimir login` writes `~/.config/opencode/plugins/mimir.ts` (OpenRouter provider routed through the Worker with session headers) and upserts the `mimir` MCP entry in `opencode.json`, both idempotent.
-- **`mimir access`** — one-command dashboard Access finish: full automation with an API token (prompted inline during setup), or `--aud`/`--team-domain` application after manual app creation; automated Access apps now cover the bare Worker hostname.
+### MCP conformance
 
-## Remaining
+- Validate the JSON-RPC version, request IDs, method parameters, and tool
+  arguments.
+- Return tool execution failures as MCP tool results with `isError: true` where
+  required by the protocol.
+- Add compatibility tests using current opencode and at least one additional
+  MCP client while retaining newline-delimited and legacy `Content-Length`
+  input coverage.
 
-- **`mimir browse`** — parked. A TUI requires a dependency, which conflicts with the standard-library-only CLI constraint. Decide whether the constraint gets a carve-out before implementation.
+### Lifecycle configuration
+
+- Remove `session.abandon_days` from the public configuration contract or
+  implement and document the lifecycle process that consumes it. Do not keep
+  accepting a setting with no behavioral effect.
+
+### opencode installer portability
+
+- Resolve the machine credential through the same `MIMIR_HOME`-aware path used
+  by the connection manifest instead of hard-coding `~/.mimir/token`.
+- Use the absolute current executable path in the generated MCP command, or
+  explicitly document that the integration depends on `mimir` being on
+  `PATH`.
+- Update `docs/opencode-capture-setup.md` to describe the generated OpenRouter
+  plugin, dynamic `x-mimir-session` headers, credential and MCP command
+  resolution, and `/mimir-end-session <session-id>`.
+
+### Release verification
+
+- Add migration tests, a dashboard production build, and a Wrangler dry run to
+  release CI so the workflow verifies the deployable package, not only tests
+  and typechecks.
+- Publish the next tagged release containing all post-`v0.1.5` changes,
+  including installed-version reporting, successful-capture logging, dashboard
+  auto-refresh, and explicit session ending.
 
 ## Operational Follow-ups
 
-- Create the `release` GitHub environment with required reviewers so the release workflow gate is active.
-- Tag `v0.x.0` to exercise the release path for real.
-- Fix pre-existing Windows test failures in `setup_test.go` (`TestBuildDashboard`, `TestReadCloudflareIdentity`, `TestConnectionManifestContainsNoCredential`) — all three fail on a clean checkout in this environment.
+- Add required-reviewer protection to the existing GitHub `release`
+  environment.
+- Define a recommended reconciliation cadence and an explicit policy for stale
+  accepted rows and orphaned R2 objects.
+- Correct stale statements in `docs/Spec.md` that still describe Access setup
+  as absent and the dashboard as mock-backed.
+
+## Parked Decisions
+
+- **`mimir browse`** — keep parked unless the standard-library-only CLI
+  constraint receives an explicit TUI dependency carve-out. The live dashboard
+  and `mimir list` already provide session access.
+
+## Recently Closed
+
+- Live Access-protected dashboard data, request-log cursor pagination, R2
+  payload detail, and outcome updates.
+- Exact Cloudflare Access destinations at `/dashboard` and `/dashboard/*`;
+  machine API routes remain outside Access.
+- Tagged GoReleaser delivery with checksummed cross-platform assets, exercised
+  successfully through `v0.1.5`.
+- Windows setup-test portability and installed-version reporting.
+- Human-readable Worker logs for successful exchange capture.
+- Automatic refresh for live Sessions, Requests, and Overview dashboard data.
+- Explicit idempotent session ending through the machine API, CLI, MCP, and
+  `/mimir-end-session <session-id>`, including safe handling of late capture
+  finalization and concurrent retries.

@@ -2,6 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
+import { finalizeAcceptedExchange } from "../src/capture";
 
 const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
@@ -183,6 +184,9 @@ describe("Worker integration", () => {
     const status = await request("/sessions/status-session/status", { headers: { authorization: "Bearer machine-token" } });
     expect(await status.json()).toEqual({
       session_id: "status-session",
+      state: "active",
+      ended_at: null,
+      inactive_at: null,
       capture: { saved_exchanges: 1, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: "2026-01-01T00:00:01Z", status: "saved" },
       outcome: "unresolved",
       outcome_src: null,
@@ -207,6 +211,73 @@ describe("Worker integration", () => {
     expect(await env.DB.prepare("SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'status-session'").first()).toEqual({ outcome: "landed", source: "agent", reason: "merged", evidence_json: '{"commit":"abc123"}' });
     const detail = await request("/sessions/status-session", { headers: { authorization: "Bearer machine-token" } });
     expect((await detail.json() as { session: { outcome: string } }).session.outcome).toBe("landed");
+  });
+
+  it("ends sessions idempotently and optionally records an outcome", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-session', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const ended = await request("/sessions/end-session/end", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", reason: "verified", evidence: { commit: "abc123" } }) });
+    expect(ended.status).toBe(200);
+    const first = await ended.json() as { session: { state: string; ended_at: string; inactive_at: string; outcome: string; outcome_src: string; outcome_updated_at: string }; evidence: unknown };
+    expect(first.session).toMatchObject({ state: "inactive", outcome: "landed", outcome_src: "agent" });
+    expect(first.session.ended_at).toBe(first.session.inactive_at);
+    expect(first.evidence).toEqual({ commit: "abc123" });
+    expect(await env.DB.prepare("SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'end-session'").first()).toEqual({ outcome: "landed", source: "agent", reason: "verified", evidence_json: '{"commit":"abc123"}' });
+
+    const repeated = await request("/sessions/end-session/end", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", reason: "verified", evidence: { commit: "abc123" } }) });
+    const repeatedSession = (await repeated.json() as { session: { ended_at: string; inactive_at: string; outcome_updated_at: string } }).session;
+    expect(repeatedSession).toMatchObject({ ended_at: first.session.ended_at, inactive_at: first.session.inactive_at, outcome_updated_at: first.session.outcome_updated_at });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-session'").first()).toEqual({ count: 1 });
+
+    const concurrent = await Promise.all([
+      request("/sessions/end-session/end", { method: "POST", headers, body: JSON.stringify({ outcome: "discarded", reason: "superseded", evidence: { issue: 42 } }) }),
+      request("/sessions/end-session/end", { method: "POST", headers, body: JSON.stringify({ outcome: "discarded", reason: "superseded", evidence: { issue: 42 } }) }),
+    ]);
+    expect(concurrent.every((response) => response.status === 200)).toBe(true);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-session' AND outcome = 'discarded'").first()).toEqual({ count: 1 });
+
+    expect((await request("/sessions/missing/end", { method: "POST", headers, body: "{}" })).status).toBe(404);
+    expect((await request("/sessions/end-session/end", { method: "POST", headers, body: JSON.stringify({ reason: "missing outcome" }) })).status).toBe(400);
+    expect((await request("/sessions/end-session/end", { method: "POST", headers, body: "null" })).status).toBe(400);
+    expect((await request("/sessions/end-session/end", { method: "POST", headers, body: "[]" })).status).toBe(400);
+  });
+
+  it("does not reactivate a session when pre-end capture finishes late", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-race', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('end-race-exchange', 'end-race', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/end-race.json', 'accepted', '2026-01-01T00:01:01Z', 1)").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const endBody = JSON.stringify({ outcome: "landed", reason: "race verified", evidence: { test: "late-finalize" } });
+    const ended = await request("/sessions/end-race/end", { method: "POST", headers, body: endBody });
+    const endTime = (await ended.json() as { session: { inactive_at: string } }).session.inactive_at;
+
+    await finalizeAcceptedExchange(env.DB, "end-race-exchange", "end-race", "2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "opencode", "openai/test", 3, 1, 100, true);
+    expect(await env.DB.prepare("SELECT state, inactive_at, request_count FROM sessions WHERE id = 'end-race'").first()).toEqual({ state: "inactive", inactive_at: endTime, request_count: 1 });
+    expect((await request("/sessions/end-race/end", { method: "POST", headers, body: endBody })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-race'").first()).toEqual({ count: 1 });
+  });
+
+  it("turns an auto-expired session into an explicit end marker", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary) VALUES ('expired-end-race', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:15:00Z', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('expired-end-exchange', 'expired-end-race', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/expired-end.json', 'accepted', '2026-01-01T00:01:01Z', 1)").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const ended = await request("/sessions/expired-end-race/end", { method: "POST", headers, body: "{}" });
+    const explicit = (await ended.json() as { session: { ended_at: string; inactive_at: string } }).session;
+    expect(explicit.ended_at).toBe(explicit.inactive_at);
+    expect(explicit.inactive_at).not.toBe("2026-01-01T00:15:00Z");
+
+    await finalizeAcceptedExchange(env.DB, "expired-end-exchange", "expired-end-race", "2026-01-01T00:01:00Z", "2026-01-01T00:20:00Z", "opencode", "openai/test", 2, 1, 50, true);
+    expect(await env.DB.prepare("SELECT state, ended_at, inactive_at FROM sessions WHERE id = 'expired-end-race'").first()).toEqual({ state: "inactive", ended_at: explicit.ended_at, inactive_at: explicit.inactive_at });
+  });
+
+  it("reactivates an explicitly ended exact session for genuinely later activity", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('ended-reactivate', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const ended = await request("/sessions/ended-reactivate/end", { method: "POST", headers, body: "{}" });
+    const endTime = (await ended.json() as { session: { inactive_at: string } }).session.inactive_at;
+    const later = new Date(Date.parse(endTime) + 1_000).toISOString();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('reactivate-exchange', 'ended-reactivate', ?, 'chat', 'openai/test', 1, 'log/reactivate.json', 'accepted', ?, 1)").bind(later, later).run();
+    await finalizeAcceptedExchange(env.DB, "reactivate-exchange", "ended-reactivate", later, later, "opencode", "openai/test", 2, 1, 50, true);
+    expect(await env.DB.prepare("SELECT state, inactive_at, last_active_at FROM sessions WHERE id = 'ended-reactivate'").first()).toEqual({ state: "active", inactive_at: null, last_active_at: later });
   });
 
   it("reconciles accepted objects and missing saved objects without deletion", async () => {
@@ -285,6 +356,7 @@ describe("Worker integration", () => {
     const updated = await dashboardRequest("/dashboard/api/sessions/dashboard-session/outcome", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ outcome: "landed", reason: "Live data verified" }) });
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({ id: "dashboard-session", outcome: "landed", outcome_src: "user", outcome_reason: "Live data verified" });
+
   });
 
   it("derives session intent from the first user message and keeps it sticky", async () => {

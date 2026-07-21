@@ -136,8 +136,23 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) > 0 && args[0] == "status" && len(args) < 2 {
 		return fmt.Errorf("usage: mimir session status <id> [--json]")
 	}
+	if len(args) > 0 && args[0] == "end" && len(args) < 2 {
+		return fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]")
+	}
 	if len(args) == 1 {
 		return remotePrint(ctx, out, "GET", "/sessions/"+args[0], nil)
+	}
+	if len(args) >= 2 && args[0] == "end" {
+		id, body, err := parseSessionEndArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		status, err := endRemoteSession(ctx, id, body)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, endedReceiptText(status))
+		return err
 	}
 	if len(args) >= 2 && args[0] == "status" {
 		if len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
@@ -156,7 +171,55 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return remotePrint(ctx, out, "POST", "/sessions/"+id+"/outcome", body)
 	}
-	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session end <id> [--outcome value] [--reason text] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+}
+
+func parseSessionEndArgs(args []string) (string, map[string]any, error) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", nil, fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]")
+	}
+	id := args[0]
+	body := map[string]any{}
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--outcome" && i+1 < len(args):
+			if _, exists := body["outcome"]; exists {
+				return "", nil, fmt.Errorf("--outcome may only be specified once")
+			}
+			body["outcome"] = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--outcome="):
+			if _, exists := body["outcome"]; exists {
+				return "", nil, fmt.Errorf("--outcome may only be specified once")
+			}
+			body["outcome"] = strings.TrimPrefix(args[i], "--outcome=")
+		case args[i] == "--reason" && i+1 < len(args):
+			if _, exists := body["reason"]; exists {
+				return "", nil, fmt.Errorf("--reason may only be specified once")
+			}
+			body["reason"] = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--reason="):
+			if _, exists := body["reason"]; exists {
+				return "", nil, fmt.Errorf("--reason may only be specified once")
+			}
+			body["reason"] = strings.TrimPrefix(args[i], "--reason=")
+		default:
+			return "", nil, fmt.Errorf("unexpected argument %q", args[i])
+		}
+	}
+	if value, exists := body["outcome"]; exists {
+		outcome, _ := value.(string)
+		if !canonicalOutcome(outcome) {
+			return "", nil, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
+		}
+	}
+	if _, hasReason := body["reason"]; hasReason {
+		if _, hasOutcome := body["outcome"]; !hasOutcome {
+			return "", nil, fmt.Errorf("--reason requires --outcome")
+		}
+	}
+	return id, body, nil
 }
 
 func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutput bool) error {
@@ -274,6 +337,7 @@ Usage:
   mimir dashboard
   mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
   mimir session status <id> [--json]
+  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir reconcile
   mimir update [--check]
@@ -294,6 +358,7 @@ Usage:
   mimir sessions
   mimir session <id>
   mimir session status <id>
+  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir search <query>
   mimir reconcile

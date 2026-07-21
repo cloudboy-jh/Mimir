@@ -109,6 +109,7 @@ mimir access [--token <api-token>]  # create or fix the dashboard Access applica
 mimir dashboard                     # open the dashboard
 mimir list [--repo name] [--outcome <o>] [--limit 20]
 mimir session status <id> [--json]  # verified capture receipt
+mimir session end <id> [--outcome <o>] [--reason text]
 mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
 mimir reconcile                     # reconcile session state
 mimir update [--check]              # update the CLI
@@ -202,13 +203,16 @@ The compact MCP surface includes:
 | `sessions_list` | List captured sessions. |
 | `sessions_get` | Read a session and its exchanges. |
 | `session_status` | Show a verified capture receipt and, when Access is configured, a dashboard link. |
+| `session_end` | End a session, optionally record its outcome, and return the final receipt. |
 | `search` | Search session memory and optional local code recall. |
 | `session_set_outcome` | Record a work outcome with evidence. |
 | `config_get` | Read deployment configuration. |
 | `config_set` | Update deployment configuration. |
 
 The included `mimir-use` skill teaches agents to search this memory and verify
-capture automatically during normal work.
+capture automatically during normal work. `mimir login` also installs the
+`/mimir-end-session <session-id>` opencode command for an explicit summarize,
+outcome, and end workflow.
 
 ## Dashboard
 

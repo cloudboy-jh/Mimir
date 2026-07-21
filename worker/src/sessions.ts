@@ -14,6 +14,14 @@ type OutcomeInput = {
   evidence?: unknown;
 };
 
+type NormalizedOutcome = {
+  outcome: WorkOutcome;
+  source: OutcomeSource;
+  reason: string | null;
+  evidence: unknown;
+  evidenceJson: string | null;
+};
+
 export async function resolveSession(db: D1Database, declared: string | null, repo: string | null, harness: string | null, sourceRef: string | null, model: string, now: string) {
   if (declared) {
     await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, source_ref, model_primary) VALUES (?, ?, ?, ?, 'header', ?, ?, ?)").bind(declared, now, now, harness, repo, sourceRef, model).run();
@@ -37,29 +45,83 @@ export async function expireSessions(db: D1Database, gapMinutes?: number, now = 
 }
 
 export async function updateOutcome(c: Context<AppEnv>, input: OutcomeInput, defaultSource: OutcomeSource) {
+  const normalized = normalizeOutcome(input, defaultSource);
+  if ("error" in normalized) return c.json({ error: normalized.error }, 400);
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "session id is required" }, 400);
+  if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+  const now = new Date().toISOString();
+  await c.env.DB.batch(outcomeStatements(c.env.DB, id, normalized, now));
+  return c.json(outcomeResult(id, normalized, now));
+}
+
+export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSource) {
+  let input: OutcomeInput = {};
+  if (c.req.header("content-type")?.includes("application/json")) {
+    try {
+      const parsed = await c.req.json<unknown>();
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return c.json({ error: "JSON body must be an object" }, 400);
+      input = parsed as OutcomeInput;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+  }
+  if (input.outcome === undefined && (input.reason !== undefined || input.evidence !== undefined)) {
+    return c.json({ error: "outcome is required when reason or evidence is provided" }, 400);
+  }
+  const normalized = input.outcome === undefined ? null : normalizeOutcome({ ...input, source: defaultSource }, defaultSource);
+  if (normalized && "error" in normalized) return c.json({ error: normalized.error }, 400);
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "session id is required" }, 400);
+  if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+  const now = new Date().toISOString();
+  const endStatement = c.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE ended_at END, inactive_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE inactive_at END WHERE id = ?").bind(now, now, id);
+  await endStatement.run();
+  if (normalized && !("error" in normalized)) {
+    const generation = await c.env.DB.prepare("SELECT inactive_at AS value FROM sessions WHERE id = ?").bind(id).first<{ value: string }>();
+    const eventID = await endOutcomeEventID(id, generation?.value ?? "", normalized);
+    await c.env.DB.batch([
+      c.env.DB.prepare("INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(eventID, id, normalized.outcome, normalized.source, normalized.reason, normalized.evidenceJson, now),
+      c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = (SELECT created_at FROM session_outcome_events WHERE id = ?), outcome_reason = ? WHERE id = ?").bind(normalized.outcome, legacyOutcome(normalized.outcome), normalized.source, eventID, normalized.reason, id),
+    ]);
+  }
+  const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
+  return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
+}
+
+async function endOutcomeEventID(id: string, generation: string, outcome: NormalizedOutcome) {
+  const value = JSON.stringify([id, generation, outcome.outcome, outcome.source, outcome.reason, outcome.evidenceJson]);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return "end_" + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeOutcome(input: OutcomeInput, defaultSource: OutcomeSource): NormalizedOutcome | { error: string } {
   const outcome = canonicalOutcome(input.outcome);
-  if (!outcome) return c.json({ error: "invalid outcome" }, 400);
+  if (!outcome) return { error: "invalid outcome" };
   const source = canonicalSource(input.source, defaultSource);
-  if (!source) return c.json({ error: "invalid outcome source" }, 400);
-  if (input.reason !== undefined && (typeof input.reason !== "string" || input.reason.length > 2_000)) return c.json({ error: "invalid outcome reason" }, 400);
+  if (!source) return { error: "invalid outcome source" };
+  if (input.reason !== undefined && (typeof input.reason !== "string" || input.reason.length > 2_000)) return { error: "invalid outcome reason" };
   let evidenceJson: string | null = null;
   if (input.evidence !== undefined) {
     try {
       evidenceJson = JSON.stringify(input.evidence);
     } catch {
-      return c.json({ error: "invalid outcome evidence" }, 400);
+      return { error: "invalid outcome evidence" };
     }
-    if (evidenceJson.length > 32_000) return c.json({ error: "outcome evidence too large" }, 400);
+    if (evidenceJson.length > 32_000) return { error: "outcome evidence too large" };
   }
-  const id = c.req.param("id");
-  if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
-  const now = new Date().toISOString();
-  const reason = typeof input.reason === "string" ? input.reason : null;
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ? WHERE id = ?").bind(outcome, legacyOutcome(outcome), source, now, reason, id),
-    c.env.DB.prepare("INSERT INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(ulid(), id, outcome, source, reason, evidenceJson, now),
-  ]);
-  return c.json({ id, outcome, outcome_src: source, outcome_updated_at: now, outcome_reason: reason, evidence: input.evidence ?? null });
+  return { outcome, source, reason: typeof input.reason === "string" ? input.reason : null, evidence: input.evidence, evidenceJson };
+}
+
+function outcomeStatements(db: D1Database, id: string, outcome: NormalizedOutcome, now: string) {
+  return [
+    db.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ? WHERE id = ?").bind(outcome.outcome, legacyOutcome(outcome.outcome), outcome.source, now, outcome.reason, id),
+    db.prepare("INSERT INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(ulid(), id, outcome.outcome, outcome.source, outcome.reason, outcome.evidenceJson, now),
+  ];
+}
+
+function outcomeResult(id: string, outcome: NormalizedOutcome, now: string) {
+  return { id, outcome: outcome.outcome, outcome_src: outcome.source, outcome_updated_at: now, outcome_reason: outcome.reason, evidence: outcome.evidence ?? null };
 }
 
 export function canonicalOutcome(outcome: string | undefined): WorkOutcome | null {

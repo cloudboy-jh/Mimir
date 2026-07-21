@@ -94,6 +94,7 @@ func tools() []map[string]any {
 		{"name": "sessions_list", "description": "List the 20 most recent sessions as compact receipts (time, id, outcome, capture state, model, intent); use session_status to verify saved capture state.", "inputSchema": schema(map[string]any{})},
 		{"name": "sessions_get", "description": "Read one saved session capture and its exchanges; this does not describe whether the work landed.", "inputSchema": schema(map[string]any{"id": str()})},
 		{"name": "session_status", "description": "Wait briefly for capture to settle, then return a compact receipt from authoritative session storage with a dashboard link when Access is configured. Work outcome is tracked separately.", "inputSchema": schema(map[string]any{"id": str()})},
+		{"name": "session_end", "description": "End an active session, optionally record its outcome, then return the authoritative capture receipt. Repeated calls are safe.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": canonical, "reason": str(), "evidence": map[string]any{}}, "id")},
 		{"name": "session_set_outcome", "description": "Record the result of the work for a session; this does not verify that capture was saved.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": canonical, "reason": str(), "evidence": map[string]any{}}, "id", "outcome")},
 		{"name": "search", "description": "Search session memory.", "inputSchema": schema(map[string]any{"query": str()})},
 		{"name": "mark", "description": "Deprecated alias for setting a work outcome. Accepts legacy promoted and unknown values; does not verify saved capture.", "inputSchema": optionalSchema(map[string]any{"id": str(), "outcome": legacy}, "id", "outcome")},
@@ -160,6 +161,35 @@ func callTool(ctx context.Context, name string, args map[string]any) (toolCallOu
 		if value, ok := args["evidence"]; ok && value != nil {
 			body.(map[string]any)["evidence"] = value
 		}
+	case "session_end":
+		id, err := requiredToolString(args, "id")
+		if err != nil {
+			return toolCallOutput{}, err
+		}
+		endBody := map[string]any{}
+		if value, ok := args["outcome"].(string); ok && strings.TrimSpace(value) != "" {
+			if !canonicalOutcome(value) {
+				return toolCallOutput{}, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", value)
+			}
+			endBody["outcome"] = value
+		}
+		if value, ok := args["reason"].(string); ok && strings.TrimSpace(value) != "" {
+			if _, exists := endBody["outcome"]; !exists {
+				return toolCallOutput{}, fmt.Errorf("reason requires outcome")
+			}
+			endBody["reason"] = value
+		}
+		if value, ok := args["evidence"]; ok && value != nil {
+			if _, exists := endBody["outcome"]; !exists {
+				return toolCallOutput{}, fmt.Errorf("evidence requires outcome")
+			}
+			endBody["evidence"] = value
+		}
+		status, err := endRemoteSession(ctx, id, endBody)
+		if err != nil {
+			return toolCallOutput{}, err
+		}
+		return toolCallOutput{Text: endedReceiptText(status)}, nil
 	case "search":
 		data, err := federatedSearch(ctx, fmt.Sprint(args["query"]))
 		if err != nil {

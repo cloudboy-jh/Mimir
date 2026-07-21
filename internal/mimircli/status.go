@@ -10,6 +10,9 @@ import (
 
 type sessionStatus struct {
 	SessionID        string  `json:"session_id"`
+	State            string  `json:"state"`
+	EndedAt          *string `json:"ended_at"`
+	InactiveAt       *string `json:"inactive_at"`
 	Outcome          string  `json:"outcome"`
 	OutcomeSource    *string `json:"outcome_src"`
 	OutcomeUpdatedAt *string `json:"outcome_updated_at"`
@@ -120,6 +123,17 @@ func readSessionStatus(ctx context.Context, id string) (sessionStatus, error) {
 		return sessionStatus{}, fmt.Errorf("decoding raw session status: %w", err)
 	}
 	return status, nil
+}
+
+func endRemoteSession(ctx context.Context, id string, body map[string]any) (sessionStatus, error) {
+	if _, err := remoteRequest(ctx, "POST", "/sessions/"+url.PathEscape(id)+"/end", body); err != nil {
+		return sessionStatus{}, err
+	}
+	return getSessionStatus(ctx, id)
+}
+
+func endedReceiptText(status sessionStatus) string {
+	return "Session ended · " + receiptText(status)
 }
 
 func normalizeSessionStatus(status sessionStatus) sessionStatus {

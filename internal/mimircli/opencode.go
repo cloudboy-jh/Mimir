@@ -43,6 +43,19 @@ export default (async ({ directory }) => {
 }) satisfies Plugin;
 `
 
+const openCodeEndSessionCommand = `---
+description: Summarize, record the outcome, and end the current Mimir session.
+---
+
+End the current Mimir session.
+
+1. Use $ARGUMENTS as the required exact session ID. If it is empty, stop and ask for the ID. Never guess an ID.
+2. Summarize the completed work and gather concrete evidence such as tests, deployments, pull requests, or commit SHAs.
+3. Choose landed, discarded, abandoned, or unresolved based only on that evidence.
+4. Call the Mimir MCP session_end tool with the session ID, outcome, concise reason, and evidence.
+5. Return the session_end receipt exactly. Do not claim the session was saved unless the receipt says it was saved.
+`
+
 // installOpenCodeIntegration writes the Mimir opencode plugin and registers
 // the mimir MCP server in opencode.json. Both operations are idempotent and
 // preserve any existing opencode configuration.
@@ -51,9 +64,15 @@ func installOpenCodeIntegration(home, workerURL string) error {
 	if err := os.MkdirAll(filepath.Join(configDir, "plugins"), 0o700); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(configDir, "commands"), 0o700); err != nil {
+		return err
+	}
 	plugin := fmt.Sprintf(openCodePluginTemplate, workerURL)
 	if err := os.WriteFile(filepath.Join(configDir, "plugins", "mimir.ts"), []byte(plugin), 0o600); err != nil {
 		return fmt.Errorf("writing opencode plugin: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "commands", "mimir-end-session.md"), []byte(openCodeEndSessionCommand), 0o600); err != nil {
+		return fmt.Errorf("writing opencode command: %w", err)
 	}
 	return upsertOpenCodeMCP(filepath.Join(configDir, "opencode.json"))
 }

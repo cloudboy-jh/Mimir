@@ -60,10 +60,48 @@ func TestMCPListsSessionStatusAndOutcomeTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed := string(data)
-	for _, want := range []string{`"name":"session_status"`, `"name":"session_set_outcome"`, `"enum":["landed","discarded","abandoned","unresolved"]`, `"name":"mark"`, `"promoted"`, `"unknown"`} {
+	for _, want := range []string{`"name":"session_status"`, `"name":"session_end"`, `"name":"session_set_outcome"`, `"enum":["landed","discarded","abandoned","unresolved"]`, `"name":"mark"`, `"promoted"`, `"unknown"`} {
 		if !strings.Contains(listed, want) {
 			t.Fatalf("tools/list missing %s: %s", want, listed)
 		}
+	}
+}
+
+func TestMCPCallsSessionEnd(t *testing.T) {
+	oldSchedule := sessionStatusPollSchedule
+	sessionStatusPollSchedule = []time.Duration{0}
+	t.Cleanup(func() { sessionStatusPollSchedule = oldSchedule })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions/session-1/end":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method %s", r.Method)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustJSON(t, body); got != mustJSON(t, map[string]any{"outcome": "landed", "reason": "verified", "evidence": map[string]any{"commit": "abc123"}}) {
+				t.Fatalf("body %s", got)
+			}
+			_, _ = w.Write([]byte(`{"session":{"id":"session-1","state":"inactive"}}`))
+		case "/sessions/session-1/status":
+			_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"saved","saved_exchanges":1,"failed_exchanges":0,"pending_exchanges":0},"receipt":{"label":"Saved to Mimir","detail":"1 exchange in this session"},"outcome":"landed"}`))
+		default:
+			t.Fatalf("path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv(envMimirHome, t.TempDir())
+	if err := savePointer(Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+	output, err := callTool(context.Background(), "session_end", map[string]any{"id": "session-1", "outcome": "landed", "reason": "verified", "evidence": map[string]any{"commit": "abc123"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.Text != "Session ended · Saved to Mimir · 1 exchange in this session" {
+		t.Fatalf("output %q", output.Text)
 	}
 }
 

@@ -111,6 +111,7 @@ These routes do not implement the complete OpenAI or Anthropic API surfaces.
 | `GET` | `/sessions` | List up to 100 recent sessions with optional filters. |
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
 | `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
+| `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. |
 | `POST` | `/sessions/:id/outcome` | Append an evidenced work-outcome event. |
 | `POST` | `/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `POST` | `/reconcile` | Reconcile bounded D1 capture rows against R2 and report orphans. |
@@ -382,6 +383,7 @@ Tools:
 | `sessions_get` | `id` | `GET /sessions/:id` |
 | `search` | `query` | Remote search plus optional local recall |
 | `session_status` | `id` | Bounded verification of `GET /sessions/:id/status` with a compact receipt and an optional Access-backed link |
+| `session_end` | `id`, optional `outcome`, `reason`, and `evidence` | Idempotent `POST /sessions/:id/end` followed by a verified capture receipt |
 | `session_set_outcome` | `id`, `outcome`, optional `reason` and `evidence` | `POST /sessions/:id/outcome` |
 | `mark` | `id`, `outcome` | Deprecated legacy alias for `POST /sessions/:id/mark` |
 | `config_get` | none | `GET /config` |
@@ -392,6 +394,11 @@ while capture is pending or the latest exchange has not appeared yet. It
 returns the compact receipt as text for harness presentation. A still-pending
 final read remains pending; the tool never upgrades it optimistically. MCP does
 not expose complete log retrieval or local indexing as standalone tools.
+
+Ending a session sets it inactive and records the explicit end timestamp for
+the current active generation. It does not alter capture state. A genuinely
+later exchange carrying the same exact session header may reactivate it and
+begin another generation, while repeated end calls remain idempotent.
 
 During migration, the deprecated API and MCP aliases accept `promoted` for
 `landed` and `unknown` for `unresolved`. Canonical APIs, projections, filters,

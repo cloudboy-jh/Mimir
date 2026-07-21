@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
-import { canonicalOutcome, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
+import { canonicalOutcome, endSession, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
 import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
 import type { AppEnv } from "../types";
 
@@ -76,7 +76,7 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   });
 
   app.get("/sessions/:id/status", async (c) => {
-    const session = await c.env.DB.prepare("SELECT work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
+    const session = await c.env.DB.prepare("SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
     const capture = await captureSummary(c.env.DB, c.req.param("id"));
     const hostname = new URL(c.req.url).hostname;
@@ -94,6 +94,8 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const body = await c.req.json<{ outcome?: string; source?: string; reason?: unknown; evidence?: unknown }>();
     return updateOutcome(c, { ...body, source: "agent" }, "agent");
   });
+
+  app.post("/sessions/:id/end", (c) => endSession(c, "agent"));
 
   app.post("/reconcile", async (c) => c.json(await reconcile(
     c.env,

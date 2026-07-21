@@ -89,7 +89,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
   });
 
   app.get("/dashboard/api/sessions/:id/status", async (c) => {
-    const session = await c.env.DB.prepare("SELECT work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
+    const session = await c.env.DB.prepare("SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
     const capture = await captureSummary(c.env.DB, c.req.param("id"));
     c.header("cache-control", "no-store");

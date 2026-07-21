@@ -23,6 +23,15 @@ func TestInstallOpenCodeIntegration(t *testing.T) {
 	if strings.Contains(string(plugin), "readFileSync(join(homedir(), \".mimir\", \"token\"), \"utf8\")") == false {
 		t.Fatal("plugin does not read the machine token at runtime")
 	}
+	commandFile, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "commands", "mimir-end-session.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"$ARGUMENTS as the required exact session ID", "session_end", "Never guess an ID", "Return the session_end receipt exactly"} {
+		if !strings.Contains(string(commandFile), want) {
+			t.Fatalf("command missing %q", want)
+		}
+	}
 	config, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "opencode.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -35,9 +44,9 @@ func TestInstallOpenCodeIntegration(t *testing.T) {
 	if mcp["type"] != "local" || mcp["enabled"] != true {
 		t.Fatalf("unexpected mimir MCP entry: %v", mcp)
 	}
-	command := mcp["command"].([]any)
-	if command[0] != "mimir" || command[1] != "serve" {
-		t.Fatalf("unexpected MCP command: %v", command)
+	mcpCommand := mcp["command"].([]any)
+	if mcpCommand[0] != "mimir" || mcpCommand[1] != "serve" {
+		t.Fatalf("unexpected MCP command: %v", mcpCommand)
 	}
 }
 

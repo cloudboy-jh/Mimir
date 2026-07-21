@@ -35,4 +35,6 @@ Set an outcome only when the completed work provides evidence. Use `session_set_
 
 Include a concise reason and the supporting evidence. Capture state and work outcome are independent: a saved session can remain unresolved, and landed work is not proof that its exchanges were saved.
 
+When the user explicitly asks to end, close, or finalize the session, call `session_end` with the exact session ID. Include the evidenced outcome, reason, and evidence in that call when available, then return its receipt. Do not end a session merely because one task or response finished; an ended exact session may be reactivated by later traffic.
+
 Code recall remains local. Use the harness's Mimir MCP tools rather than asking the user to operate the CLI.

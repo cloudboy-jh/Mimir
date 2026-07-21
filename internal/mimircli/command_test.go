@@ -187,6 +187,54 @@ func TestExecuteSessionStatusRequiresID(t *testing.T) {
 	}
 }
 
+func TestExecuteSessionEndRequiresID(t *testing.T) {
+	err := ExecuteIO(context.Background(), []string{"session", "end"}, IO{Out: &bytes.Buffer{}})
+	if err == nil || !strings.HasPrefix(err.Error(), "usage: mimir session end <id>") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestExecuteSessionEnd(t *testing.T) {
+	oldSchedule := sessionStatusPollSchedule
+	sessionStatusPollSchedule = []time.Duration{0}
+	t.Cleanup(func() { sessionStatusPollSchedule = oldSchedule })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions/session-1/end":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method %s", r.Method)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustJSON(t, body); got != mustJSON(t, map[string]any{"outcome": "landed", "reason": "verified"}) {
+				t.Fatalf("body %s", got)
+			}
+			_, _ = w.Write([]byte(`{"session":{"id":"session-1","state":"inactive"}}`))
+		case "/sessions/session-1/status":
+			_, _ = w.Write([]byte(`{"session_id":"session-1","capture":{"status":"saved","saved_exchanges":1,"failed_exchanges":0,"pending_exchanges":0},"receipt":{"label":"Saved to Mimir","detail":"1 exchange in this session"},"outcome":"landed"}`))
+		default:
+			t.Fatalf("path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv(envMimirHome, t.TempDir())
+	if err := savePointer(Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"session", "end", "session-1", "--outcome", "landed", "--reason", "verified"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Session ended · Saved to Mimir · 1 exchange in this session\n" {
+		t.Fatalf("output %q", output.String())
+	}
+	if _, _, err := parseSessionEndArgs([]string{"session-1", "--reason", "missing outcome"}); err == nil {
+		t.Fatal("reason without outcome was accepted")
+	}
+}
+
 func TestExecuteReconcileExhaustsDatabaseAndR2Cursors(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
