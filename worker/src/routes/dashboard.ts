@@ -79,7 +79,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const session = await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
     const [exchanges, files, errors, capture, outcomeEvents] = await Promise.all([
-      c.env.DB.prepare("SELECT id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, capture_status, capture_reason, failure_code FROM exchanges WHERE session_id = ? ORDER BY ts").bind(c.req.param("id")).all(),
+      c.env.DB.prepare("SELECT id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, request_excerpt, capture_status, capture_reason, failure_code FROM exchanges WHERE session_id = ? ORDER BY ts").bind(c.req.param("id")).all(),
       c.env.DB.prepare("SELECT file FROM session_files WHERE session_id = ? ORDER BY file").bind(c.req.param("id")).all<{ file: string }>(),
       c.env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = ? ORDER BY signature").bind(c.req.param("id")).all<{ signature: string }>(),
       captureSummary(c.env.DB, c.req.param("id")),

@@ -50,6 +50,7 @@ export type Exchange = {
 };
 
 export type SessionExchange = Pick<Exchange, "id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens"> & {
+  request_excerpt: string;
   capture_status: string;
   capture_reason: string | null;
   failure_code: string | null;
