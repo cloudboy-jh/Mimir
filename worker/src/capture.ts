@@ -109,6 +109,9 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
   } catch (error) {
     logCaptureError("capture D1 finalization failed", error, id, session.id, "d1_finalize_failed");
   }
+
+  const provider = prepared.provider ? ` · ${prepared.provider}` : "";
+  console.log(`saved exchange ${id} to session ${session.id} · ${input.model}${provider} · ${prepared.usage.prompt_tokens} in / ${prepared.usage.completion_tokens} out · ${latency}ms`);
 }
 
 async function acceptExchange(db: D1Database, input: CaptureInput, id: string, sessionId: string, activityAt: string, acceptedAt: string, r2Key: string, requestExcerpt: string) {
