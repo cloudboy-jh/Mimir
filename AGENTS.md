@@ -38,6 +38,10 @@ go build -o /tmp/mimir ./cmd/mimir
 go run ./cmd/mimir deploy
 ```
 
+Deployment verification must not call `/v1/chat/completions`, `/v1/messages`,
+or any paid model. Use `/whoami` for connectivity and the direct session APIs
+for session lifecycle checks.
+
 ## Dashboard Direction
 
 - Sessions are the default route and primary product object. Requests are supporting evidence, not the center of the product.
