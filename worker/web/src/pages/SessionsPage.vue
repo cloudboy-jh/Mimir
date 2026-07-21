@@ -4,6 +4,7 @@ import { ArrowRight, GitBranch, RotateCw, Search } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import { errorMessage, listSessions, type Session } from "@/lib/api";
+import { useAutoRefresh } from "@/lib/auto-refresh";
 import { compactNumber, duration, relativeDate } from "@/lib/format";
 
 const sessions = ref<Session[]>([]);
@@ -19,10 +20,10 @@ const filtered = computed(() => sessions.value.filter((session) => {
   return (!needle || haystack.includes(needle)) && (!outcome.value || session.outcome === outcome.value);
 }));
 
-async function load() {
+async function load(silent = false) {
   controller?.abort();
   controller = new AbortController();
-  loading.value = true;
+  if (!silent) loading.value = true;
   error.value = "";
   try {
     sessions.value = await listSessions(controller.signal);
@@ -33,7 +34,8 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => load());
+useAutoRefresh(() => load(true));
 onBeforeUnmount(() => controller?.abort());
 </script>
 
@@ -54,7 +56,7 @@ onBeforeUnmount(() => controller?.abort());
       <div v-if="loading" aria-busy="true" aria-label="Loading sessions">
         <div v-for="index in 5" :key="index" class="grid gap-3 border-b border-zinc-200 px-4 py-5 last:border-b-0 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] dark:border-zinc-800"><div class="h-4 w-3/5 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-24 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-20 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div>
       </div>
-      <div v-else-if="error" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load"><RotateCw class="size-3.5" />Retry</button></div>
+      <div v-else-if="error" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load()"><RotateCw class="size-3.5" />Retry</button></div>
       <template v-else>
         <RouterLink v-for="session in filtered" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
           <div class="min-w-0"><div class="flex items-center gap-2"><span v-if="session.state === 'active'" class="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label="Active session" /><h2 class="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ session.intent || "Untitled session" }}</h2></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span class="font-mono">{{ session.id }}</span></div></div>

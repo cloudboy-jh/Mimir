@@ -4,6 +4,7 @@ import { ArrowRight, RotateCw } from "lucide-vue-next";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import { errorMessage, getOverview, listSessions, type Overview, type Session } from "@/lib/api";
+import { useAutoRefresh } from "@/lib/auto-refresh";
 import { compactNumber, relativeDate } from "@/lib/format";
 
 const overview = ref<Overview | null>(null);
@@ -12,11 +13,11 @@ const loading = ref(true);
 const error = ref("");
 let controller: AbortController | null = null;
 
-async function load() {
+async function load(silent = false) {
   controller?.abort();
   const active = new AbortController();
   controller = active;
-  loading.value = true;
+  if (!silent) loading.value = true;
   error.value = "";
   try {
     [overview.value, sessions.value] = await Promise.all([getOverview(active.signal), listSessions(active.signal)]);
@@ -27,7 +28,8 @@ async function load() {
   }
 }
 
-onMounted(load);
+onMounted(() => load());
+useAutoRefresh(() => load(true));
 onBeforeUnmount(() => controller?.abort());
 </script>
 
@@ -35,7 +37,7 @@ onBeforeUnmount(() => controller?.abort());
   <section>
     <div class="mb-7"><h1 class="text-[28px] font-semibold tracking-[-0.025em]">Overview</h1><p class="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">A compact read on recent memory activity.</p></div>
     <div v-if="loading" aria-busy="true"><div class="grid grid-cols-2 border-y border-zinc-200 md:grid-cols-4 dark:border-zinc-800"><div v-for="index in 4" :key="index" class="px-5 py-5"><div class="h-3 w-20 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="mt-3 h-6 w-14 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div></div><div class="mt-9 h-64 animate-pulse bg-zinc-100 motion-reduce:animate-none dark:bg-zinc-900" /></div>
-    <div v-else-if="error" class="border-y border-zinc-200 py-16 text-center dark:border-zinc-800"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Overview unavailable</p><p class="mt-1 text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex items-center gap-2 text-sm font-medium text-teal-700 dark:text-teal-400" @click="load"><RotateCw class="size-4" />Retry</button></div>
+    <div v-else-if="error" class="border-y border-zinc-200 py-16 text-center dark:border-zinc-800"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Overview unavailable</p><p class="mt-1 text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex items-center gap-2 text-sm font-medium text-teal-700 dark:text-teal-400" @click="load()"><RotateCw class="size-4" />Retry</button></div>
     <template v-else-if="overview">
       <dl class="grid grid-cols-2 border-y border-zinc-200 md:grid-cols-4 dark:border-zinc-800"><div v-for="item in [{ label: 'Sessions', value: overview.totals.sessions }, { label: 'Model requests', value: overview.totals.requests }, { label: 'Saved exchanges', value: overview.totals.saved_exchanges }, { label: 'Capture failures', value: overview.totals.capture_failures }]" :key="item.label" class="border-r border-zinc-200 px-5 py-5 first:pl-0 last:border-r-0 dark:border-zinc-800"><dt class="text-xs text-zinc-500">{{ item.label }}</dt><dd class="mt-1 text-xl font-semibold tracking-[-0.025em]">{{ compactNumber(item.value) }}</dd></div></dl>
       <div class="grid gap-10 pt-9 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,.6fr)]">

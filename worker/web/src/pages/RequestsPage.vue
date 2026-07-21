@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, RotateCw, Search } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import { errorMessage, listExchanges, type Exchange } from "@/lib/api";
+import { useAutoRefresh } from "@/lib/auto-refresh";
 import { compactNumber, outputSpeed, shortDate } from "@/lib/format";
 
 const exchanges = ref<Exchange[]>([]);
@@ -54,8 +55,26 @@ async function load(reset = true) {
   }
 }
 
+async function refreshLatest() {
+  if (loading.value || loadingMore.value) return;
+  const active = controller ?? new AbortController();
+  controller = active;
+  try {
+    const result = await listExchanges({ provider: provider.value, app: app.value }, active.signal);
+    const latestIds = new Set(result.exchanges.map((exchange) => exchange.id));
+    const hadMultiplePages = exchanges.value.length > 50;
+    exchanges.value = [...result.exchanges, ...exchanges.value.filter((exchange) => !latestIds.has(exchange.id))];
+    captureFacets(result.exchanges);
+    if (!hadMultiplePages) nextCursor.value = result.next_cursor;
+    error.value = "";
+  } catch (cause) {
+    if (!active.signal.aborted) error.value = errorMessage(cause, "Requests could not be refreshed.");
+  }
+}
+
 watch([provider, app], () => load(true));
 onMounted(() => load(true));
+useAutoRefresh(refreshLatest);
 onBeforeUnmount(() => controller?.abort());
 </script>
 
