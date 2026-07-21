@@ -32,3 +32,9 @@ jobs:
       - run: npm run build:dashboard && npx wrangler deploy --dry-run
         working-directory: worker
       - run: go test ./...
+      - run: go mod verify
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          args: check

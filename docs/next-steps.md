@@ -33,15 +33,6 @@ specification rather than an expanding completion log.
   plugin, dynamic `x-mimir-session` headers, credential and MCP command
   resolution, and `/mimir-end-session <session-id>`.
 
-### Release verification
-
-- Add migration tests, a dashboard production build, and a Wrangler dry run to
-  release CI so the workflow verifies the deployable package, not only tests
-  and typechecks.
-- Publish the next tagged release containing all post-`v0.1.5` changes,
-  including installed-version reporting, successful-capture logging, dashboard
-  auto-refresh, and explicit session ending.
-
 ## Operational Follow-ups
 
 - Add required-reviewer protection to the existing GitHub `release`
@@ -71,3 +62,8 @@ specification rather than an expanding completion log.
 - Explicit idempotent session ending through the machine API, CLI, MCP, and
   `/mimir-end-session <session-id>`, including safe handling of late capture
   finalization and concurrent retries.
+- Release CI now verifies migrations, the dashboard production build, the
+  deployable Worker bundle, Go modules, and GoReleaser configuration. Release
+  archives are self-contained and carry GitHub build provenance attestations.
+- `v0.2.0` publishes the post-`v0.1.5` version reporting, capture logging,
+  dashboard refresh, and explicit session-ending changes.

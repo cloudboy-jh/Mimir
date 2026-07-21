@@ -2,10 +2,6 @@ version: 2
 
 project_name: mimir
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - id: mimir
     main: ./cmd/mimir
@@ -14,6 +10,8 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    flags:
+      - -trimpath
     goos:
       - darwin
       - linux
@@ -23,10 +21,41 @@ builds:
       - arm64
 
 archives:
-  - formats: [tar.gz]
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    wrap_in_directory: true
     format_overrides:
       - goos: windows
         formats: [zip]
 
 checksum:
   name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  abbrev: -1
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]-]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]-]+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\([[:word:]-]+\))??!?:.+$'
+      order: 2
+    - title: Other changes
+      order: 999
+
+release:
+  prerelease: auto
+  make_latest: true
+  header: |
+    ## Install
+
+    ```sh
+    go install github.com/cloudboy-jh/mimir/cmd/mimir@{{ .Tag }}
+    ```
+
+    Prebuilt archives are available below for macOS, Linux, and Windows. Verify downloads with `checksums.txt`.

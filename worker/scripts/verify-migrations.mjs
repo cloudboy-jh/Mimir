@@ -6,14 +6,14 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const wrangler = join(root, "node_modules", ".bin", "wrangler");
+const wrangler = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const temp = mkdtempSync(join(tmpdir(), "mimir-migrations-"));
 const migrations = join(temp, "migrations");
 const persistence = join(temp, "state");
 const config = join(temp, "wrangler.jsonc");
 
 function run(args, capture = false) {
-  const result = spawnSync(wrangler, [...args, "--config", config], {
+  const result = spawnSync(process.execPath, [wrangler, ...args, "--config", config], {
     cwd: root,
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
