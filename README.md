@@ -63,14 +63,16 @@ You need a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22 with
 npm, and Bun.
 
 ```bash
-npx wrangler login
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir setup
 ```
 
-Setup provisions D1 and R2, builds and deploys the Worker, stores the OpenRouter
-key as a Worker secret, registers the machine, and verifies the connection.
-Secrets are entered through local masked prompts.
+Setup opens Cloudflare browser authentication on first run, provisions D1 and
+R2, builds and deploys the Worker, stores the OpenRouter key as a Worker
+secret, registers the machine, and verifies the connection. It also prompts
+for an optional Cloudflare API token that automates dashboard Access; press
+Enter to skip and finish Access later with one command. Secrets are entered
+through local masked prompts.
 
 Ship Worker or dashboard changes with the same path every time:
 
@@ -86,7 +88,6 @@ a placeholder database ID by design.
 On another machine:
 
 ```bash
-npx wrangler login
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir login
 ```
@@ -164,9 +165,16 @@ in the browser.
 The Access application must cover the whole Worker hostname with no path
 restriction. Scoping the app to `/dashboard` makes the page authenticate while
 `/dashboard/api/*` fetches bounce into a second Access login flow and fail on
-CORS. If setup cannot configure Access automatically, create one self-hosted
-application for `<worker-host>` with the path left blank and an allow policy
-for your email.
+CORS. If you skipped Access automation during setup, finish it with:
+
+```bash
+mimir access
+```
+
+With a Cloudflare API token (flag, env, or masked prompt), `mimir access`
+creates the application and allow policy, writes the verification variables,
+and redeploys. Without a token it prints the two-step manual checklist; a
+manually created application still protects the dashboard at the edge.
 
 ## Documentation
 

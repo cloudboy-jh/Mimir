@@ -107,6 +107,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return setup(ctx, args[1:], ioctx)
 	case "deploy":
 		return deploy(ctx, args[1:], ioctx)
+	case "access":
+		return cmdAccess(ctx, args[1:], ioctx)
 	case "login":
 		return login(ctx, args[1:], ioctx)
 	case "dashboard":
@@ -266,6 +268,7 @@ func usage(out io.Writer) error {
 Usage:
   mimir setup [--quick] [--json]
   mimir deploy [--json]
+  mimir access [--token <api-token> | --aud <tag> --team-domain <domain>]
   mimir login [--json]
   mimir dashboard
   mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]

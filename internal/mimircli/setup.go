@@ -244,7 +244,16 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err
 	}
-	access, err := setupDashboardAccess(ctx, dir, opts, url)
+	accessToken := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
+	if accessToken == "" && !opts.JSON {
+		opts.Progress.Pause()
+		accessToken, err = promptSecret(ioctx, "Cloudflare API token (enables automatic dashboard Access; Enter to skip): ")
+		opts.Progress.Resume()
+		if err != nil {
+			return err
+		}
+	}
+	access, err := setupDashboardAccess(ctx, dir, opts, url, accessToken)
 	if err != nil {
 		return fmt.Errorf("configuring dashboard Access: %w", err)
 	}

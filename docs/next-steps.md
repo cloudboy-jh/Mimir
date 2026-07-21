@@ -18,6 +18,7 @@ This file tracks concrete implementation gaps and technical debt remaining from 
 - **Live dashboard** — Sessions, Requests, Overview, R2 payload detail, pagination, and user outcome updates now read the Access-protected Worker APIs.
 - **`mimir deploy`** — single supported deploy path: materialize Worker, build dashboard, write the real D1 ID into the materialized config, `wrangler deploy`.
 - **opencode integration** — `mimir login` writes `~/.config/opencode/plugins/mimir.ts` (OpenRouter provider routed through the Worker with session headers) and upserts the `mimir` MCP entry in `opencode.json`, both idempotent.
+- **`mimir access`** — one-command dashboard Access finish: full automation with an API token (prompted inline during setup), or `--aud`/`--team-domain` application after manual app creation; automated Access apps now cover the bare Worker hostname.
 
 ## Remaining
 

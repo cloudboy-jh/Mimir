@@ -437,7 +437,10 @@ the harness's own secure configuration system.
 Cloudflare Access must protect the whole Worker hostname. An application
 scoped to `/dashboard` authenticates the page but sends `/dashboard/api/*`
 fetches into a second Access login redirect, which fails in the browser. Use
-one self-hosted application with no path restriction.
+one self-hosted application with no path restriction. Setup prompts for an
+optional Cloudflare API token and automates this when provided; `mimir access`
+runs the same automation later, or applies a manually created application's
+AUD tag and team domain via `--aud` and `--team-domain`.
 
 ## 12. Dashboard Status
 

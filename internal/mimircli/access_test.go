@@ -27,10 +27,10 @@ func TestAccessAPIEnsureAppIsIdempotent(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["domain"] != "mimir.example.workers.dev/dashboard" || body["type"] != "self_hosted" {
+			if body["domain"] != "mimir.example.workers.dev" || body["type"] != "self_hosted" {
 				t.Fatalf("app body %v", body)
 			}
-			app := accessApp{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard"}
+			app := accessApp{UID: "uid-1", Aud: "aud-1", Name: dashboardAccessAppName, Domain: "mimir.example.workers.dev"}
 			apps = append(apps, app)
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": app})
 		default:
@@ -39,14 +39,14 @@ func TestAccessAPIEnsureAppIsIdempotent(t *testing.T) {
 	}))
 	defer server.Close()
 	api := accessAPI{base: server.URL, token: "cf-token"}
-	app, err := api.ensureApp(context.Background(), "acc-1", "mimir.example.workers.dev/dashboard")
+	app, err := api.ensureApp(context.Background(), "acc-1", "mimir.example.workers.dev")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if app.Aud != "aud-1" || created != 1 {
 		t.Fatalf("app %+v created=%d", app, created)
 	}
-	app, err = api.ensureApp(context.Background(), "acc-1", "mimir.example.workers.dev/dashboard")
+	app, err = api.ensureApp(context.Background(), "acc-1", "mimir.example.workers.dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,6 +110,16 @@ func TestAccessAPIErrorSurfaced(t *testing.T) {
 	api := accessAPI{base: server.URL, token: "bad"}
 	if _, err := api.authDomain(context.Background(), "acc-1"); err == nil || !strings.Contains(err.Error(), "not authorized") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+func TestAccessChecklistUsesBareHost(t *testing.T) {
+	checklist := accessChecklist("https://mimir.example.workers.dev")
+	if !strings.Contains(checklist, "Application domain: mimir.example.workers.dev (leave the path blank)") {
+		t.Fatalf("checklist scopes the app incorrectly:\n%s", checklist)
+	}
+	if strings.Contains(checklist, "mimir.example.workers.dev/dashboard") || strings.Contains(checklist, "wrangler deploy") {
+		t.Fatalf("checklist still carries the broken manual flow:\n%s", checklist)
 	}
 }
 

@@ -1,6 +1,7 @@
 package mimircli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -161,10 +162,9 @@ func (api accessAPI) ensureEmailPolicy(ctx context.Context, accountID, appUID, e
 }
 
 // setupDashboardAccess standardizes the Access application protecting the
-// dashboard API. It only runs when CLOUDFLARE_API_TOKEN is set; otherwise it
-// returns a manual outcome and setup prints the checklist.
-func setupDashboardAccess(ctx context.Context, dir string, opts setupOptions, workerURL string) (accessOutcome, error) {
-	token := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
+// dashboard. It only runs when an API token is available; otherwise it returns
+// a manual outcome and the caller prints the checklist.
+func setupDashboardAccess(ctx context.Context, dir string, opts setupOptions, workerURL string, token string) (accessOutcome, error) {
 	if token == "" {
 		return accessOutcome{State: "manual"}, nil
 	}
@@ -182,7 +182,7 @@ func setupDashboardAccess(ctx context.Context, dir string, opts setupOptions, wo
 		return accessOutcome{}, err
 	}
 	host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimRight(workerURL, "/"), "https://"), "http://")
-	app, err := api.ensureApp(ctx, accountID, host+"/dashboard")
+	app, err := api.ensureApp(ctx, accountID, host)
 	if err != nil {
 		return accessOutcome{}, err
 	}
@@ -208,14 +208,130 @@ func setupDashboardAccess(ctx context.Context, dir string, opts setupOptions, wo
 
 func accessChecklist(workerURL string) string {
 	host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimRight(workerURL, "/"), "https://"), "http://")
-	return fmt.Sprintf(`Dashboard Access not configured (CLOUDFLARE_API_TOKEN not set). Manual steps:
+	return fmt.Sprintf(`Dashboard Access needs one manual step (no Cloudflare API token given).
   1. Zero Trust → Access → Applications → Add an application → Self-hosted
      Application name: %s
-     Application domain: %s/dashboard
+     Application domain: %s (leave the path blank)
   2. Add an Allow policy for your email
-  3. Copy the application's AUD tag from its Overview page
-  4. Add to worker/wrangler.jsonc vars:
-       "DASHBOARD_ACCESS_AUD": "<aud>",
-       "DASHBOARD_ACCESS_TEAM_DOMAIN": "https://<team>.cloudflareaccess.com"
-  5. wrangler deploy`, dashboardAccessAppName, host)
+
+The dashboard is then protected by Access at the edge. To also verify Access
+JWTs inside the Worker, run: mimir access --token <cloudflare-api-token>`, dashboardAccessAppName, host)
+}
+
+// cmdAccess finishes dashboard Access configuration after setup or login,
+// either fully automatically with an API token or by applying a manually
+// created application's AUD tag and team domain.
+func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
+	var token, email, aud, teamDomain string
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--json" {
+			jsonOut = true
+			continue
+		}
+		if i+1 >= len(args) {
+			return fmt.Errorf("%s requires a value", args[i])
+		}
+		switch args[i] {
+		case "--token":
+			token = args[i+1]
+		case "--email":
+			email = args[i+1]
+		case "--aud":
+			aud = args[i+1]
+		case "--team-domain":
+			teamDomain = args[i+1]
+		default:
+			return fmt.Errorf("unknown access option %q", args[i])
+		}
+		i++
+	}
+	if aud != "" || teamDomain != "" {
+		if aud == "" || teamDomain == "" {
+			return fmt.Errorf("--aud and --team-domain must be used together")
+		}
+	}
+	pointer, err := loadPointer()
+	if err != nil {
+		return fmt.Errorf("Mimir is not connected; run mimir setup or mimir login first")
+	}
+	url := strings.TrimRight(pointer.URL, "/")
+	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs", AccessEmail: email, JSON: jsonOut}
+	dir, err := workerDir("")
+	if err != nil {
+		return err
+	}
+	dir, err = materializeWorker(dir)
+	if err != nil {
+		return err
+	}
+	if err := ensureWorkerDependencies(ctx, dir); err != nil {
+		return err
+	}
+	if err := ensureCloudflareAuth(ctx, dir, ioctx, jsonOut, nil); err != nil {
+		return err
+	}
+	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
+	if err != nil {
+		return err
+	}
+	opts.DatabaseID = listedDatabaseID(output, opts.DatabaseName)
+	if opts.DatabaseID == "" {
+		return setupStateError{State: "deployment_missing", Message: "no Mimir D1 database found; run mimir setup first"}
+	}
+	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
+		return err
+	}
+	vars := map[string]string{}
+	if aud != "" {
+		vars["DASHBOARD_ACCESS_AUD"] = aud
+		vars["DASHBOARD_ACCESS_TEAM_DOMAIN"] = teamDomain
+	} else {
+		if token == "" {
+			token = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
+		}
+		if token == "" && !jsonOut {
+			if token, err = promptSecret(ioctx, "Cloudflare API token (Enter to print manual steps): "); err != nil {
+				return err
+			}
+		}
+		if token == "" {
+			_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
+			return err
+		}
+		if opts.AccessEmail == "" {
+			opts.AccessEmail = strings.TrimSpace(os.Getenv("MIMIR_ACCESS_EMAIL"))
+		}
+		if opts.AccessEmail == "" && !jsonOut {
+			if opts.AccessEmail, err = promptValue(ioctx, "Email allowed into the dashboard: "); err != nil {
+				return err
+			}
+		}
+		access, err := setupDashboardAccess(ctx, dir, opts, url, token)
+		if err != nil {
+			return err
+		}
+		if access.State != "configured" {
+			_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
+			return err
+		}
+		vars["DASHBOARD_ACCESS_AUD"] = access.Aud
+		vars["DASHBOARD_ACCESS_TEAM_DOMAIN"] = access.TeamDomain
+	}
+	if _, err := runWrangler(ctx, dir, nil, "deploy"); err != nil {
+		return fmt.Errorf("applying dashboard Access configuration: %w", err)
+	}
+	result := map[string]any{"state": "configured", "aud": vars["DASHBOARD_ACCESS_AUD"], "team_domain": vars["DASHBOARD_ACCESS_TEAM_DOMAIN"]}
+	return writeSetupResult(ioctx.Out, jsonOut, result, "Dashboard Access configured\n\n  Worker "+url)
+}
+
+func promptValue(ioctx IO, label string) (string, error) {
+	if _, err := fmt.Fprint(ioctx.Out, label); err != nil {
+		return "", err
+	}
+	line, err := bufio.NewReader(ioctx.In).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
