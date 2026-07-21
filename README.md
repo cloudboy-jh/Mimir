@@ -63,6 +63,7 @@ You need a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22 with
 npm, and Bun.
 
 ```bash
+npx wrangler login
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir setup
 ```
@@ -71,12 +72,29 @@ Setup provisions D1 and R2, builds and deploys the Worker, stores the OpenRouter
 key as a Worker secret, registers the machine, and verifies the connection.
 Secrets are entered through local masked prompts.
 
+Ship Worker or dashboard changes with the same path every time:
+
+```bash
+mimir deploy
+```
+
+`mimir deploy` materializes the packaged Worker, builds the dashboard, writes
+the real D1 database ID into the materialized config, and deploys. Do not run
+`wrangler deploy` from a source checkout; the checked-in `wrangler.jsonc` keeps
+a placeholder database ID by design.
+
 On another machine:
 
 ```bash
+npx wrangler login
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir login
 ```
+
+`mimir login` also writes the opencode integration automatically: a plugin at
+`~/.config/opencode/plugins/mimir.ts` that routes OpenRouter traffic through
+the Worker with session metadata headers, and a `mimir` entry in the MCP
+section of `opencode.json`. Restart opencode after login.
 
 For agent-assisted setup:
 
@@ -93,7 +111,7 @@ Mimir uses two connections:
 1. Model traffic goes through the deployed Worker so it can be captured.
 2. Memory access goes through the local `mimir serve` MCP process.
 
-Run this after setup or login:
+opencode is wired automatically by `mimir login`. For any other harness, run:
 
 ```bash
 mimir connection
@@ -142,6 +160,13 @@ response payloads from R2. Browser routes live under `/dashboard/*`, so direct
 session links refresh safely without colliding with machine APIs. Cloudflare
 Access protects dashboard data and receipt links without storing machine tokens
 in the browser.
+
+The Access application must cover the whole Worker hostname with no path
+restriction. Scoping the app to `/dashboard` makes the page authenticate while
+`/dashboard/api/*` fetches bounce into a second Access login flow and fail on
+CORS. If setup cannot configure Access automatically, create one self-hosted
+application for `<worker-host>` with the path left blank and an allow policy
+for your email.
 
 ## Documentation
 

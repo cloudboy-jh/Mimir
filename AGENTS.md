@@ -33,6 +33,9 @@ cd worker && npx wrangler deploy --dry-run
 # CLI/MCP
 go test ./...
 go build -o /tmp/mimir ./cmd/mimir
+
+# Deploy (only supported path; never wrangler deploy from this checkout)
+go run ./cmd/mimir deploy
 ```
 
 ## Dashboard Direction

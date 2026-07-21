@@ -16,6 +16,8 @@ This file tracks concrete implementation gaps and technical debt remaining from 
 - **Release automation** — `.github/workflows/release.yml` runs the full suite on `v*` tags, then GoReleaser in a gated `release` environment.
 - **`mimir update`** — verified, atomic self-update from GitHub release assets with SHA-256 checks; refuses package-manager-owned installs.
 - **Live dashboard** — Sessions, Requests, Overview, R2 payload detail, pagination, and user outcome updates now read the Access-protected Worker APIs.
+- **`mimir deploy`** — single supported deploy path: materialize Worker, build dashboard, write the real D1 ID into the materialized config, `wrangler deploy`.
+- **opencode integration** — `mimir login` writes `~/.config/opencode/plugins/mimir.ts` (OpenRouter provider routed through the Worker with session headers) and upserts the `mimir` MCP entry in `opencode.json`, both idempotent.
 
 ## Remaining
 

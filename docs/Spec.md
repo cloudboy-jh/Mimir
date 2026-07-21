@@ -417,12 +417,27 @@ and dashboard copy emit canonical values.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
 discovering the deployment, registering a new machine token, and returning the
-same connection manifest.
+same connection manifest. Login also installs the opencode integration: a
+plugin under `~/.config/opencode/plugins/` that points the OpenRouter provider
+at the Worker and tags exchanges with repo, harness, and session headers, plus
+a `mimir` entry in the MCP section of `opencode.json`. Both writes are
+idempotent and preserve existing configuration.
+
+`mimir deploy` is the only supported path for shipping Worker or dashboard
+changes after setup. It materializes the packaged Worker, builds the
+dashboard, writes the discovered D1 database ID into the materialized config,
+and runs `wrangler deploy`. The checked-in `wrangler.jsonc` intentionally keeps
+a placeholder database ID; never deploy from a source checkout.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
 path and command, an absolute MCP command, and optional telemetry header names.
-Mimir does not directly edit every harness's configuration; the setup skill or
-user applies that manifest using the harness's own secure configuration system.
+For non-opencode harnesses, the setup skill or user applies that manifest using
+the harness's own secure configuration system.
+
+Cloudflare Access must protect the whole Worker hostname. An application
+scoped to `/dashboard` authenticates the page but sends `/dashboard/api/*`
+fetches into a second Access login redirect, which fails in the browser. Use
+one self-hosted application with no path restriction.
 
 ## 12. Dashboard Status
 
