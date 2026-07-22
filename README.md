@@ -93,8 +93,9 @@ go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir login
 ```
 
-`mimir setup`, `mimir login`, and `mimir update` install or refresh Mimir-owned
-opencode and Hermes integrations automatically (see below).
+`mimir setup`, `mimir login`, and `mimir update` install or refresh the
+Mimir-owned Hermes integration automatically. They never modify OpenCode
+configuration.
 
 For agent-assisted setup:
 
@@ -145,21 +146,12 @@ keeps a placeholder database ID by design.
 
 ### opencode
 
-Mimir owns the opencode integration. Setup, login, and update write it
-idempotently while preserving unrelated configuration:
-
-- A versioned plugin at `~/.config/opencode/plugins/mimir.ts` that attaches
-  session metadata and classifies primary, title, summary, and compaction
-  requests.
-- Secure `openrouter` provider routing through the Worker using a `{file:...}`
-  token reference rather than embedding the machine token.
-- A `mimir` MCP entry using the absolute CLI path, plus the generated
-  `/mimir-end-session` command.
-
-Restart opencode after installation. Sessions are captured whenever the active
-model uses the `openrouter` provider. Do not create a second Mimir provider or
-manually reproduce the adapter; run `mimir update` to repair drift and
-`mimir doctor` to validate the wiring.
+Mimir does not edit OpenCode configuration. OpenCode merges JSON, JSONC,
+project, environment, and managed configuration with precedence rules that a
+safe external installer cannot preserve reliably. Use `mimir connection` to
+obtain the Worker URLs, credential source, and MCP command, then apply them
+through OpenCode's supported configuration flow. `mimir setup`, `mimir login`,
+`mimir update`, and `mimir doctor` are read-only with respect to OpenCode.
 
 ### Hermes desktop and TUI
 
@@ -237,9 +229,7 @@ The compact MCP surface includes:
 | `config_set` | Update deployment configuration. |
 
 The included `mimir-use` skill teaches agents to search this memory and verify
-capture automatically during normal work. `mimir login` also installs the
-`/mimir-end-session <session-id>` opencode command for an explicit summarize,
-outcome, and end workflow.
+capture automatically during normal work.
 
 ## Dashboard
 

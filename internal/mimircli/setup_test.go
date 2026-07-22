@@ -186,6 +186,9 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	if result.Integrations.Hermes.State != "installed" || result.Integrations.Hermes.Scope != "openrouter" || !result.Integrations.Hermes.RestartRequired {
 		t.Fatalf("Hermes integration %#v", result.Integrations.Hermes)
 	}
+	if result.Integrations.OpenCode.State != "skipped" {
+		t.Fatalf("OpenCode integration %#v", result.Integrations.OpenCode)
+	}
 	pointer, err := loadPointer()
 	if err != nil {
 		t.Fatal(err)

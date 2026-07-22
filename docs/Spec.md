@@ -444,17 +444,14 @@ and dashboard copy emit canonical values.
 9. Stores the OpenRouter Worker secret.
 10. Deploys and verifies the Worker.
 11. Saves the local URL/token pointer.
-12. Installs or refreshes Mimir-owned opencode and Hermes integrations.
+12. Installs or refreshes the Mimir-owned Hermes integration when detected.
 13. Returns a harness-neutral connection manifest.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
 discovering the deployment, registering a new machine token, and returning the
-same connection manifest. Setup and login install the opencode integration: a
-versioned plugin under `~/.config/opencode/plugins/` that tags OpenRouter
-traffic with session and request-kind metadata, secure provider configuration
-using the machine token file, an absolute `mimir` MCP command, and the generated
-session-ending command. Writes are idempotent and preserve unrelated
-configuration.
+same connection manifest. Setup, login, update, doctor, and tests do not modify
+OpenCode configuration. OpenCode integration uses the harness-neutral
+connection manifest and OpenCode's supported configuration flow.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
 Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in
@@ -468,9 +465,8 @@ credential. Hermes requests are forwarded with the same OpenRouter credential
 they presented rather than charging the Worker's default key. Direct Hermes
 providers remain outside Mimir because their requests do not reach the Worker.
 
-`mimir update` refreshes both integrations and `mimir doctor` validates their
-routes, credentials, and Worker compatibility without making a paid model
-request.
+`mimir update` refreshes the Hermes integration and `mimir doctor` validates its
+route, credential, and Worker compatibility without making a paid model request.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
 changes after setup. It materializes the packaged Worker, builds the

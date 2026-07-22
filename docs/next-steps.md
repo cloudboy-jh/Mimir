@@ -22,16 +22,16 @@ specification rather than an expanding completion log.
   implement and document the lifecycle process that consumes it. Do not keep
   accepting a setting with no behavioral effect.
 
-### opencode installer portability
+### Safe OpenCode integration
 
-- Resolve the machine credential through the same `MIMIR_HOME`-aware path used
-  by the connection manifest instead of hard-coding `~/.mimir/token`.
-- Use the absolute current executable path in the generated MCP command, or
-  explicitly document that the integration depends on `mimir` being on
-  `PATH`.
-- Update `docs/opencode-capture-setup.md` to describe the generated OpenRouter
-  plugin, dynamic `x-mimir-session` headers, credential and MCP command
-  resolution, and `/mimir-end-session <session-id>`.
+- Keep setup, login, update, doctor, and tests read-only with respect to
+  OpenCode configuration.
+- Design an explicit opt-in integration command only after it can discover the
+  effective OpenCode config, preserve JSONC and precedence, prove ownership of
+  generated files, back up prior values, detect concurrent edits, and restore
+  safely on uninstall.
+- Gate all metadata headers on the effective destination being the configured
+  Mimir Worker; provider IDs alone are insufficient.
 
 ## Operational Follow-ups
 

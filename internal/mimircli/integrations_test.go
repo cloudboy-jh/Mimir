@@ -1,6 +1,7 @@
 package mimircli
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -20,5 +21,13 @@ func TestIntegrationSummaryExplainsHermesScope(t *testing.T) {
 func TestIntegrationSummarySkipsAbsentHermes(t *testing.T) {
 	if summary := integrationSummary(harnessIntegrationReport{Hermes: harnessIntegrationState{State: "skipped"}}); summary != "" {
 		t.Fatalf("unexpected summary %q", summary)
+	}
+}
+
+func TestHarnessRefreshNeverInstallsOpenCode(t *testing.T) {
+	t.Setenv("HERMES_HOME", t.TempDir())
+	report, _ := installCurrentHarnessIntegrations(context.Background())
+	if report.OpenCode.State != "skipped" || !strings.Contains(report.OpenCode.Detail, "disabled") {
+		t.Fatalf("OpenCode state %#v", report.OpenCode)
 	}
 }

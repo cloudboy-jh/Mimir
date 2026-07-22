@@ -16,12 +16,12 @@ Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in
 5. If it returns `deployment_missing`, run `mimir setup --json` only when `OPENROUTER_API_KEY` exists in the process environment.
 6. If setup returns `openrouter_key_required`, tell the user to run interactive `mimir setup` and enter the key at the masked prompt. Never request or transfer the key through chat.
 7. Read the `connection` object from setup/login, or run the internal `mimir connection` command after an existing setup.
-8. If the active harness is opencode or Hermes, run `mimir doctor --json`. Setup/login already installed the owned integration. For Hermes, this transparently redirects its built-in OpenRouter provider; never create a custom provider. If doctor reports stale wiring, run `mimir update`. Tell the user to restart the harness after repair.
-9. For harnesses without a bundled integration, configure the OpenAI or Anthropic provider with the corresponding base URL. Supply authentication using `credential_file`, `credential_command`, or the harness's secure secret input. Do not print or place the credential value in ordinary configuration or chat.
+8. If the active harness is Hermes, run `mimir doctor --json`. Setup/login transparently redirect its built-in OpenRouter provider; never create a custom provider. If doctor reports stale wiring, run `mimir update`. Tell the user to restart Hermes after repair.
+9. For OpenCode and harnesses without a bundled integration, configure the OpenAI or Anthropic provider with the corresponding base URL through the harness's supported configuration flow. Supply authentication using `credential_file`, `credential_command`, or the harness's secure secret input. Do not print or place the credential value in ordinary configuration or chat. Never directly rewrite OpenCode JSON, JSONC, plugins, commands, or MCP entries.
 10. Register the returned `mcp_command` as the harness's local Mimir MCP server.
 11. If the harness supports dynamic request headers, derive and add any names listed in `optional_headers`. Never use header names or placeholder text as literal values. These improve grouping but are not required.
 12. Install `mimir-use` in the harness's skill directory and validate the harness configuration using its native validation command or schema.
 
-Mimir owns explicitly bundled integrations for opencode and Hermes. The connection manifest is the contract for other harnesses; do not invent additional harness-specific Worker behavior.
+Mimir owns the explicitly bundled Hermes integration. The connection manifest is the contract for OpenCode and other harnesses; do not invent additional harness-specific Worker behavior.
 
 Do not create Git session repositories, session Markdown, Mimir accounts, alternate storage, lifecycle hooks, or routine user workflows.

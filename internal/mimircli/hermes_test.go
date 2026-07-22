@@ -9,6 +9,15 @@ import (
 	"testing"
 )
 
+func testConnectionManifest(home string) connectionManifest {
+	return connectionManifest{
+		OpenAIBaseURL:   "https://mimir.example.workers.dev/v1",
+		CredentialFile:  filepath.Join(home, ".mimir", "token"),
+		MCPCommand:      []string{filepath.Join(home, "bin", "mimir"), "serve"},
+		OptionalHeaders: []string{"x-mimir-session", "x-mimir-request-kind"},
+	}
+}
+
 func TestInstallHermesIntegrationPreservesEnvAndIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".env")

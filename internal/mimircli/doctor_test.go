@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestRunDoctorHealthyOpenCodeIntegration(t *testing.T) {
+func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))

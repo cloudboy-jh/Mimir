@@ -1,33 +1,28 @@
 # opencode Session Capture
 
-Mimir owns the opencode adapter. `mimir setup`, `mimir login`, and
-`mimir update` install or refresh:
+Mimir does not automatically modify OpenCode configuration. This is a hard
+safety boundary: OpenCode merges JSON, JSONC, project, environment, and managed
+configuration, and rewriting one guessed file can override user-owned provider,
+credential, MCP, plugin, and command settings.
 
-- `~/.config/opencode/plugins/mimir.ts`
-- the `openrouter` provider route through the Mimir Worker
-- a `{file:...}` reference to the machine token
-- the absolute local `mimir serve` MCP command
-- `/mimir-end-session`
-
-The installer preserves unrelated opencode configuration and is idempotent.
-Do not create a second Mimir provider or copy the integration by hand.
-
-The adapter adds stable session, repository, and harness metadata to Mimir
-traffic. It also marks each request as `primary`, `title`, `summary`, or
-`compaction`. The Worker captures auxiliary requests as supporting evidence,
-but only a primary request can establish the session intent. A defensive
-server-side classifier prevents known title-agent prompts from poisoning intent
-when a stale or third-party adapter labels them incorrectly.
-
-Run:
+The following commands never write OpenCode files:
 
 ```bash
+mimir setup
 mimir login
+mimir update
 mimir doctor
 ```
 
-Restart opencode after installation because it does not hot-reload provider or
-plugin configuration. Capture applies to models using opencode's `openrouter`
-provider. `mimir doctor` validates static wiring and Worker connectivity without
-spending model tokens; `session_status` remains the authoritative proof that a
-real session was saved.
+Run `mimir connection` to print the harness-neutral Worker URLs, local
+credential source, absolute MCP command, and optional metadata header names.
+Apply those values through OpenCode's supported configuration flow. Mimir will
+not commandeer the built-in `openrouter` provider, replace `mcp.mimir`, or write
+plugins and commands on the user's behalf.
+
+Existing installations created by Mimir versions through v0.3.0 are not
+automatically removed or restored because Mimir did not retain the prior user
+values. Review any Mimir-created OpenCode files and provider/MCP entries before
+keeping them.
+
+`session_status` remains the authoritative proof that a real session was saved.

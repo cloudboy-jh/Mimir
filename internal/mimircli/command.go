@@ -120,11 +120,6 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return cmdUpdate(ctx, args[1:], ioctx.Out)
 	case "doctor":
 		return doctor(ctx, args[1:], ioctx.Out)
-	case "_install-opencode":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: mimir _install-opencode")
-		}
-		return installCurrentOpenCodeIntegration()
 	case "_install-integrations":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir _install-integrations")

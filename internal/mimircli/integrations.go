@@ -2,8 +2,6 @@ package mimircli
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -21,30 +19,20 @@ type harnessIntegrationReport struct {
 }
 
 func installCurrentHarnessIntegrations(ctx context.Context) (harnessIntegrationReport, error) {
-	report := harnessIntegrationReport{}
-	var errs []error
-	if err := installCurrentOpenCodeIntegration(); err != nil {
-		report.OpenCode = harnessIntegrationState{State: "failed", Detail: err.Error()}
-		errs = append(errs, fmt.Errorf("opencode: %w", err))
-	} else {
-		report.OpenCode = harnessIntegrationState{State: "installed", Provider: "openrouter", Scope: "openrouter", RestartRequired: true}
-	}
+	report := harnessIntegrationReport{OpenCode: harnessIntegrationState{State: "skipped", Detail: "automatic OpenCode configuration is disabled"}}
 	if installed, err := installCurrentHermesIntegration(ctx); err != nil {
 		report.Hermes = harnessIntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: err.Error()}
-		errs = append(errs, fmt.Errorf("Hermes: %w", err))
+		return report, err
 	} else if installed {
 		report.Hermes = harnessIntegrationState{State: "installed", Provider: "openrouter", Scope: "openrouter", RestartRequired: true, Detail: "direct providers are not captured"}
 	} else {
 		report.Hermes = harnessIntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
-	return report, errors.Join(errs...)
+	return report, nil
 }
 
 func integrationSummary(report harnessIntegrationReport) string {
 	var lines []string
-	if report.OpenCode.State == "installed" {
-		lines = append(lines, "opencode OpenRouter capture installed · restart opencode")
-	}
 	if report.Hermes.State == "installed" {
 		lines = append(lines, "Hermes OpenRouter capture installed · restart Hermes", "Hermes scope: built-in OpenRouter models only · direct providers are not captured")
 	}
