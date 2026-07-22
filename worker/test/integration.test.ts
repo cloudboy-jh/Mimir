@@ -8,7 +8,7 @@ const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
- CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER);
+ CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session_files (session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(session_id, file));
 CREATE TABLE session_errors (session_id TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(session_id, signature));
@@ -87,6 +87,41 @@ describe("Worker integration", () => {
     expect(envelope).toMatchObject({ schema_version: 1, exchange_id: exchange?.id, session_id: "session-1", declared_session_id: "session-1", response: { format: "reconstructed_sse", content: "src/auth.ts failed: boom" }, usage: { input_tokens: 5, output_tokens: 3 }, redaction: { version: 1 } });
   });
 
+  it("uses only primary requests to establish session intent", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "intent-session", "x-mimir-harness": "opencode" };
+    await request("/v1/chat/completions", {
+      method: "POST",
+      headers: { ...headers, "x-mimir-request-kind": "title" },
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Generate a title for this conversation:" }] }),
+    });
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'intent-session'").first()).toEqual({ intent: null });
+    await request("/v1/chat/completions", {
+      method: "POST",
+      headers: { ...headers, "x-mimir-request-kind": "primary" },
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Fix session intent handling" }] }),
+    });
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'intent-session'").first()).toEqual({ intent: "Fix session intent handling" });
+    expect((await env.DB.prepare("SELECT request_kind FROM exchanges WHERE session_id = 'intent-session' ORDER BY ts, id").all()).results.map((row) => row.request_kind)).toEqual(["title", "primary"]);
+  });
+
+  it("defensively classifies title prompts and rejects invalid request kinds", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ choices: [] })));
+    await request("/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "defensive-title", "x-mimir-request-kind": "primary" },
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "system", content: "You are a title generator. Output only a title." }, { role: "user", content: "Generate a title" }] }),
+    });
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'defensive-title'").first()).toEqual({ intent: null });
+    expect(await env.DB.prepare("SELECT request_kind FROM exchanges WHERE session_id = 'defensive-title'").first()).toEqual({ request_kind: "title" });
+    const invalid = await request("/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-request-kind": "background" },
+      body: JSON.stringify({ model: "openai/test" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it("records an accepted exchange before the upstream archive finishes", async () => {
     let closeStream: (() => void) | undefined;
     const upstream = new ReadableStream<Uint8Array>({
@@ -159,8 +194,30 @@ describe("Worker integration", () => {
 
     await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
     expect(await env.DB.prepare("SELECT capture_status FROM exchanges WHERE id = ?").bind(accepted!.id).first()).toEqual({ capture_status: "saved" });
-    expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'accepted-session'").first()).toEqual({ request_count: 1, tokens_in: 6, tokens_out: 2 });
+    expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out, intent FROM sessions WHERE id = 'accepted-session'").first()).toEqual({ request_count: 1, tokens_in: 6, tokens_out: 2, intent: "Inspect src/recovered.ts" });
     expect(await env.DB.prepare("SELECT file FROM session_files WHERE session_id = 'accepted-session'").first()).toEqual({ file: "src/recovered.ts" });
+  });
+
+  it("reconciliation selects the earliest saved primary intent", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('ordered-intent', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, request_kind, intent_candidate) VALUES ('older-intent', 'ordered-intent', '2026-01-01T00:00:00Z', 'chat', 'openai/test', 1, 'log/older-intent.json', 'accepted', '2026-01-01T00:00:00Z', 'primary', 'First user request')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, request_kind, intent_candidate) VALUES ('newer-intent', 'ordered-intent', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/newer-intent.json', 'accepted', '2026-01-01T00:01:00Z', 'primary', 'Later user request')").run();
+    await env.LOGS.put("log/older-intent.json", "{}");
+    await env.LOGS.put("log/newer-intent.json", "{}");
+
+    await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+
+    expect(await env.DB.prepare("SELECT intent, request_count FROM sessions WHERE id = 'ordered-intent'").first()).toEqual({ intent: "First user request", request_count: 2 });
+  });
+
+  it("preserves historical session intent without persisted candidates", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary, intent) VALUES ('historical-intent', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header', 'Historical user request')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, request_kind, intent_candidate) VALUES ('new-historical-exchange', 'historical-intent', '2026-01-02T00:00:00Z', 'chat', 'openai/test', 1, 'log/new-historical.json', 'accepted', '2026-01-02T00:00:00Z', 'primary', 'New user request')").run();
+    await env.LOGS.put("log/new-historical.json", "{}");
+
+    await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+
+    expect(await env.DB.prepare("SELECT intent FROM sessions WHERE id = 'historical-intent'").first()).toEqual({ intent: "Historical user request" });
   });
 
   it("reopens an inactive exact session on the next exchange", async () => {

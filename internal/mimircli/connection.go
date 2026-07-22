@@ -67,7 +67,7 @@ func currentConnectionManifest(url string) (connectionManifest, error) {
 		CredentialFile:    credential,
 		CredentialCommand: []string{"cat", credential},
 		MCPCommand:        []string{executable, "serve"},
-		OptionalHeaders:   []string{"x-mimir-session", "x-mimir-repo", "x-mimir-harness"},
+		OptionalHeaders:   []string{"x-mimir-session", "x-mimir-repo", "x-mimir-harness", "x-mimir-git-ref", "x-mimir-request-kind"},
 	}, nil
 }
 

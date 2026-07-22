@@ -148,6 +148,7 @@ func TestBuildDashboard(t *testing.T) {
 
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/whoami" || r.Header.Get("Authorization") != "Bearer machine-token" {

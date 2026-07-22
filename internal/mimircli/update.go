@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -30,6 +31,14 @@ var downloadClient = &http.Client{Timeout: 5 * time.Minute}
 
 // executablePath is a variable so tests can point updates at a temp binary.
 var executablePath = os.Executable
+
+var runUpdatedInstaller = func(ctx context.Context, executable string) error {
+	command := exec.CommandContext(ctx, executable, "_install-opencode")
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
 
 type githubRelease struct {
 	TagName string `json:"tag_name"`
@@ -64,6 +73,13 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	latest := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(version, "v")
 	if latest == current {
+		if !check {
+			if _, pointerErr := loadPointer(); pointerErr == nil {
+				if err := installCurrentOpenCodeIntegration(); err != nil {
+					return fmt.Errorf("mimir is current, but refreshing the OpenCode adapter failed: %w", err)
+				}
+			}
+		}
 		_, err := fmt.Fprintf(out, "mimir %s is up to date\n", current)
 		return err
 	}
@@ -110,8 +126,14 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if managedByPackageManager(target) {
 		return fmt.Errorf("mimir at %s is managed by a package manager; update through it instead", target)
 	}
+	_, connectedErr := loadPointer()
 	if err := installBinary(target, binary); err != nil {
 		return fmt.Errorf("installing update: %w", err)
+	}
+	if connectedErr == nil {
+		if err := runUpdatedInstaller(ctx, target); err != nil {
+			return fmt.Errorf("mimir updated, but refreshing the OpenCode adapter failed: %w", err)
+		}
 	}
 	_, err = fmt.Fprintf(out, "updated mimir %s → %s\n", current, latest)
 	return err

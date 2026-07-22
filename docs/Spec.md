@@ -160,6 +160,14 @@ For a supported model request, the Worker:
 13. Writes the complete redacted v1 envelope to R2.
 14. Finalizes the exchange as saved and updates facets and session aggregates in D1.
 
+`x-mimir-request-kind` accepts `primary`, `title`, `summary`, or `compaction`
+and defaults to `primary` for compatibility. The effective kind is persisted
+with the exchange and stripped before forwarding upstream. Title, summary, and
+compaction exchanges remain part of the exact session and contribute evidence
+and usage, but cannot initialize or overwrite session intent. The Worker also
+defensively recognizes known title-agent prompts that were mislabeled as
+primary.
+
 Capture can be disabled globally or excluded by repository/model. Excluded
 traffic is still proxied but is not persisted.
 
@@ -201,6 +209,11 @@ Optional metadata headers are:
 - `x-mimir-repo`
 - `x-mimir-harness`
 - `x-mimir-git-ref`
+- `x-mimir-request-kind`
+
+Session intent is sticky and comes from the first saved primary exchange with
+a non-empty user message. Intent candidates are stored on accepted exchanges
+so reconciliation applies the same rule after an interrupted D1 finalization.
 
 Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 `unresolved`. Outcome is independent from capture: `landed` says the result was
@@ -420,15 +433,19 @@ and dashboard copy emit canonical values.
 9. Stores the OpenRouter Worker secret.
 10. Deploys and verifies the Worker.
 11. Saves the local URL/token pointer.
-12. Returns a harness-neutral connection manifest.
+12. Installs or refreshes the versioned, Mimir-owned opencode adapter.
+13. Returns a harness-neutral connection manifest.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
 discovering the deployment, registering a new machine token, and returning the
-same connection manifest. Login also installs the opencode integration: a
-plugin under `~/.config/opencode/plugins/` that points the OpenRouter provider
-at the Worker and tags exchanges with repo, harness, and session headers, plus
-a `mimir` entry in the MCP section of `opencode.json`. Both writes are
-idempotent and preserve existing configuration.
+same connection manifest. Setup and login install the opencode integration: a
+versioned plugin under `~/.config/opencode/plugins/` that tags OpenRouter
+traffic with session and request-kind metadata, secure provider configuration
+using the machine token file, an absolute `mimir` MCP command, and the generated
+session-ending command. Writes are idempotent and preserve unrelated
+configuration. `mimir update` refreshes the adapter and `mimir doctor` validates
+its version, provider route, credential reference, MCP command, and Worker
+connectivity without making a paid model request.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
 changes after setup. It materializes the packaged Worker, builds the
@@ -437,7 +454,7 @@ and runs `wrangler deploy`. The checked-in `wrangler.jsonc` intentionally keeps
 a placeholder database ID; never deploy from a source checkout.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
-path and command, an absolute MCP command, and optional telemetry header names.
+path and command, an absolute MCP command, and optional session metadata header names.
 For non-opencode harnesses, the setup skill or user applies that manifest using
 the harness's own secure configuration system.
 

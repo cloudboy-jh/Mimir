@@ -118,6 +118,13 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return writeConnectionManifest(ioctx.Out)
 	case "update":
 		return cmdUpdate(ctx, args[1:], ioctx.Out)
+	case "doctor":
+		return doctor(ctx, args[1:], ioctx.Out)
+	case "_install-opencode":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir _install-opencode")
+		}
+		return installCurrentOpenCodeIntegration()
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
 			return fmt.Errorf("usage: mimir outcome git <session>")
@@ -340,6 +347,7 @@ Usage:
   mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir reconcile
+  mimir doctor [--json]
   mimir update [--check]
 
 Run "mimir help advanced" for diagnostic commands.`)
@@ -353,6 +361,7 @@ These commands support harness integrations, diagnostics, and development.
 
 Usage:
   mimir connection
+  mimir doctor [--json]
   mimir whoami
   mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
   mimir sessions

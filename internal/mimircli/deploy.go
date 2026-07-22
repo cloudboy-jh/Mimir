@@ -61,6 +61,9 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
 		return err
 	}
+	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
+		return fmt.Errorf("applying database migrations: %w", err)
+	}
 	deployOutput, err := runWrangler(ctx, dir, nil, "deploy")
 	if err != nil {
 		return err

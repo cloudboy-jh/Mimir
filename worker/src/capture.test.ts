@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveSessionFields, extractUsage, parseCapturedResponse, readBoundedText, redact } from "./capture";
+import { classifyRequestKind, deriveIntent, deriveSessionFields, extractUsage, parseCapturedResponse, readBoundedText, redact } from "./capture";
 
 describe("capture", () => {
   it("reassembles OpenAI SSE text and usage", () => {
@@ -27,5 +27,16 @@ describe("capture", () => {
   it("does not treat dotted protocol names as files", () => {
     expect(deriveSessionFields({ object: "chat.completion.chunk", file: "src/auth.ts" }))
       .toEqual({ files: ["src/auth.ts"], errors: [] });
+  });
+
+  it("classifies known title agents without suppressing ordinary title work", () => {
+    expect(classifyRequestKind("primary", { messages: [{ role: "system", content: "You are a title generator. Output only a title." }] })).toBe("title");
+    expect(classifyRequestKind("primary", { messages: [{ role: "user", content: "Fix the title generator" }] })).toBe("primary");
+    expect(classifyRequestKind("summary", { messages: [{ role: "user", content: "real prompt" }] })).toBe("summary");
+  });
+
+  it("derives intent from string and block user content", () => {
+    expect(deriveIntent({ messages: [{ role: "user", content: "  real   prompt " }] })).toBe("real prompt");
+    expect(deriveIntent({ messages: [{ role: "user", content: [{ type: "text", text: "block prompt" }] }] })).toBe("block prompt");
   });
 });

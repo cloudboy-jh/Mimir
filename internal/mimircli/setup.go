@@ -134,6 +134,9 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 		if err := savePointer(pointer); err != nil {
 			return err
 		}
+		if err := installCurrentOpenCodeIntegration(); err != nil {
+			fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
+		}
 		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 		opts.Progress.Stop()
 		return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/")}, opts.URL), connectionSummary(opts.URL))
@@ -239,6 +242,9 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	}
 	if err := savePointer(pointer); err != nil {
 		return err
+	}
+	if err := installCurrentOpenCodeIntegration(); err != nil {
+		fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
 	}
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err

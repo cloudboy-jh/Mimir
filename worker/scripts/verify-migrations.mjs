@@ -70,6 +70,9 @@ try {
     VALUES ('deployment-window-exchange', 'legacy-session', '2026-07-15T11:01:00Z', '/v1/chat/completions', 20, 'log/deployment-window.json');
   `);
 
+  cpSync(join(root, "migrations", "0008_request_kind.sql"), join(migrations, "0008_request_kind.sql"));
+  applyMigrations();
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
@@ -88,6 +91,7 @@ try {
       (SELECT accepted_at FROM exchanges WHERE id = 'deployment-window-exchange') AS window_accepted_at,
       (SELECT saved_at FROM exchanges WHERE id = 'deployment-window-exchange') AS window_saved_at,
       (SELECT schema_version FROM exchanges WHERE id = 'deployment-window-exchange') AS window_schema_version,
+      (SELECT request_kind FROM exchanges WHERE id = 'deployment-window-exchange') AS window_request_kind,
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('exchange_files', 'exchange_errors')) AS facet_tables
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
@@ -113,6 +117,7 @@ try {
     window_accepted_at: "2026-07-15T11:01:00Z",
     window_saved_at: "2026-07-15T11:01:00Z",
     window_schema_version: 0,
+    window_request_kind: "primary",
     facet_tables: 2,
   });
 

@@ -96,6 +96,9 @@ func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
 	oldExec := executablePath
 	executablePath = func() (string, error) { return target, nil }
 	t.Cleanup(func() { executablePath = oldExec })
+	oldInstaller := runUpdatedInstaller
+	runUpdatedInstaller = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { runUpdatedInstaller = oldInstaller })
 
 	oldVersion := version
 	version = "1.0.0"
@@ -146,6 +149,7 @@ func TestCmdUpdateRejectsChecksumMismatch(t *testing.T) {
 }
 
 func TestCmdUpdateCheckAndCurrent(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	server := stubReleaseServer(t, "1.0.0", []byte("binary"), false)
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
@@ -190,7 +194,7 @@ func TestManagedByPackageManager(t *testing.T) {
 		`C:\Users\me\scoop\shims\mimir.exe`:    true,
 		"/nix/store/abc-mimir/bin/mimir":       true,
 		"/usr/local/bin/mimir":                 false,
-		`C:\Tools\mimir.exe`:                  false,
+		`C:\Tools\mimir.exe`:                   false,
 	} {
 		if got := managedByPackageManager(path); got != want {
 			t.Fatalf("managedByPackageManager(%q) = %v, want %v", path, got, want)

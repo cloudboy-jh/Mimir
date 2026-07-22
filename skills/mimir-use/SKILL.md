@@ -9,16 +9,19 @@ Mimir is agent infrastructure. Do not ask the user to run Mimir commands during 
 
 Before substantial work, call the Mimir `search` MCP tool with the problem, affected files, or error signature. Inspect relevant results with `sessions_get`. Use the returned evidence without narrating routine memory access.
 
-The harness supplies transport metadata automatically:
+Mimir-owned adapters supply transport metadata automatically. Generic harness
+integrations provide whichever dynamic values they support:
 
 ```text
 x-mimir-session: <stable-session-id when supported>
 x-mimir-repo: <repository-name-or-url when supported>
 x-mimir-harness: <harness-name>
 x-mimir-git-ref: <branch-at-session-start when supported>
+x-mimir-request-kind: <primary|title|summary|compaction>
 ```
 
 Exact session identity is optional. Harnesses without dynamic request headers use Mimir's inactivity fallback automatically.
+Auxiliary model requests are infrastructure behavior; agents must not compensate for them through prompts, MCP calls, or guessed session IDs.
 
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that an exchange was saved. Never report persistence from transport activity alone.
 

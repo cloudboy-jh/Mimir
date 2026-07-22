@@ -131,10 +131,8 @@ func writeLoginResult(ioctx IO, jsonOutput bool, identity cloudflareIdentity, ur
 	if err := saveCloudflareIdentity(identity); err != nil {
 		return err
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if err := installOpenCodeIntegration(home, strings.TrimRight(url, "/")); err != nil {
-			fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
-		}
+	if err := installCurrentOpenCodeIntegration(); err != nil {
+		fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
 	}
 	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity}, url)
 	return writeSetupResult(ioctx.Out, jsonOutput, result, loginSummary(identity, url, terminalColor(ioctx.Out)))

@@ -10,7 +10,7 @@ harness-neutral connection contract:
   "credential_file": "/Users/example/.mimir/token",
   "credential_command": ["cat", "/Users/example/.mimir/token"],
   "mcp_command": ["/Users/example/go/bin/mimir", "serve"],
-  "optional_headers": ["x-mimir-session", "x-mimir-repo", "x-mimir-harness"]
+  "optional_headers": ["x-mimir-session", "x-mimir-repo", "x-mimir-harness", "x-mimir-git-ref", "x-mimir-request-kind"]
 }
 ```
 
@@ -30,7 +30,11 @@ dynamic request metadata:
 - `x-mimir-session`: stable session ID
 - `x-mimir-repo`: repository name or URL
 - `x-mimir-harness`: harness name
+- `x-mimir-git-ref`: branch or source reference at session start
+- `x-mimir-request-kind`: `primary`, `title`, `summary`, or `compaction`; only
+  `primary` can establish session intent
 
-The Worker also accepts `x-mimir-git-ref` when a harness can provide the source
-branch. Without an exact session ID, Mimir falls back to repository/harness
-grouping with a configurable inactivity gap that defaults to 15 minutes.
+The manifest is the generic integration contract. Mimir-owned adapters such as
+opencode install these values automatically. Without an exact session ID,
+Mimir falls back to repository/harness grouping with a configurable inactivity
+gap that defaults to 15 minutes.

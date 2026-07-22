@@ -65,6 +65,10 @@ The dashboard link appears only when Cloudflare Access is configured.
 it. Otherwise, Mimir groups requests using repository, harness, and a
 15-minute inactivity gap.
 
+Harness adapters classify title, summary, and compaction calls as auxiliary.
+Mimir captures those exchanges but only a primary user request can establish
+the session's displayed and searchable intent.
+
 ## Install
 
 You need a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
@@ -89,7 +93,8 @@ go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir login
 ```
 
-`mimir login` also writes the opencode integration automatically (see below).
+`mimir setup`, `mimir login`, and `mimir update` install or refresh the
+Mimir-owned opencode adapter automatically (see below).
 
 For agent-assisted setup:
 
@@ -112,6 +117,7 @@ mimir session status <id> [--json]  # verified capture receipt
 mimir session end <id> [--outcome <o>] [--reason text]
 mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
 mimir reconcile                     # reconcile session state
+mimir doctor [--json]               # validate connection and harness wiring
 mimir update [--check]              # update the CLI
 ```
 
@@ -139,16 +145,21 @@ keeps a placeholder database ID by design.
 
 ### opencode
 
-`mimir login` writes both pieces automatically:
+Mimir owns the opencode integration. Setup, login, and update write it
+idempotently while preserving unrelated configuration:
 
-- A plugin at `~/.config/opencode/plugins/mimir.ts` that points the
-  `openrouter` provider at the Worker and attaches `x-mimir-session`,
-  `x-mimir-repo`, and `x-mimir-harness` headers per request — so every
-  opencode session gets an exact session boundary.
-- A `mimir` entry in the MCP section of `opencode.json` for memory tools.
+- A versioned plugin at `~/.config/opencode/plugins/mimir.ts` that attaches
+  session metadata and classifies primary, title, summary, and compaction
+  requests.
+- Secure `openrouter` provider routing through the Worker using a `{file:...}`
+  token reference rather than embedding the machine token.
+- A `mimir` MCP entry using the absolute CLI path, plus the generated
+  `/mimir-end-session` command.
 
-Restart opencode after login. Sessions are captured whenever the active model
-uses the `openrouter` provider.
+Restart opencode after installation. Sessions are captured whenever the active
+model uses the `openrouter` provider. Do not create a second Mimir provider or
+manually reproduce the adapter; run `mimir update` to repair drift and
+`mimir doctor` to validate the wiring.
 
 ### Other harnesses
 
