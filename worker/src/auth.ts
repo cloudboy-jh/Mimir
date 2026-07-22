@@ -9,9 +9,13 @@ export async function authenticate(c: Context<AppEnv>, next: Next) {
   }
   const token = requestToken(c.req.raw.headers);
   const accessToken = token ? await validToken(c.env.DB, token) : null;
-  if (!accessToken) return c.json({ error: "unauthorized" }, 401);
-  c.set("tokenHash", accessToken.token_hash);
-  c.set("tokenLabel", accessToken.label);
+  const hermesOpenRouter = !accessToken && token && c.req.path.startsWith("/v1/hermes/")
+    ? await validHermesCredential(c.env.DB, token)
+    : false;
+  if (!accessToken && !hermesOpenRouter) return c.json({ error: "unauthorized" }, 401);
+  c.set("tokenHash", accessToken?.token_hash ?? "hermes-openrouter");
+  c.set("tokenLabel", accessToken?.label ?? "hermes-openrouter");
+  if (hermesOpenRouter && token) c.set("upstreamOpenRouterKey", token);
   await next();
 }
 
@@ -43,4 +47,9 @@ async function validDashboardAccess(request: Request, env: Bindings) {
 async function sha256(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function validHermesCredential(db: D1Database, token: string) {
+  const hash = await sha256(token);
+  return !!(await db.prepare("SELECT token_hash FROM hermes_credentials WHERE token_hash = ?").bind(hash).first());
 }

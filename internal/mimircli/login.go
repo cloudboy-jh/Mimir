@@ -57,7 +57,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		identity, identityErr := loadCloudflareIdentity()
 		if pointerErr == nil && identityErr == nil {
 			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
-				return writeLoginResult(ioctx, opts.JSON, identity, pointer.URL)
+				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
 			}
 		}
 	}
@@ -80,7 +80,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Cloudflare authenticated")
 	if pointer, err := loadPointer(); err == nil {
 		if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
-			return writeLoginResult(ioctx, opts.JSON, identity, pointer.URL)
+			return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
 		}
 	}
 	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
@@ -124,18 +124,23 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
-	return writeLoginResult(ioctx, opts.JSON, identity, url)
+	return writeLoginResult(ctx, ioctx, opts.JSON, identity, url)
 }
 
-func writeLoginResult(ioctx IO, jsonOutput bool, identity cloudflareIdentity, url string) error {
+func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity cloudflareIdentity, url string) error {
 	if err := saveCloudflareIdentity(identity); err != nil {
 		return err
 	}
-	if err := installCurrentOpenCodeIntegration(); err != nil {
-		fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
+	integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
+	if integrationErr != nil {
+		fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
 	}
-	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity}, url)
-	return writeSetupResult(ioctx.Out, jsonOutput, result, loginSummary(identity, url, terminalColor(ioctx.Out)))
+	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity, "integrations": integrations}, url)
+	human := loginSummary(identity, url, terminalColor(ioctx.Out))
+	if summary := integrationSummary(integrations); summary != "" {
+		human += "\n\n" + summary
+	}
+	return writeSetupResult(ioctx.Out, jsonOutput, result, human)
 }
 
 func cloudflareIdentityPath() (string, error) {

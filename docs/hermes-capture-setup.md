@@ -1,97 +1,76 @@
 # Hermes Session Capture Setup
 
-Date: 2026-07-21
-Status: Configured; pending first live-session verification.
+Date: 2026-07-22
+Status: Implemented; pending first deployed desktop/TUI verification.
 
-## Problem
+## Design
 
-Hermes (TUI and desktop app) sessions were partially captured. The default
-model ran through the Mimir Worker via the legacy `model` block in
-`config.yaml`, but any session running on a model selected from a built-in
-provider (`openrouter`, `nous`, etc.) bypassed the Worker entirely. Provider
-and model switches — including automatic fallback switches mid-session —
-silently dropped capture.
+Mimir redirects Hermes' built-in OpenRouter provider instead of registering a
+custom provider. `mimir setup`, `mimir login`, and `mimir update` detect the
+active Hermes home and maintain a block at the end of its `.env`:
 
-Root cause is the same as opencode (see `opencode-capture-setup.md`): capture
-is a side effect of the proxy path. There is no save operation and no
-backfill. Registering the MCP server (`mimir serve`) only provides read and
-annotate tools; it never writes exchanges. Any request that does not pass
-through the Worker is not captured.
-
-The Hermes-specific wrinkle: Hermes supports multiple simultaneous providers
-and mid-session `/model` switching, so a single `model.base_url` override
-covers exactly one provider slot. Everything else needs a named custom
-provider so captured models are selectable everywhere the picker appears.
-
-## Solution
-
-Add Mimir as a named custom provider in Hermes `config.yaml`:
-
-```yaml
-custom_providers:
-  - name: mimir
-    display_name: Mimir (captured)
-    base_url: https://<worker>.workers.dev/v1
-    api_key: ${MIMIR_API_KEY}
-    api_mode: chat_completions
-    extra_headers:
-      x-mimir-harness: hermes-desktop
-    models:
-      - moonshotai/kimi-k3
-      - google/gemini-3.5-flash
-      - anthropic/claude-sonnet-4.5
-      # ... any OpenRouter model IDs you want captured
+```dotenv
+# >>> mimir managed openrouter route
+OPENROUTER_BASE_URL="https://<worker>.workers.dev/v1/hermes"
+# <<< mimir managed openrouter route
 ```
 
-Details that matter:
+Hermes keeps its existing `OPENROUTER_API_KEY`. Mimir never replaces that value
+with a machine token because some Hermes auxiliary tools still call OpenRouter's
+fixed URL; replacing it would leak the Mimir credential. Existing dotenv
+assignments are preserved. The managed block is last so the base URL takes
+precedence, and updates replace only that block.
 
-- **Use `extra_headers`, not `default_headers`.** The Hermes config
-  normalizer silently drops `default_headers` from `custom_providers`
-  entries. `extra_headers` is the only key that survives normalization; it
-  merges into the OpenAI client's default headers on every request, matched
-  by `base_url` (trailing-slash insensitive). This merge runs at startup AND
-  on every mid-session `/model` switch, so switching between models inside
-  the Mimir provider keeps capture active.
-- **Model IDs are OpenRouter IDs**, passed through verbatim. Add any model
-  OpenRouter accepts.
-- **The API key is the machine bearer token.** Use `${MIMIR_API_KEY}` env
-  interpolation (set in Hermes' `.env`); never paste the token into config
-  or chat. The token value comes from `mimir login --json` /
-  `~/.mimir/token`.
-- **Harness header values are free-form.** Use distinct values per harness
-  flavor (`hermes` for TUI, `hermes-desktop` for the desktop app) so the
-  dashboard and `sessions_list` group them separately. The legacy `model`
-  block's `default_headers` is a separate path and still works for the
-  single default provider slot.
-- Hermes does not send `x-mimir-session` (no dynamic per-session headers),
-  so session boundaries fall back to harness + inactivity gap (default 15
-  minutes). Use `session_end` from the mimir-use skill to close a session
-  explicitly.
-- Hermes does not hot-reload config; restart after editing.
+During installation, the CLI registers the OpenRouter key's SHA-256 digest with
+the Worker using machine authentication. The raw key is not stored in D1.
 
-## Usage rule
+Hermes uses the ordinary OpenRouter model picker. There is no `mimir` provider,
+duplicate model catalog, or model-name migration.
 
-Pick models from the **Mimir (captured)** provider in `/model`. That is the
-entire discipline. Models selected from built-in providers (openrouter,
-nous, ...) are direct and uncaptured — by design, same rule as opencode:
-capture only applies to sessions on mimir/* models.
+## Worker compatibility surface
+
+Hermes resolves account and model metadata against the configured OpenRouter
+base URL, not only Chat Completions. The Worker therefore exposes:
+
+- `POST /v1/hermes/chat/completions`
+- `GET /v1/hermes/models`
+- `GET /v1/hermes/key`
+- `GET /v1/hermes/credits`
+
+Each route accepts either a Mimir machine token or an OpenRouter credential whose
+digest was registered by the CLI. OpenRouter-key authentication is restricted to `/v1/hermes/*`; it cannot
+read sessions, logs, or configuration. The Worker sends its configured
+credential upstream when machine authentication is used, and the presented
+Hermes credential otherwise. GET responses stream through unchanged. The chat
+route supplies `hermes` as the capture harness when no explicit header is
+available.
+
+## Supported boundary
+
+Capture applies whenever Hermes' effective provider is `openrouter`, including
+mid-session switches between OpenRouter models. MCP does not perform capture.
+
+Direct Nous, Anthropic OAuth, Codex, Gemini, and other provider transports bypass
+the Worker and are not captured. Supporting them would require a Hermes-native
+global transport hook or separate protocol/authentication integrations; Mimir
+does not intercept TLS traffic.
+
+Hermes auxiliary tools that hard-code OpenRouter's URL also remain direct and
+uncaptured. They retain the real OpenRouter credential, so they continue working
+without exposing a Mimir machine token.
+
+Desktop and TUI use the same Hermes profile, so a static installation cannot
+reliably distinguish them. Both are grouped under the `hermes` harness. Hermes
+does not send an exact Mimir session ID, so session boundaries use the inactivity
+fallback. Run `mimir update` after changing Hermes profiles so the new profile's
+credential and base URL are registered.
 
 ## Verification
 
-1. **Config valid:** `hermes config check` passes.
-2. **Proxy auth:** `GET <worker>/v1/models` with the machine bearer token
-   returns 200.
-3. **End-to-end (the only real proof):** restart Hermes, start a fresh
-   session, `/model` → Mimir (captured) → any model, converse a few turns,
-   then run `mimir whoami` and list sessions via the MCP tools. A new
-   session with the configured `x-mimir-harness` value and `N exchanges
-   saved` must appear.
-4. **Per-response signal:** the Worker stamps `x-mimir-capture: saved` (or
-   `skipped` with a reason header) on every proxied response. A `skipped`
-   verdict with a filter reason means the save config in D1 rejected it —
-   check `/config`, not the harness.
-
-Note: capture persists via `waitUntil` after the response streams, so
-receipts can lag a few seconds. `session_status` waits for background
-capture before returning. Proxy transport activity alone is never proof of
-persistence.
+1. Run `mimir doctor`; it checks the managed dotenv route and the Hermes models,
+   key, and credits endpoints without invoking a model.
+2. Restart Hermes because it does not hot-reload its environment.
+3. Start a fresh session on an OpenRouter model and switch to another OpenRouter
+   model mid-session.
+4. Confirm the exchanges appear under the `hermes` harness. Durable session
+   status, not transport activity alone, is proof of persistence.

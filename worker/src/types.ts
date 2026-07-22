@@ -6,5 +6,5 @@ export type Bindings = Env & {
 
 export type AppEnv = {
   Bindings: Bindings;
-  Variables: { tokenHash: string; tokenLabel: string };
+  Variables: { tokenHash: string; tokenLabel: string; upstreamOpenRouterKey?: string };
 };

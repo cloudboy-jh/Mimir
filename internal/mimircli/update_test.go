@@ -97,7 +97,9 @@ func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
 	executablePath = func() (string, error) { return target, nil }
 	t.Cleanup(func() { executablePath = oldExec })
 	oldInstaller := runUpdatedInstaller
-	runUpdatedInstaller = func(context.Context, string) error { return nil }
+	runUpdatedInstaller = func(context.Context, string) (harnessIntegrationReport, error) {
+		return harnessIntegrationReport{}, nil
+	}
 	t.Cleanup(func() { runUpdatedInstaller = oldInstaller })
 
 	oldVersion := version

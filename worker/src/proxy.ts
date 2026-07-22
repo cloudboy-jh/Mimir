@@ -8,7 +8,7 @@ const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_KINDS = new Set<RequestKind>(["primary", "title", "summary", "compaction"]);
 
-export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
+export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages", defaults: { harness?: string } = {}) {
   const started = Date.now();
   const declaredLength = Number(c.req.header("content-length") ?? 0);
   if (declaredLength > MAX_REQUEST_BYTES) return c.json({ error: "request body too large" }, 413);
@@ -31,10 +31,10 @@ export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages") {
   if (requestKindHeader && !REQUEST_KINDS.has(requestKindHeader as RequestKind)) return c.json({ error: "invalid x-mimir-request-kind" }, 400);
   const requestKind = (requestKindHeader ?? "primary") as RequestKind;
   const repo = metadata(c.req.header("x-mimir-repo"));
-  const harness = metadata(c.req.header("x-mimir-harness"));
+  const harness = metadata(c.req.header("x-mimir-harness") ?? defaults.harness);
   const config = await readSaveConfig(c.env.DB);
   await expireSessions(c.env.DB, config.gapMinutes);
-  const headers = buildUpstreamHeaders(c.req.raw.headers, c.env.OPENROUTER_API_KEY);
+  const headers = buildUpstreamHeaders(c.req.raw.headers, c.get("upstreamOpenRouterKey") ?? c.env.OPENROUTER_API_KEY);
   const upstream = await fetch(`https://openrouter.ai/api/v1${endpoint === "chat" ? "/chat/completions" : "/messages"}`, { method: "POST", headers, body: requestBody });
   const decision = decideCapture(config, repo, model, upstream.body !== null);
   const responseHeaders = new Headers(upstream.headers);

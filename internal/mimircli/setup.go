@@ -134,12 +134,18 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 		if err := savePointer(pointer); err != nil {
 			return err
 		}
-		if err := installCurrentOpenCodeIntegration(); err != nil {
-			fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
+		integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
+		if integrationErr != nil {
+			fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
 		}
 		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 		opts.Progress.Stop()
-		return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/")}, opts.URL), connectionSummary(opts.URL))
+		result := addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/"), "integrations": integrations}, opts.URL)
+		human := connectionSummary(opts.URL)
+		if summary := integrationSummary(integrations); summary != "" {
+			human += "\n\n" + summary
+		}
+		return writeSetupResult(ioctx.Out, opts.JSON, result, human)
 	}
 	return provision(ctx, opts, ioctx)
 }
@@ -243,8 +249,9 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := savePointer(pointer); err != nil {
 		return err
 	}
-	if err := installCurrentOpenCodeIntegration(); err != nil {
-		fmt.Fprintf(ioctx.Err, "opencode integration not installed: %v\n", err)
+	integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
+	if integrationErr != nil {
+		fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
 	}
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err
@@ -271,8 +278,11 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 	opts.Progress.Stop()
-	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access}
+	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access, "integrations": integrations}
 	human := connectionSummary(url)
+	if summary := integrationSummary(integrations); summary != "" {
+		human += "\n\n" + summary
+	}
 	if access.State == "manual" && !opts.JSON {
 		human += "\n\n" + accessChecklist(url)
 	}

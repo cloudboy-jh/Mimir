@@ -23,6 +23,10 @@ x-mimir-request-kind: <primary|title|summary|compaction>
 Exact session identity is optional. Harnesses without dynamic request headers use Mimir's inactivity fallback automatically.
 Auxiliary model requests are infrastructure behavior; agents must not compensate for them through prompts, MCP calls, or guessed session IDs.
 
+Hermes desktop and TUI use Mimir's installed transparent OpenRouter route. Do
+not create a custom provider. OpenRouter models are captured; direct Nous,
+Anthropic OAuth, Codex, and other provider transports bypass Mimir.
+
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that an exchange was saved. Never report persistence from transport activity alone.
 
 After meaningful work, when the exact session ID is available, call `session_status`. The tool waits briefly for background capture and returns a compact receipt such as `Saved to Mimir · 14 exchanges in this session`. When dashboard Access is configured, the receipt also includes `View session`. Let the harness display that tool result near the completed response; do not repeat the session ID, timestamp, counts, or receipt in agent prose unless the user explicitly asks for storage details.

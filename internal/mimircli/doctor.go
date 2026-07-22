@@ -75,10 +75,16 @@ func runDoctor(ctx context.Context) doctorReport {
 		add("connection.manifest", "failed", err.Error(), "mimir login")
 		return report
 	}
+	checkOpenCodeIntegration(add, manifest)
+	checkHermesIntegration(ctx, add, pointer, manifest)
+	return report
+}
+
+func checkOpenCodeIntegration(add func(string, string, string, string), manifest connectionManifest) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		add("opencode.home", "failed", err.Error(), "")
-		return report
+		return
 	}
 	configDir := filepath.Join(home, ".config", "opencode")
 	plugin, err := os.ReadFile(filepath.Join(configDir, "plugins", "mimir.ts"))
@@ -91,12 +97,12 @@ func runDoctor(ctx context.Context) doctorReport {
 	data, err := os.ReadFile(filepath.Join(configDir, "opencode.json"))
 	if err != nil {
 		add("opencode.config", "failed", err.Error(), "mimir login")
-		return report
+		return
 	}
 	var config map[string]any
 	if err := json.Unmarshal(data, &config); err != nil {
 		add("opencode.config", "failed", err.Error(), "repair opencode.json")
-		return report
+		return
 	}
 	providers, _ := config["provider"].(map[string]any)
 	openrouter, _ := providers["openrouter"].(map[string]any)
@@ -121,5 +127,35 @@ func runDoctor(ctx context.Context) doctorReport {
 	} else {
 		add("opencode.mcp", "ok", manifest.MCPCommand[0], "")
 	}
-	return report
+}
+
+func checkHermesIntegration(ctx context.Context, add func(string, string, string, string), pointer Pointer, manifest connectionManifest) {
+	hermesHome, hermesFound, err := discoverHermesHome()
+	if err != nil {
+		add("hermes.home", "failed", err.Error(), "")
+		return
+	}
+	if !hermesFound {
+		add("hermes", "skipped", "Hermes is not installed", "")
+		return
+	}
+	if matches, detail := hermesIntegrationMatches(hermesHome, manifest); !matches {
+		add("hermes.openrouter", "failed", detail, "mimir update")
+	} else {
+		add("hermes.openrouter", "ok", detail, "")
+	}
+	hermesKey, err := hermesOpenRouterKey(hermesHome)
+	if err != nil {
+		add("hermes.credential", "failed", err.Error(), "configure Hermes OpenRouter authentication")
+		return
+	}
+	hermesPointer := Pointer{URL: pointer.URL, Token: hermesKey}
+	for _, endpoint := range []string{"models", "key", "credits"} {
+		path := "/v1/hermes/" + endpoint
+		if _, err := remoteRequestWithPointer(ctx, hermesPointer, "GET", path, nil); err != nil {
+			add("hermes."+endpoint, "failed", err.Error(), "mimir deploy")
+		} else {
+			add("hermes."+endpoint, "ok", path, "")
+		}
+	}
 }

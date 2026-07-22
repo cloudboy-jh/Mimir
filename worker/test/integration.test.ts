@@ -6,6 +6,7 @@ import { finalizeAcceptedExchange } from "../src/capture";
 
 const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
+CREATE TABLE hermes_credentials (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, authorized_by TEXT);
 CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
  CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT);
@@ -41,7 +42,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM access_tokens;");
+  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM hermes_credentials; DELETE FROM access_tokens;");
   await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'test', '2026-01-01T00:00:00Z')").bind(await tokenHash("machine-token")).run();
   const objects = await env.LOGS.list();
   await Promise.all(objects.objects.map((object) => env.LOGS.delete(object.key)));
@@ -56,6 +57,52 @@ describe("Worker integration", () => {
   it("rejects unauthenticated requests", async () => {
     const response = await request("/whoami");
     expect(response.status).toBe(401);
+  });
+
+  it("accepts an authorized OpenRouter key only on Hermes compatibility routes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
+    const hermesKey = "independent-hermes-openrouter-key";
+    expect((await request("/v1/hermes/models", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
+    expect((await request("/integrations/hermes/authorize", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body: JSON.stringify({ token_hash: await tokenHash(hermesKey) }),
+    })).status).toBe(200);
+    expect((await request("/v1/hermes/models", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(200);
+    const upstreamHeaders = new Headers(vi.mocked(fetch).mock.calls[0][1]?.headers);
+    expect(upstreamHeaders.get("authorization")).toBe(`Bearer ${hermesKey}`);
+    expect((await request("/whoami", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
+    expect((await request("/v1/models", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
+  });
+
+  it.each([
+    ["/v1/models", "https://openrouter.ai/api/v1/models"],
+    ["/v1/credits", "https://openrouter.ai/api/v1/credits"],
+    ["/v1/key", "https://openrouter.ai/api/v1/key"],
+    ["/v1/hermes/models", "https://openrouter.ai/api/v1/models"],
+    ["/v1/hermes/credits", "https://openrouter.ai/api/v1/credits"],
+    ["/v1/hermes/key", "https://openrouter.ai/api/v1/key"],
+  ])("proxies OpenRouter compatibility route %s", async (path, upstreamURL) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"data":{}}', { status: 206, headers: { "x-upstream": "openrouter" } })));
+    const response = await request(path, { headers: { authorization: "Bearer machine-token", "x-mimir-harness": "must-not-leak" } });
+    expect(response.status).toBe(206);
+    expect(response.headers.get("x-upstream")).toBe("openrouter");
+    expect(await response.text()).toBe('{"data":{}}');
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(url).toBe(upstreamURL);
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get("authorization")).toBe("Bearer test-openrouter-key");
+    expect(headers.get("x-mimir-harness")).toBeNull();
+  });
+
+  it("identifies transparent Hermes capture from the compatibility path", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } })));
+    await request("/v1/hermes/chat/completions", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Hermes route" }] }),
+    });
+    expect(await env.DB.prepare("SELECT harness FROM exchanges LIMIT 1").first()).toEqual({ harness: "hermes" });
   });
 
   it("streams unchanged and persists redacted session data", async () => {

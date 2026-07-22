@@ -32,12 +32,17 @@ var downloadClient = &http.Client{Timeout: 5 * time.Minute}
 // executablePath is a variable so tests can point updates at a temp binary.
 var executablePath = os.Executable
 
-var runUpdatedInstaller = func(ctx context.Context, executable string) error {
-	command := exec.CommandContext(ctx, executable, "_install-opencode")
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+var runUpdatedInstaller = func(ctx context.Context, executable string) (harnessIntegrationReport, error) {
+	command := exec.CommandContext(ctx, executable, "_install-integrations")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return harnessIntegrationReport{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
-	return nil
+	var report harnessIntegrationReport
+	if err := json.Unmarshal(output, &report); err != nil {
+		return harnessIntegrationReport{}, fmt.Errorf("reading updated integration report: %w", err)
+	}
+	return report, nil
 }
 
 type githubRelease struct {
@@ -73,14 +78,20 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	latest := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(version, "v")
 	if latest == current {
+		var integrations harnessIntegrationReport
 		if !check {
 			if _, pointerErr := loadPointer(); pointerErr == nil {
-				if err := installCurrentOpenCodeIntegration(); err != nil {
-					return fmt.Errorf("mimir is current, but refreshing the OpenCode adapter failed: %w", err)
+				integrations, err = installCurrentHarnessIntegrations(ctx)
+				if err != nil {
+					return fmt.Errorf("mimir is current, but refreshing harness integrations failed: %w", err)
 				}
 			}
 		}
-		_, err := fmt.Fprintf(out, "mimir %s is up to date\n", current)
+		message := fmt.Sprintf("mimir %s is up to date", current)
+		if summary := integrationSummary(integrations); summary != "" {
+			message += "\n" + summary
+		}
+		_, err := fmt.Fprintln(out, message)
 		return err
 	}
 	if check {
@@ -130,12 +141,18 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if err := installBinary(target, binary); err != nil {
 		return fmt.Errorf("installing update: %w", err)
 	}
+	var integrations harnessIntegrationReport
 	if connectedErr == nil {
-		if err := runUpdatedInstaller(ctx, target); err != nil {
-			return fmt.Errorf("mimir updated, but refreshing the OpenCode adapter failed: %w", err)
+		integrations, err = runUpdatedInstaller(ctx, target)
+		if err != nil {
+			return fmt.Errorf("mimir updated, but refreshing harness integrations failed: %w", err)
 		}
 	}
-	_, err = fmt.Fprintf(out, "updated mimir %s → %s\n", current, latest)
+	message := fmt.Sprintf("updated mimir %s → %s", current, latest)
+	if summary := integrationSummary(integrations); summary != "" {
+		message += "\n" + summary
+	}
+	_, err = fmt.Fprintln(out, message)
 	return err
 }
 

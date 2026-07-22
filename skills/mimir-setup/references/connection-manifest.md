@@ -34,7 +34,7 @@ dynamic request metadata:
 - `x-mimir-request-kind`: `primary`, `title`, `summary`, or `compaction`; only
   `primary` can establish session intent
 
-The manifest is the generic integration contract. Mimir-owned adapters such as
-opencode install these values automatically. Without an exact session ID,
+The manifest is the generic integration contract. Mimir-owned integrations for
+opencode and Hermes install the required values automatically. Without an exact session ID,
 Mimir falls back to repository/harness grouping with a configurable inactivity
 gap that defaults to 15 minutes.

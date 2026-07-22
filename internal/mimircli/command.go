@@ -125,6 +125,15 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 			return fmt.Errorf("usage: mimir _install-opencode")
 		}
 		return installCurrentOpenCodeIntegration()
+	case "_install-integrations":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir _install-integrations")
+		}
+		report, err := installCurrentHarnessIntegrations(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(ioctx.Out).Encode(report)
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
 			return fmt.Errorf("usage: mimir outcome git <session>")

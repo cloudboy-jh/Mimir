@@ -93,8 +93,8 @@ go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
 mimir login
 ```
 
-`mimir setup`, `mimir login`, and `mimir update` install or refresh the
-Mimir-owned opencode adapter automatically (see below).
+`mimir setup`, `mimir login`, and `mimir update` install or refresh Mimir-owned
+opencode and Hermes integrations automatically (see below).
 
 For agent-assisted setup:
 
@@ -108,7 +108,7 @@ Then ask the agent to set up Mimir for the active harness.
 
 ```bash
 mimir setup [--quick] [--json]      # provision and deploy the memory plane
-mimir login [--json]                # register this machine; writes opencode integration
+mimir login [--json]                # register this machine; refresh harness integrations
 mimir deploy [--json]               # ship Worker and dashboard changes
 mimir access [--token <api-token>]  # create or fix the dashboard Access application
 mimir dashboard                     # open the dashboard
@@ -160,6 +160,22 @@ Restart opencode after installation. Sessions are captured whenever the active
 model uses the `openrouter` provider. Do not create a second Mimir provider or
 manually reproduce the adapter; run `mimir update` to repair drift and
 `mimir doctor` to validate the wiring.
+
+### Hermes desktop and TUI
+
+Mimir transparently redirects Hermes' built-in OpenRouter provider. When a
+Hermes installation is detected, setup, login, and update append a reversible
+managed block to its profile `.env` containing the Mimir OpenRouter-compatible
+base URL. Hermes keeps its existing OpenRouter credential; the Worker accepts
+its registered hash only on the Hermes compatibility routes and forwards the
+original credential upstream. No custom provider or duplicate model list is
+created.
+
+Restart Hermes after installation. Models selected from Hermes' built-in
+OpenRouter provider remain captured across model switches. Direct Nous,
+Anthropic OAuth, Codex, and other provider transports do not pass through the
+Worker and are not captured. Desktop and TUI share the same Hermes profile and
+are grouped as `hermes`. Run `mimir update` after switching Hermes profiles.
 
 ### Other harnesses
 
@@ -264,4 +280,5 @@ The token needs exactly two permission rows, account-scoped with no zones:
 - [`docs/DESIGN.md`](docs/DESIGN.md): dashboard design system
 - [`docs/next-steps.md`](docs/next-steps.md): incomplete implementation work
 - [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md): how capture works and how to wire a harness provider
+- [`docs/hermes-capture-setup.md`](docs/hermes-capture-setup.md): transparent Hermes desktop and TUI capture
 - [`AGENTS.md`](AGENTS.md): repository structure and development commands

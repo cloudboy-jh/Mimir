@@ -1,4 +1,4 @@
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
 import { canonicalOutcome, endSession, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
@@ -167,10 +167,32 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     return c.json(await readConfig(c.env.DB));
   });
 
+  app.post("/integrations/hermes/authorize", async (c) => {
+    const body = await c.req.json<{ token_hash?: unknown }>();
+    const tokenHash = typeof body.token_hash === "string" ? body.token_hash.trim().toLowerCase() : "";
+    if (!/^[a-f0-9]{64}$/.test(tokenHash)) return c.json({ error: "token_hash must be a SHA-256 hex digest" }, 400);
+    await c.env.DB.prepare("INSERT INTO hermes_credentials(token_hash, created_at, authorized_by) VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET authorized_by = excluded.authorized_by")
+      .bind(tokenHash, new Date().toISOString(), c.get("tokenLabel")).run();
+    return c.json({ authorized: true });
+  });
+
   app.post("/v1/chat/completions", (c) => proxy(c, "chat"));
   app.post("/v1/messages", (c) => proxy(c, "messages"));
-  app.get("/v1/models", async (c) => {
-    const response = await fetch("https://openrouter.ai/api/v1/models", { headers: buildUpstreamHeaders(c.req.raw.headers, c.env.OPENROUTER_API_KEY) });
-    return new Response(response.body, response);
-  });
+  app.get("/v1/models", (c) => proxyOpenRouterGet(c, "/models"));
+  app.get("/v1/credits", (c) => proxyOpenRouterGet(c, "/credits"));
+  app.get("/v1/key", (c) => proxyOpenRouterGet(c, "/key"));
+
+  // Hermes can override its built-in OpenRouter base URL but cannot attach
+  // dynamic per-provider metadata. The path-scoped compatibility surface
+  // keeps the normal OpenRouter model picker while identifying capture
+  // without a user-visible custom provider.
+  app.post("/v1/hermes/chat/completions", (c) => proxy(c, "chat", { harness: "hermes" }));
+  app.get("/v1/hermes/models", (c) => proxyOpenRouterGet(c, "/models"));
+  app.get("/v1/hermes/credits", (c) => proxyOpenRouterGet(c, "/credits"));
+  app.get("/v1/hermes/key", (c) => proxyOpenRouterGet(c, "/key"));
+}
+
+async function proxyOpenRouterGet(c: Context<AppEnv>, path: "/models" | "/credits" | "/key") {
+  const response = await fetch(`https://openrouter.ai/api/v1${path}`, { headers: buildUpstreamHeaders(c.req.raw.headers, c.get("upstreamOpenRouterKey") ?? c.env.OPENROUTER_API_KEY) });
+  return new Response(response.body, response);
 }

@@ -149,13 +149,22 @@ func TestBuildDashboard(t *testing.T) {
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HERMES_HOME", t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
+	t.Setenv("OPENROUTER_API_KEY", "hermes-openrouter-key")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/whoami" || r.Header.Get("Authorization") != "Bearer machine-token" {
+		if r.Header.Get("Authorization") != "Bearer machine-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		fmt.Fprint(w, `{"sessions":0,"log":0}`)
+		switch r.URL.Path {
+		case "/whoami":
+			fmt.Fprint(w, `{"sessions":0,"log":0}`)
+		case "/integrations/hermes/authorize":
+			fmt.Fprint(w, `{"authorized":true}`)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer server.Close()
 	var output bytes.Buffer
@@ -163,15 +172,19 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result struct {
-		State      string             `json:"state"`
-		URL        string             `json:"url"`
-		Connection connectionManifest `json:"connection"`
+		State        string                   `json:"state"`
+		URL          string                   `json:"url"`
+		Connection   connectionManifest       `json:"connection"`
+		Integrations harnessIntegrationReport `json:"integrations"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
 	if result.State != "connected" || result.URL != server.URL || result.Connection.OpenAIBaseURL != server.URL+"/v1" {
 		t.Fatalf("result %#v", result)
+	}
+	if result.Integrations.Hermes.State != "installed" || result.Integrations.Hermes.Scope != "openrouter" || !result.Integrations.Hermes.RestartRequired {
+		t.Fatalf("Hermes integration %#v", result.Integrations.Hermes)
 	}
 	pointer, err := loadPointer()
 	if err != nil {

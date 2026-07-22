@@ -100,8 +100,17 @@ these variables.
 | `POST` | `/v1/chat/completions` | OpenAI-style Chat Completions proxy. |
 | `POST` | `/v1/messages` | Anthropic-style Messages proxy. |
 | `GET` | `/v1/models` | OpenRouter model-list pass-through. |
+| `GET` | `/v1/key` | OpenRouter API-key metadata pass-through. |
+| `GET` | `/v1/credits` | OpenRouter account-credit pass-through. |
+| `POST` | `/v1/hermes/chat/completions` | Hermes-scoped Chat Completions proxy; capture is tagged `hermes`. |
+| `GET` | `/v1/hermes/{models,key,credits}` | Hermes OpenRouter compatibility pass-through. |
 
 These routes do not implement the complete OpenAI or Anthropic API surfaces.
+General compatibility routes require a Mimir machine token. `/v1/hermes/*`
+additionally accepts registered Hermes OpenRouter credentials, but those credentials cannot
+access session, log, dashboard, or configuration routes. Key and credit routes
+expose the deployment owner's OpenRouter account metadata, matching Mimir's
+personal single-owner trust model.
 
 ### 4.2 Canonical Machine API
 
@@ -118,6 +127,7 @@ These routes do not implement the complete OpenAI or Anthropic API surfaces.
 | `POST` | `/search` | Search session metadata and excerpts. |
 | `GET` | `/config` | Return defaults merged with persisted configuration. |
 | `PUT` | `/config` | Validate and persist a partial configuration update. |
+| `POST` | `/integrations/hermes/authorize` | Register a SHA-256 digest for a Hermes OpenRouter credential. |
 | `GET` | `/log/*` | Read one redacted R2 exchange object. |
 
 Session-list filters include repository, model, outcome, and date range.
@@ -359,6 +369,7 @@ The migration sequence defines:
 - `session_errors`: normalized error facets
 - `config`: persisted deployment configuration
 - `access_tokens`: machine-token hashes and lifecycle fields
+- `hermes_credentials`: OpenRouter credential hashes authorized only for the Hermes proxy surface
 
 D1 remains the searchable source of truth. R2 remains the complete redacted
 archive.
@@ -433,7 +444,7 @@ and dashboard copy emit canonical values.
 9. Stores the OpenRouter Worker secret.
 10. Deploys and verifies the Worker.
 11. Saves the local URL/token pointer.
-12. Installs or refreshes the versioned, Mimir-owned opencode adapter.
+12. Installs or refreshes Mimir-owned opencode and Hermes integrations.
 13. Returns a harness-neutral connection manifest.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
@@ -443,9 +454,23 @@ versioned plugin under `~/.config/opencode/plugins/` that tags OpenRouter
 traffic with session and request-kind metadata, secure provider configuration
 using the machine token file, an absolute `mimir` MCP command, and the generated
 session-ending command. Writes are idempotent and preserve unrelated
-configuration. `mimir update` refreshes the adapter and `mimir doctor` validates
-its version, provider route, credential reference, MCP command, and Worker
-connectivity without making a paid model request.
+configuration.
+
+When Hermes desktop or TUI is installed, the same lifecycle commands append a
+Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in
+OpenRouter provider to `/v1/hermes` while preserving Hermes' OpenRouter key. The CLI
+registers only the key's SHA-256 digest in D1. The Worker
+implements Hermes' required chat, model, key, and credit routes and derives the
+`hermes` capture tag from the route. No custom provider or model-list copy is
+created. Registered OpenRouter credentials are accepted only on `/v1/hermes/*`, so
+Hermes features that still call OpenRouter directly never leak a Mimir machine
+credential. Hermes requests are forwarded with the same OpenRouter credential
+they presented rather than charging the Worker's default key. Direct Hermes
+providers remain outside Mimir because their requests do not reach the Worker.
+
+`mimir update` refreshes both integrations and `mimir doctor` validates their
+routes, credentials, and Worker compatibility without making a paid model
+request.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
 changes after setup. It materializes the packaged Worker, builds the
@@ -455,7 +480,7 @@ a placeholder database ID; never deploy from a source checkout.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
 path and command, an absolute MCP command, and optional session metadata header names.
-For non-opencode harnesses, the setup skill or user applies that manifest using
+For harnesses without a bundled integration, the setup skill or user applies that manifest using
 the harness's own secure configuration system.
 
 Cloudflare Access protects the dashboard with one self-hosted application

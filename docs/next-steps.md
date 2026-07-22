@@ -44,6 +44,10 @@ specification rather than an expanding completion log.
 
 ## Parked Decisions
 
+- **Generalized harness provider router** — extend the Hermes OpenRouter proof
+  of concept only when native provider credentials and protocols can remain
+  scoped and non-exportable. Do not intercept TLS or turn machine tokens into
+  provider credentials.
 - **`mimir browse`** — keep parked unless the standard-library-only CLI
   constraint receives an explicit TUI dependency carve-out. The live dashboard
   and `mimir list` already provide session access.
