@@ -46,18 +46,13 @@ the Hermes plugin. Remaining build order:
   - Session objects only exist for sessions that reported events; history
     views keep reading D1 exactly as today. The live feed is additive.
 
-### Safe OpenCode integration
+### Installer portability
 
-- The installer now enrolls the exact global capture plugin and skills with
-  receipt-based ownership. Update only unchanged owned files, preserve
-  conflicts and local modifications, and continue rejecting symlink targets.
-- Keep general OpenCode JSON/JSONC, providers, credentials, commands, and MCP
-  entries outside Mimir ownership. Do not broaden managed paths without an
-  explicit opt-in and equivalent conflict guarantees.
-- `mimir uninstall` removes only unchanged receipt-owned files, preserves every
-  conflict or local edit, and leaves connection and deployment state intact.
-- Gate all metadata headers on the effective destination being the configured
-  Mimir Worker; provider IDs alone are insufficient.
+- Add native macOS and Windows CI smoke jobs for install, update, and uninstall.
+  Cross-compilation and Linux tests do not exercise platform filesystem aliases
+  or Windows executable replacement behavior.
+- Keep the smoke environment isolated from real harness configuration and
+  verify the receipt, installed binary, managed artifacts, and cleanup result.
 
 ## Operational Follow-ups
 
@@ -86,8 +81,8 @@ the Hermes plugin. Remaining build order:
   payload detail, and outcome updates.
 - Exact Cloudflare Access destinations at `/dashboard` and `/dashboard/*`;
   machine API routes remain outside Access.
-- Tagged GoReleaser delivery with checksummed cross-platform assets, exercised
-  successfully through `v0.1.5`.
+- Tagged GoReleaser delivery with checksummed cross-platform assets and GitHub
+  build provenance, exercised successfully through `v0.3.2`.
 - Windows setup-test portability and installed-version reporting.
 - Human-readable Worker logs for successful exchange capture.
 - Automatic refresh for live Sessions, Requests, and Overview dashboard data.
@@ -97,5 +92,7 @@ the Hermes plugin. Remaining build order:
 - Release CI now verifies migrations, the dashboard production build, the
   deployable Worker bundle, Go modules, and GoReleaser configuration. Release
   archives are self-contained and carry GitHub build provenance attestations.
-- `v0.2.0` publishes the post-`v0.1.5` version reporting, capture logging,
-  dashboard refresh, and explicit session-ending changes.
+- The managed installer lifecycle now owns only exact receipt-tracked binaries,
+  plugins, and skills; preserves conflicts, local edits, connection state, and
+  deployment state; and rejects unsafe symlink targets. The `v0.3.2` release
+  includes the first public `mimir install` command and macOS bootstrap support.
