@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -12,6 +13,7 @@ import (
 func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("HERMES_HOME", filepath.Join(home, ".hermes"))
 	t.Setenv("OPENROUTER_API_KEY", "test-openrouter-key")
 	t.Setenv(envMimirHome, t.TempDir())
@@ -43,6 +45,9 @@ func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 	if err := savePointer(Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := syncManagedArtifacts(true, "install"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := installCurrentHarnessIntegrations(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -53,9 +58,14 @@ func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 }
 
 func TestRunDoctorReportsMissingConnection(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
+	paths := isolatedInstallation(t, false)
 	report := runDoctor(context.Background())
-	if report.OK || len(report.Checks) != 1 || report.Checks[0].Name != "connection" {
+	if report.OK || len(report.Checks) < 2 || report.Checks[len(report.Checks)-1].Name != "connection" || report.Checks[0].Name == "connection" {
 		t.Fatalf("doctor report: %#v", report)
+	}
+	for _, path := range []string{paths.Receipt, paths.Log} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("doctor created %s", path)
+		}
 	}
 }

@@ -87,6 +87,67 @@ func TestInstallHermesIntegrationRefreshesManagedValues(t *testing.T) {
 	}
 }
 
+func TestRemoveHermesManagedEnvPreservesKeyAndUnrelatedContent(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".env")
+	original := []byte("OPENROUTER_API_KEY=keep-me\nOTHER=value\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installHermesIntegration(home, testConnectionManifest(home)); err != nil {
+		t.Fatal(err)
+	}
+	updated, status := removeHermesManagedEnv(mustReadFile(t, path))
+	if status != "removed" {
+		t.Fatalf("status = %q, want removed", status)
+	}
+	if !bytes.Equal(updated, original) {
+		t.Fatalf("cleaned .env = %q, want %q", updated, original)
+	}
+}
+
+func TestRemoveHermesManagedEnvPreservesMalformedModifiedAndAbsent(t *testing.T) {
+	for name, input := range map[string]string{
+		"modified":  hermesManagedStart + "\nOPENROUTER_BASE_URL=https://changed.example/hermes\n" + hermesManagedEnd + "\n",
+		"malformed": hermesManagedStart + "\nOPENROUTER_BASE_URL=\"https://mimir.test/hermes\"\n",
+		"duplicate": hermesManagedStart + "\nOPENROUTER_BASE_URL=\"https://mimir.test/hermes\"\n" + hermesManagedEnd + "\n" + hermesManagedStart + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			updated, status := removeHermesManagedEnv([]byte(input))
+			if status != "preserved" || string(updated) != input {
+				t.Fatalf("status=%q updated=%q", status, updated)
+			}
+		})
+	}
+	absent := []byte("OPENROUTER_API_KEY=keep\n")
+	updated, status := removeHermesManagedEnv(absent)
+	if status != "absent" || !bytes.Equal(updated, absent) {
+		t.Fatalf("absent status=%q updated=%q", status, updated)
+	}
+}
+
+func TestUninstallHermesIntegrationReportsRemovalAndAbsence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HERMES_HOME", home)
+	path := filepath.Join(home, ".env")
+	original := []byte("OPENROUTER_API_KEY=keep\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installHermesIntegration(home, testConnectionManifest(home)); err != nil {
+		t.Fatal(err)
+	}
+	if result := uninstallHermesIntegration(); result.State != "removed" || !result.RestartRequired {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := mustReadFile(t, path); !bytes.Equal(got, original) {
+		t.Fatalf(".env = %q, want %q", got, original)
+	}
+	if result := uninstallHermesIntegration(); result.State != "absent" {
+		t.Fatalf("second result = %#v", result)
+	}
+}
+
 func TestUpsertHermesEnvRejectsMalformedManagedBlock(t *testing.T) {
 	_, err := upsertHermesEnv([]byte(hermesManagedStart+"\nOPENROUTER_BASE_URL=x\n"), "https://mimir.test/v1/hermes")
 	if err == nil || !strings.Contains(err.Error(), "malformed") {
@@ -152,4 +213,13 @@ func TestDiscoverHermesHomeUsesExplicitEnvironment(t *testing.T) {
 	if err != nil || !found || got != home {
 		t.Fatalf("home=%q found=%v err=%v", got, found, err)
 	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

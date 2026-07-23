@@ -460,8 +460,10 @@ and dashboard copy emit canonical values.
 
 `mimir setup`:
 
-1. Locates and materializes the Worker package under `~/.mimir/worker` or
-   `$MIMIR_HOME/worker`.
+1. Materializes the Worker embedded in the running binary under
+   `~/.mimir/worker` or `$MIMIR_HOME/worker`. An explicit `--worker-dir` or a
+   verified current Mimir checkout is a development override; the Go module
+   cache is never searched for an implicit version.
 2. Installs Worker and dashboard dependencies.
 3. Builds dashboard assets.
 4. Authenticates Wrangler.
@@ -472,13 +474,18 @@ and dashboard copy emit canonical values.
 9. Stores the OpenRouter Worker secret.
 10. Deploys and verifies the Worker.
 11. Saves the local URL/token pointer.
-12. Installs or refreshes the Mimir-owned Hermes integration when detected.
+12. Refreshes exact receipt-owned OpenCode and, when detected, Hermes plugin
+    and skill files without rewriting general harness config. Without an
+    existing receipt containing managed artifacts, setup does not create an
+    installation identity, install log, or global harness files.
 13. Returns a harness-neutral connection manifest.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
 discovering the deployment, registering a new machine token, and returning the
-same connection manifest. Setup, login, update, doctor, and tests do not modify
-OpenCode configuration. OpenCode integration uses the harness-neutral
+same connection manifest. Managed installation and update may touch exact
+opted-in plugin and skill files recorded in `install-receipt.json`; they do not
+modify general OpenCode JSON/JSONC, providers, credentials, commands, or MCP
+configuration. OpenCode integration otherwise uses the harness-neutral
 connection manifest and OpenCode's supported configuration flow.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
@@ -493,8 +500,20 @@ credential. Hermes requests are forwarded with the same OpenRouter credential
 they presented rather than charging the Worker's default key. Direct Hermes
 providers remain outside Mimir because their requests do not reach the Worker.
 
-`mimir update` refreshes the Hermes integration and `mimir doctor` validates its
-route, credential, and Worker compatibility without making a paid model request.
+Explicit `mimir update` enrolls safe absent or byte-identical bundled harness
+files and refreshes the Hermes integration. `mimir doctor` validates its route,
+credential, and Worker compatibility without making a paid model request.
+Updates preserve unowned conflicts and receipt-owned files changed by the user.
+Operations are appended to `install-log.jsonl`. `mimir uninstall` removes only
+regular, non-symlink receipt-owned plugin and skill files whose current hash
+matches the receipt. It retains and reports every conflict, updates the receipt
+atomically, and removes the binary only when its receipt method, path, and hash
+show that Mimir installed it. The local connection, token, materialized Worker,
+install log, and Cloudflare deployment remain in place. On Windows, uninstall
+renames the verified running binary to an `.uninstall` path and launches a
+detached standard-user cleanup process that deletes that exact path after the
+uninstall process exits. A launch failure preserves the renamed binary and its
+receipt ownership and makes the uninstall result partial.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
 changes after setup. It materializes the packaged Worker, builds the

@@ -97,8 +97,8 @@ func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
 	executablePath = func() (string, error) { return target, nil }
 	t.Cleanup(func() { executablePath = oldExec })
 	oldInstaller := runUpdatedInstaller
-	runUpdatedInstaller = func(context.Context, string) (harnessIntegrationReport, error) {
-		return harnessIntegrationReport{}, nil
+	runUpdatedInstaller = func(context.Context, string) (lifecycleIntegrationReport, error) {
+		return lifecycleIntegrationReport{OK: true, Artifacts: managedArtifactReport{}}, nil
 	}
 	t.Cleanup(func() { runUpdatedInstaller = oldInstaller })
 
@@ -151,7 +151,7 @@ func TestCmdUpdateRejectsChecksumMismatch(t *testing.T) {
 }
 
 func TestCmdUpdateCheckAndCurrent(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
+	isolatedInstallation(t, false)
 	server := stubReleaseServer(t, "1.0.0", []byte("binary"), false)
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
@@ -176,6 +176,102 @@ func TestCmdUpdateCheckAndCurrent(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "1.0.0 available (current 0.9.0)") {
 		t.Fatalf("check output %q", out.String())
+	}
+}
+
+func TestCmdUpdateCheckJSONIsReadOnlyAndReportsArtifactDrift(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	server := stubReleaseServer(t, "1.0.0", []byte("binary"), false)
+	oldBase := githubAPIBase
+	githubAPIBase = server.URL
+	t.Cleanup(func() { githubAPIBase = oldBase })
+	oldVersion := version
+	version = "1.0.0"
+	t.Cleanup(func() { version = oldVersion })
+
+	var out strings.Builder
+	if err := cmdUpdate(context.Background(), []string{"--check", "--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report updateReport
+	if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Binary.Status != "current" || artifactIssueCount(report.Artifacts) == 0 {
+		t.Fatalf("update report %#v", report)
+	}
+	for _, path := range []string{paths.Receipt, paths.Log} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("update check created %s", path)
+		}
+	}
+}
+
+func TestCmdUpdateCurrentRefreshesManagedArtifacts(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if _, err := syncManagedArtifacts(true, "install"); err != nil {
+		t.Fatal(err)
+	}
+	server := stubReleaseServer(t, "1.0.0", []byte("binary"), false)
+	oldBase := githubAPIBase
+	githubAPIBase = server.URL
+	t.Cleanup(func() { githubAPIBase = oldBase })
+	oldVersion := version
+	version = "1.0.0"
+	t.Cleanup(func() { version = oldVersion })
+
+	var out strings.Builder
+	if err := cmdUpdate(context.Background(), []string{"--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if lines := jsonLines(t, paths.Log); lines != 2 {
+		t.Fatalf("install log lines = %d, want 2", lines)
+	}
+}
+
+func TestCmdUpdateCurrentEnrollsNewGlobalHarnessArtifact(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if _, err := syncManagedArtifacts(true, "install"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(paths.OpenCodeHome, "skills", "mimir-use", "SKILL.md")
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(receipt.Artifacts, target)
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	server := stubReleaseServer(t, "1.0.0", []byte("binary"), false)
+	oldBase := githubAPIBase
+	githubAPIBase = server.URL
+	t.Cleanup(func() { githubAPIBase = oldBase })
+	oldVersion := version
+	version = "1.0.0"
+	t.Cleanup(func() { version = oldVersion })
+	var out strings.Builder
+	if err := cmdUpdate(context.Background(), []string{"--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("explicit update did not install newly detected artifact: %v", err)
+	}
+	if receipt.Artifacts[target].Hash == "" {
+		t.Fatal("explicit update did not enroll newly detected artifact")
+	}
+}
+
+func TestSemverComparePreventsDowngrade(t *testing.T) {
+	if got := semverCompare("9.0.0-dev", "1.2.3"); got <= 0 {
+		t.Fatalf("comparison = %d, want newer local build", got)
 	}
 }
 

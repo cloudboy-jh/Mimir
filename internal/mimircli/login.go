@@ -131,11 +131,12 @@ func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity c
 	if err := saveCloudflareIdentity(identity); err != nil {
 		return err
 	}
-	integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
-	if integrationErr != nil {
-		fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
+	lifecycle := refreshConnectedLifecycleIntegrations(ctx, "login")
+	if !lifecycle.OK {
+		fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
 	}
-	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity, "integrations": integrations}, url)
+	integrations := lifecycle.Integrations
+	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity, "artifacts": lifecycle.Artifacts, "integrations": integrations}, url)
 	human := loginSummary(identity, url, terminalColor(ioctx.Out))
 	if summary := integrationSummary(integrations); summary != "" {
 		human += "\n\n" + summary

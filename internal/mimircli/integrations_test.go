@@ -27,7 +27,7 @@ func TestIntegrationSummarySkipsAbsentHermes(t *testing.T) {
 func TestHarnessRefreshNeverInstallsOpenCode(t *testing.T) {
 	t.Setenv("HERMES_HOME", t.TempDir())
 	report, _ := installCurrentHarnessIntegrations(context.Background())
-	if report.OpenCode.State != "skipped" || !strings.Contains(report.OpenCode.Detail, "disabled") {
+	if report.OpenCode.State != "skipped" || !strings.Contains(report.OpenCode.Detail, "not rewritten") {
 		t.Fatalf("OpenCode state %#v", report.OpenCode)
 	}
 }

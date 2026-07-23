@@ -25,9 +25,14 @@ completed turn (via Hermes' `post_llm_call` hook) plus session lifecycle
 (`on_session_start`, `on_session_end`, `on_session_reset`,
 `on_session_finalize`).
 
-Install: copy [`plugins/hermes/`](../plugins/hermes/) into the plugins
-directory under the Hermes home (`~/.hermes/plugins/` or
-`%LOCALAPPDATA%/hermes/plugins` on Windows). Uninstall: delete the directory.
+The canonical installer embeds the plugin and enrolls its exact files under
+the detected Hermes home (`~/.hermes/plugins/mimir/` or the active Windows
+Hermes home). `mimir update` refreshes only unchanged, receipt-owned files;
+different or locally modified files are preserved and symlinked targets are
+rejected. Manual copying from [`plugins/hermes/`](../plugins/hermes/) is a
+recovery path only. `mimir uninstall` removes only unchanged receipt-owned
+plugin and skill files, preserves conflicts, and leaves the local Mimir
+connection and Cloudflare deployment intact.
 The plugin carries no credentials; it resolves the Worker URL and machine
 token from `MIMIR_URL`/`MIMIR_TOKEN`, `$MIMIR_HOME`, or `~/.mimir/` exactly
 like the CLI. Delivery is best-effort and never blocks Hermes; the

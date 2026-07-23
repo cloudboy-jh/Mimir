@@ -140,6 +140,84 @@ func installHermesIntegration(home string, manifest connectionManifest) error {
 	return writeHermesEnv(path, updated)
 }
 
+func uninstallHermesIntegration() harnessIntegrationState {
+	home, found, err := discoverHermesHome()
+	if err != nil {
+		return harnessIntegrationState{State: "preserved", Provider: "openrouter", Scope: "openrouter", Detail: err.Error()}
+	}
+	if !found {
+		return harnessIntegrationState{State: "skipped", Detail: "Hermes is not installed"}
+	}
+	path := filepath.Join(home, ".env")
+	if info, err := os.Lstat(path); os.IsNotExist(err) {
+		return harnessIntegrationState{State: "absent", Provider: "openrouter", Scope: "openrouter", Detail: "Mimir managed OpenRouter route is absent"}
+	} else if err != nil {
+		return harnessIntegrationState{State: "preserved", Provider: "openrouter", Scope: "openrouter", Detail: err.Error()}
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return harnessIntegrationState{State: "preserved", Provider: "openrouter", Scope: "openrouter", Detail: "Hermes .env is symlinked or non-regular"}
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return harnessIntegrationState{State: "preserved", Provider: "openrouter", Scope: "openrouter", Detail: err.Error()}
+	}
+	updated, status := removeHermesManagedEnv(current)
+	if status != "removed" {
+		detail := "Mimir managed OpenRouter route is absent"
+		if status == "preserved" {
+			detail = "Hermes .env managed block is malformed or modified; preserving it"
+		}
+		return harnessIntegrationState{State: status, Provider: "openrouter", Scope: "openrouter", Detail: detail}
+	}
+	if err := writeHermesEnv(path, updated); err != nil {
+		return harnessIntegrationState{State: "preserved", Provider: "openrouter", Scope: "openrouter", Detail: err.Error()}
+	}
+	return harnessIntegrationState{State: "removed", Provider: "openrouter", Scope: "openrouter", RestartRequired: true, Detail: "Mimir managed OpenRouter route removed; restart Hermes"}
+}
+
+func removeHermesManagedEnv(current []byte) ([]byte, string) {
+	newline := "\n"
+	if strings.Contains(string(current), "\r\n") {
+		newline = "\r\n"
+	}
+	lines := strings.Split(strings.ReplaceAll(string(current), "\r\n", "\n"), "\n")
+	start, end := -1, -1
+	for i, line := range lines {
+		switch line {
+		case hermesManagedStart:
+			if start != -1 {
+				return current, "preserved"
+			}
+			start = i
+		case hermesManagedEnd:
+			if end != -1 {
+				return current, "preserved"
+			}
+			end = i
+		}
+	}
+	if start == -1 && end == -1 {
+		return current, "absent"
+	}
+	if start == -1 || end != start+2 || end >= len(lines) {
+		return current, "preserved"
+	}
+	const prefix = "OPENROUTER_BASE_URL="
+	assignment := lines[start+1]
+	if !strings.HasPrefix(assignment, prefix) {
+		return current, "preserved"
+	}
+	value, err := strconv.Unquote(strings.TrimPrefix(assignment, prefix))
+	if err != nil || assignment != prefix+strconv.Quote(value) || value != strings.TrimRight(value, "/") || !strings.HasSuffix(value, "/v1/hermes") {
+		return current, "preserved"
+	}
+	removeStart := start
+	if removeStart > 0 && lines[removeStart-1] == "" {
+		removeStart--
+	}
+	lines = append(lines[:removeStart], lines[end+1:]...)
+	return []byte(strings.ReplaceAll(strings.Join(lines, "\n"), "\n", newline)), "removed"
+}
+
 func upsertHermesEnv(current []byte, baseURL string) ([]byte, error) {
 	newline := "\n"
 	if strings.Contains(string(current), "\r\n") {

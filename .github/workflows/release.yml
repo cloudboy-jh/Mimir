@@ -32,11 +32,14 @@ jobs:
         working-directory: worker
       - run: npm test
         working-directory: worker
+      - run: bun test plugins/opencode/
+      - run: python -m unittest discover -s plugins/hermes -p "test_*.py"
       - run: npm run test:migrations
         working-directory: worker
       - run: npm run build:dashboard && npx wrangler deploy --dry-run
         working-directory: worker
       - run: go test ./...
+      - run: go build -o /tmp/mimir ./cmd/mimir
       - run: go mod verify
       - uses: goreleaser/goreleaser-action@v7
         with:

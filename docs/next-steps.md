@@ -48,14 +48,14 @@ the Hermes plugin. Remaining build order:
 
 ### Safe OpenCode integration
 
-- Keep setup, login, update, doctor, and tests read-only with respect to
-  OpenCode configuration.
-- The capture plugin installs as one file through OpenCode's own plugin
-  mechanism with delete-to-uninstall; no wholesale config rewriting.
-- Any additional opt-in integration command must discover the effective
-  OpenCode config, preserve JSONC and precedence, prove ownership of
-  generated files, back up prior values, detect concurrent edits, and restore
-  safely on uninstall.
+- The installer now enrolls the exact global capture plugin and skills with
+  receipt-based ownership. Update only unchanged owned files, preserve
+  conflicts and local modifications, and continue rejecting symlink targets.
+- Keep general OpenCode JSON/JSONC, providers, credentials, commands, and MCP
+  entries outside Mimir ownership. Do not broaden managed paths without an
+  explicit opt-in and equivalent conflict guarantees.
+- `mimir uninstall` removes only unchanged receipt-owned files, preserves every
+  conflict or local edit, and leaves connection and deployment state intact.
 - Gate all metadata headers on the effective destination being the configured
   Mimir Worker; provider IDs alone are insufficient.
 

@@ -57,6 +57,20 @@ func runDoctor(ctx context.Context) doctorReport {
 			report.OK = false
 		}
 	}
+	artifacts, artifactErr := checkManagedArtifacts()
+	if artifactErr != nil {
+		add("managed-artifacts", "failed", artifactErr.Error(), "mimir install or mimir update")
+	} else {
+		for _, artifact := range artifacts.Artifacts {
+			status := "ok"
+			repair := ""
+			if artifact.Status != artifactCurrent {
+				status = "failed"
+				repair = "mimir install or mimir update"
+			}
+			add("managed-artifact "+artifact.Source, status, string(artifact.Status)+" · "+artifact.Path, repair)
+		}
+	}
 	pointer, err := loadPointer()
 	if err != nil {
 		add("connection", "failed", err.Error(), "mimir login")
@@ -72,7 +86,7 @@ func runDoctor(ctx context.Context) doctorReport {
 		add("connection.manifest", "failed", err.Error(), "mimir login")
 		return report
 	}
-	add("opencode", "skipped", "automatic OpenCode configuration is disabled", "")
+	add("opencode", "skipped", "managed artifacts do not rewrite OpenCode configuration", "")
 	checkHermesIntegration(ctx, add, pointer, manifest)
 	return report
 }

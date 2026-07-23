@@ -8,18 +8,24 @@ OpenRouter, the Zen subscription, Claude API keys, and Codex/ChatGPT OAuth.
 
 ## Install
 
-Copy the plugin file into OpenCode's plugin directory:
+The canonical installer embeds and enrolls the plugin globally:
 
 ```bash
-# Global (all projects)
-cp plugins/opencode/mimir.ts ~/.config/opencode/plugins/
-
-# Or project-only
-cp plugins/opencode/mimir.ts .opencode/plugins/
+go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
 ```
 
-Uninstall is deleting the file. The plugin carries no credentials and no
-configuration: it resolves the Worker URL and machine token from
+The managed target is the exact file
+`~/.config/opencode/plugins/mimir.ts`. Mimir records ownership in
+`~/.mimir/install-receipt.json` and operations in
+`~/.mimir/install-log.jsonl`. `$MIMIR_HOME` replaces `~/.mimir` when set.
+Existing different content is a conflict and is preserved; a receipt-owned
+file modified after installation is also preserved. Symlinked targets are
+rejected.
+
+Manual copying from [`plugins/opencode/mimir.ts`](../plugins/opencode/mimir.ts)
+is recovery-only when the installer cannot be used. The plugin carries no
+credentials and no configuration: it resolves the Worker URL and machine
+token from
 `MIMIR_URL`/`MIMIR_TOKEN`, then `$MIMIR_HOME`, then `~/.mimir/config` and
 `~/.mimir/token` as written by `mimir setup` or `mimir login`.
 
@@ -42,24 +48,24 @@ capture never interrupts the harness.
 
 ## Safety Boundary
 
-Mimir does not automatically modify OpenCode configuration. OpenCode merges
+Mimir does not modify general OpenCode configuration. OpenCode merges
 JSON, JSONC, project, environment, and managed configuration, and rewriting
 one guessed file can override user-owned provider, credential, MCP, plugin,
-and command settings. The plugin is installed by the user copying one file
-through OpenCode's supported plugin mechanism; the following commands never
-write OpenCode files:
-
-```bash
-mimir setup
-mimir login
-mimir update
-mimir doctor
-```
+and command settings. Installation and an opted-in `mimir update` may create or
+refresh only the exact plugin and skill files recorded in the Mimir receipt;
+they never rewrite OpenCode JSON/JSONC, provider, credential, command, or MCP
+configuration. `mimir doctor` checks state without taking ownership of
+conflicting files.
 
 Existing installations created by Mimir versions through v0.3.0 are not
 automatically removed or restored because Mimir did not retain the prior user
 values. Review any Mimir-created OpenCode files and provider/MCP entries
 before keeping them.
+
+`mimir uninstall` removes unchanged receipt-owned plugin and skill files while
+preserving modified, missing, unowned, non-regular, and symlinked paths. It does
+not remove general OpenCode directories or configuration. The local Mimir
+connection and Cloudflare deployment remain available for reconnection.
 
 `session_status` remains the authoritative proof that a real session was
 saved.

@@ -23,9 +23,11 @@ x-mimir-request-kind: <primary|title|summary|compaction>
 Exact session identity is optional. Harnesses without dynamic request headers use Mimir's inactivity fallback automatically.
 Auxiliary model requests are infrastructure behavior; agents must not compensate for them through prompts, MCP calls, or guessed session IDs.
 
-Hermes desktop and TUI use Mimir's installed transparent OpenRouter route. Do
-not create a custom provider. OpenRouter models are captured; direct Nous,
-Anthropic OAuth, Codex, and other provider transports bypass Mimir.
+Hermes desktop and TUI use Mimir's installed transparent OpenRouter route and
+bundled Hermes plugin. Do not create a custom provider. The proxy captures
+OpenRouter turns; the plugin runs liveness-only on that route to avoid
+duplicates, and reports turns for direct Nous, Anthropic OAuth, Codex, and
+other provider transports that bypass the proxy.
 
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that an exchange was saved. Never report persistence from transport activity alone.
 

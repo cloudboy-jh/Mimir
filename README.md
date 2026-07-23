@@ -64,34 +64,64 @@ You need a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
 with npm, and Bun.
 
 ```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
+go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
 mimir setup        # first machine: provision and deploy
-mimir login        # any other machine: register and connect
+# On another machine with an existing deployment:
+mimir login
 ```
 
 Setup provisions D1 and R2, deploys the Worker, stores the OpenRouter key as
 a Worker secret, and registers the machine. Secrets are entered through local
-masked prompts. For agent-assisted setup: `npx skills add cloudboy-jh/mimir`.
+masked prompts. The installed binary embeds the Worker, dashboard sources,
+OpenCode and Hermes plugins, and Mimir skills, so setup and deploy do not select
+another version from the Go module cache or require a source checkout. Node.js,
+npm, and Bun are still used locally to build the embedded Worker package.
+
+Mimir records the exact harness files it owns in
+`~/.mimir/install-receipt.json` and appends operations to
+`~/.mimir/install-log.jsonl` (under `$MIMIR_HOME` when set). It creates absent
+opted-in files, adopts byte-identical files, updates only receipt-owned and
+unmodified files, preserves modified or conflicting files, and rejects
+symlinked targets. It never manages general OpenCode configuration.
+
+`mimir update --check` checks release status. Explicit `mimir install` and
+`mimir update` enroll safe absent or byte-identical global harness files and
+refresh unchanged receipt-owned files. They also remove retired bundle files
+only when the receipt still owns their exact bytes; changed, missing, or unsafe
+retired paths remain recorded and preserved. Setup and login only refresh an
+existing managed installation. `mimir doctor` reports connection and integration
+problems. `mimir uninstall` removes only
+unchanged receipt-owned plugin and skill files and the verified installer-owned
+binary. Modified, missing, unowned, non-regular, and symlinked paths are
+preserved and reported. The exact Mimir-managed Hermes `.env` route block is
+removed without touching `OPENROUTER_API_KEY`; malformed or modified blocks are
+preserved. On Windows, a running verified binary is renamed and a detached
+standard-user cleanup process deletes it after the uninstall process exits;
+the uninstall report marks that removal as deferred. Use `--keep-binary` to
+retain the CLI.
 
 ## Connect An Agent
 
 ### opencode
 
-Copy [`plugins/opencode/mimir.ts`](plugins/opencode/mimir.ts) into
-`~/.config/opencode/plugins/` (global) or `.opencode/plugins/` (project).
-Covers every OpenCode provider — OpenRouter, Zen subscription, Claude key,
-Codex/ChatGPT OAuth. Uninstall is deleting the file.
+The installer enrolls the bundled plugin as the exact global file
+`~/.config/opencode/plugins/mimir.ts`; lifecycle updates may refresh that
+receipt-owned file but never rewrite OpenCode JSON/JSONC, providers,
+credentials, commands, or MCP settings. It covers every OpenCode provider:
+OpenRouter, Zen subscription, Claude key, and Codex/ChatGPT OAuth. Manual copy
+is a recovery path only.
 [Details](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
-Two cooperating paths, both installed automatically or by file copy:
+Two cooperating paths are installed from the embedded bundle when Hermes is
+detected:
 
 - `mimir setup`/`login`/`update` redirect Hermes' built-in OpenRouter
-  provider through the Worker — richest capture, no config changes of yours.
-- Copy [`plugins/hermes/`](plugins/hermes/) into the plugins directory under
-  your Hermes home to capture Nous portal and direct providers from inside
-  the harness.
+  provider through the Worker using a bounded managed `.env` block while
+  preserving existing assignments.
+- The Hermes plugin captures Nous portal and direct providers from inside the
+  harness. Manual copying is a recovery path only.
 
 [Details](docs/hermes-capture-setup.md).
 
@@ -119,7 +149,16 @@ mimir session end <id>              # end a session, optionally with outcome
 mimir search <query>                # search session memory
 mimir doctor                        # validate connection and harness wiring
 mimir update [--check]              # update the CLI
+mimir uninstall [--keep-binary]     # remove verified managed files
+mimir --version                     # binary build only; reads no install state
+mimir version [--json]              # build and managed-install summary
 ```
+
+Installation itself is
+`go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install`. Uninstall keeps
+`~/.mimir/config`, the machine token, materialized Worker files,
+`install-log.jsonl`, and the Cloudflare deployment. It does not disconnect or
+delete the remote memory plane.
 
 More (`mimir help advanced`): `connection`, `whoami`, `session <id>`,
 `session outcome`, `reconcile`, `config`, `index`, `recall`, `serve` (MCP).

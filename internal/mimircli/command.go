@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 )
@@ -31,9 +33,14 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return usage(ioctx.Out)
 	}
 	switch args[0] {
-	case "--version", "version":
+	case "--version":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir --version")
+		}
 		_, err := fmt.Fprintln(ioctx.Out, versionString())
 		return err
+	case "version":
+		return cmdVersion(args[1:], ioctx.Out)
 	case "-h", "--help":
 		return usage(ioctx.Out)
 	case "help":
@@ -112,6 +119,10 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return cmdAccess(ctx, args[1:], ioctx)
 	case "login":
 		return login(ctx, args[1:], ioctx)
+	case "install":
+		return cmdInstall(args[1:], ioctx.Out)
+	case "uninstall":
+		return cmdUninstall(args[1:], ioctx.Out)
 	case "dashboard":
 		return dashboard(ctx, ioctx)
 	case "connection":
@@ -120,14 +131,11 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return cmdUpdate(ctx, args[1:], ioctx.Out)
 	case "doctor":
 		return doctor(ctx, args[1:], ioctx.Out)
-	case "_install-integrations":
+	case "_post-update", "_install-integrations":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: mimir _install-integrations")
+			return fmt.Errorf("usage: mimir _post-update")
 		}
-		report, err := installCurrentHarnessIntegrations(ctx)
-		if err != nil {
-			return err
-		}
+		report := refreshLifecycleIntegrations(ctx, "update")
 		return json.NewEncoder(ioctx.Out).Encode(report)
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
@@ -141,6 +149,395 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+type versionReport struct {
+	Version        string                        `json:"version"`
+	Commit         string                        `json:"commit"`
+	Date           string                        `json:"date"`
+	BundleVersion  string                        `json:"bundle_version,omitempty"`
+	ReceiptPath    string                        `json:"receipt_path"`
+	ArtifactCounts map[managedArtifactStatus]int `json:"artifact_counts"`
+}
+
+type installReport struct {
+	Binary    installBinaryReport   `json:"binary"`
+	Artifacts managedArtifactReport `json:"artifacts"`
+}
+
+type installBinaryReport struct {
+	Path      string `json:"path"`
+	Status    string `json:"status"`
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"build_date"`
+	Hash      string `json:"sha256"`
+	Source    string `json:"source"`
+	Method    string `json:"method"`
+}
+
+func cmdVersion(args []string, out io.Writer) error {
+	jsonOutput := false
+	if len(args) == 1 && args[0] == "--json" {
+		jsonOutput = true
+	} else if len(args) != 0 {
+		return fmt.Errorf("usage: mimir version [--json]")
+	}
+	artifacts, err := checkManagedArtifacts()
+	if err != nil {
+		return err
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return err
+	}
+	report := versionReport{
+		Version: version, Commit: commit, Date: date,
+		BundleVersion: receipt.BundleVersion, ReceiptPath: artifacts.ReceiptPath,
+		ArtifactCounts: managedArtifactCounts(artifacts),
+	}
+	if jsonOutput {
+		return json.NewEncoder(out).Encode(report)
+	}
+	if _, err := fmt.Fprintln(out, versionString()); err != nil {
+		return err
+	}
+	if receipt.BundleVersion != "" {
+		_, err = fmt.Fprintf(out, "Bundle %s · %s\n", receipt.BundleVersion, artifactSummary(artifacts))
+	}
+	return err
+}
+
+func cmdInstall(args []string, out io.Writer) error {
+	jsonOutput, binDir := false, ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--bin-dir" && i+1 < len(args):
+			if strings.HasPrefix(args[i+1], "-") {
+				return fmt.Errorf("--bin-dir requires a value")
+			}
+			binDir = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--bin-dir="):
+			binDir = strings.TrimPrefix(args[i], "--bin-dir=")
+		default:
+			return fmt.Errorf("usage: mimir install [--bin-dir <dir>] [--json]")
+		}
+	}
+	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
+		return fmt.Errorf("--bin-dir requires a value")
+	}
+	binary, err := bootstrapCurrentExecutable(binDir)
+	if err != nil {
+		return err
+	}
+	artifacts, err := syncInstallArtifacts(installReceiptUpdate{
+		Source: binary.Source,
+		Method: binary.Method,
+		CLI: installReceiptCLI{
+			Path: binary.Path, Version: binary.Version, Commit: binary.Commit,
+			BuildDate: binary.BuildDate, Hash: binary.Hash,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	report := installReport{Binary: binary, Artifacts: artifacts}
+	if jsonOutput {
+		return json.NewEncoder(out).Encode(report)
+	}
+	if _, err := fmt.Fprintf(out, "mimir %s  %s  %s\n", binary.Version, binary.Status, binary.Path); err != nil {
+		return err
+	}
+	for _, artifact := range artifacts.Artifacts {
+		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(out, "%s\nInstall log: %s\n", artifacts.Summary, artifacts.LogPath)
+	return err
+}
+
+func containsBinDirArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "--bin-dir" || strings.HasPrefix(arg, "--bin-dir=") {
+			return true
+		}
+	}
+	return false
+}
+
+func cmdUninstall(args []string, out io.Writer) error {
+	keepBinary, jsonOutput := false, false
+	for _, arg := range args {
+		switch arg {
+		case "--keep-binary":
+			keepBinary = true
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("usage: mimir uninstall [--keep-binary] [--json]")
+		}
+	}
+	report, err := uninstallManagedInstallation(keepBinary)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(out).Encode(report)
+	}
+	if _, err := fmt.Fprintf(out, "binary  %s  %s\n", report.Binary.Status, report.Binary.Path); err != nil {
+		return err
+	}
+	for _, artifact := range report.Artifacts {
+		if artifact.Status == artifactUnowned {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(out, "hermes  %s  %s\n", report.Hermes.State, report.Hermes.Detail); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s\nConnection, local Worker files, Cloudflare deployment, and install log preserved.\n", report.Summary)
+	return err
+}
+
+func bootstrapCurrentExecutable(explicitDir string) (installBinaryReport, error) {
+	sourcePath, err := executablePath()
+	if err != nil {
+		return installBinaryReport{}, fmt.Errorf("locating current executable: %w", err)
+	}
+	sourcePath, err = filepath.Abs(sourcePath)
+	if err != nil {
+		return installBinaryReport{}, err
+	}
+	sourceData, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return installBinaryReport{}, fmt.Errorf("reading current executable: %w", err)
+	}
+	temporary := temporaryExecutable(sourcePath)
+	target := sourcePath
+	method, status := "existing", "current"
+	if explicitDir != "" || temporary {
+		dir, err := resolveInstallDir(explicitDir)
+		if err != nil {
+			return installBinaryReport{}, err
+		}
+		name := "mimir"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		target = filepath.Join(dir, name)
+		if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+			return installBinaryReport{}, err
+		} else if symlink {
+			return installBinaryReport{}, fmt.Errorf("refusing to overwrite symlinked executable path %s", target)
+		}
+		if managedByPackageManager(target) {
+			return installBinaryReport{}, fmt.Errorf("refusing to overwrite package-manager-owned path %s", target)
+		}
+		if resolved, err := filepath.EvalSymlinks(target); err == nil && managedByPackageManager(resolved) {
+			return installBinaryReport{}, fmt.Errorf("refusing to overwrite package-manager-owned path %s", resolved)
+		}
+		if !sameFilePath(sourcePath, target) {
+			sourceHash := hashBytes(sourceData)
+			info, statErr := os.Lstat(target)
+			switch {
+			case statErr == nil:
+				if !info.Mode().IsRegular() {
+					return installBinaryReport{}, fmt.Errorf("refusing to overwrite non-regular executable path %s", target)
+				}
+				current, err := os.ReadFile(target)
+				if err != nil {
+					return installBinaryReport{}, err
+				}
+				currentHash := hashBytes(current)
+				if currentHash == sourceHash {
+					method, status = "existing", "current"
+					break
+				}
+				receipt, err := loadInstallReceipt()
+				if err != nil {
+					return installBinaryReport{}, err
+				}
+				if !sameFilePath(receipt.CLI.Path, target) || receipt.CLI.Hash == "" || receipt.CLI.Hash != currentHash {
+					return installBinaryReport{}, fmt.Errorf("refusing to overwrite unowned executable %s", target)
+				}
+				if err := installExecutableCopy(target, sourceData, currentHash); err != nil {
+					return installBinaryReport{}, fmt.Errorf("installing CLI binary: %w", err)
+				}
+				method, status = "bootstrap-copy", "updated"
+			case os.IsNotExist(statErr):
+				if err := installExecutableCopy(target, sourceData, ""); err != nil {
+					return installBinaryReport{}, fmt.Errorf("installing CLI binary: %w", err)
+				}
+				method, status = "bootstrap-copy", "installed"
+			default:
+				return installBinaryReport{}, statErr
+			}
+		}
+	}
+	source := "executable"
+	if temporary {
+		source = "go-run"
+	}
+	targetHash := hashBytes(sourceData)
+	if status == "current" {
+		receipt, err := loadInstallReceipt()
+		if err != nil {
+			return installBinaryReport{}, err
+		}
+		if sameFilePath(receipt.CLI.Path, target) && receipt.CLI.Hash == targetHash {
+			if receipt.Source != "" {
+				source = receipt.Source
+			}
+			if receipt.Method != "" {
+				method = receipt.Method
+			}
+		}
+	}
+	return installBinaryReport{
+		Path: target, Status: status, Version: version, Commit: commit,
+		BuildDate: date, Hash: targetHash, Source: source, Method: method,
+	}, nil
+}
+
+func resolveInstallDir(explicit string) (string, error) {
+	dir := strings.TrimSpace(explicit)
+	if dir == "" {
+		for _, key := range []string{"MIMIR_INSTALL_DIR", "GOBIN"} {
+			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+				dir = value
+				break
+			}
+		}
+	}
+	if dir == "" {
+		if paths := filepath.SplitList(os.Getenv("GOPATH")); len(paths) > 0 && strings.TrimSpace(paths[0]) != "" {
+			dir = filepath.Join(paths[0], "bin")
+		}
+	}
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolving install directory: %w", err)
+		}
+		dir = filepath.Join(home, "go", "bin")
+	}
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving install directory: %w", err)
+	}
+	return dir, nil
+}
+
+func temporaryExecutable(path string) bool {
+	temp, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return false
+	}
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(temp, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func sameFilePath(left, right string) bool {
+	left, _ = filepath.Abs(left)
+	right, _ = filepath.Abs(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+// installExecutableCopy installs only when target is absent (expectedHash is
+// empty) or still contains the exact receipt-owned bytes checked by the caller.
+func installExecutableCopy(target string, data []byte, expectedHash string) error {
+	dir := filepath.Dir(target)
+	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+		return err
+	} else if symlink {
+		return fmt.Errorf("refusing to install through symlinked path %s", target)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	staged, err := os.CreateTemp(dir, ".mimir-install-*")
+	if err != nil {
+		return err
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+	if _, err := staged.Write(data); err != nil {
+		_ = staged.Close()
+		return err
+	}
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return err
+	}
+	if err := staged.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(stagedPath, 0o755); err != nil {
+		return err
+	}
+	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+		return err
+	} else if symlink {
+		return fmt.Errorf("refusing to replace symlinked path %s", target)
+	}
+	if err := validateExecutableReplacement(target, expectedHash); err != nil {
+		return err
+	}
+	if expectedHash == "" {
+		return os.Rename(stagedPath, target)
+	}
+	if runtime.GOOS == "windows" {
+		old := target + ".old"
+		_ = os.Remove(old)
+		if err := os.Rename(target, old); err != nil {
+			return err
+		}
+		if err := os.Rename(stagedPath, target); err != nil {
+			_ = os.Rename(old, target)
+			return err
+		}
+		_ = os.Remove(old)
+		return nil
+	}
+	return os.Rename(stagedPath, target)
+}
+
+func validateExecutableReplacement(target, expectedHash string) error {
+	info, err := os.Lstat(target)
+	if os.IsNotExist(err) {
+		if expectedHash == "" {
+			return nil
+		}
+		return fmt.Errorf("refusing to replace executable %s: owned target disappeared", target)
+	}
+	if err != nil {
+		return err
+	}
+	if expectedHash == "" {
+		return fmt.Errorf("refusing to overwrite unowned executable %s", target)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to overwrite non-regular executable path %s", target)
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	if hashBytes(current) != expectedHash {
+		return fmt.Errorf("refusing to replace executable %s: current hash no longer matches install receipt", target)
+	}
+	return nil
 }
 
 func cmdSession(ctx context.Context, args []string, out io.Writer) error {
@@ -342,6 +739,8 @@ func usage(out io.Writer) error {
 
 Usage:
   mimir setup [--quick] [--json]
+  mimir install [--bin-dir <dir>] [--json]
+  mimir uninstall [--keep-binary] [--json]
   mimir deploy [--json]
   mimir access [--token <api-token> | --aud <tag> --team-domain <domain>]
   mimir login [--json]
@@ -352,7 +751,8 @@ Usage:
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
   mimir reconcile
   mimir doctor [--json]
-  mimir update [--check]
+  mimir update [--check] [--json]
+  mimir version [--json]
 
 Run "mimir help advanced" for diagnostic commands.`)
 	return err

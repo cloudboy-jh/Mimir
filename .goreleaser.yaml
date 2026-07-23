@@ -55,7 +55,7 @@ release:
     ## Install
 
     ```sh
-    go install github.com/cloudboy-jh/mimir/cmd/mimir@{{ .Tag }}
+    go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
     ```
 
     Prebuilt archives are available below for macOS, Linux, and Windows. Verify downloads with `checksums.txt`.

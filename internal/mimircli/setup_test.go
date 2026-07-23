@@ -175,6 +175,7 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 		State        string                   `json:"state"`
 		URL          string                   `json:"url"`
 		Connection   connectionManifest       `json:"connection"`
+		Artifacts    managedArtifactReport    `json:"artifacts"`
 		Integrations harnessIntegrationReport `json:"integrations"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
@@ -183,11 +184,30 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	if result.State != "connected" || result.URL != server.URL || result.Connection.OpenAIBaseURL != server.URL+"/v1" {
 		t.Fatalf("result %#v", result)
 	}
-	if result.Integrations.Hermes.State != "installed" || result.Integrations.Hermes.Scope != "openrouter" || !result.Integrations.Hermes.RestartRequired {
+	if result.Integrations.Hermes.State != "skipped" || !strings.Contains(result.Integrations.Hermes.Detail, "no managed installation receipt") {
 		t.Fatalf("Hermes integration %#v", result.Integrations.Hermes)
 	}
 	if result.Integrations.OpenCode.State != "skipped" {
 		t.Fatalf("OpenCode integration %#v", result.Integrations.OpenCode)
+	}
+	if result.Artifacts.Operation != "setup" || len(result.Artifacts.Artifacts) == 0 {
+		t.Fatalf("artifact refresh %#v", result.Artifacts)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Artifacts) != 0 {
+		t.Fatalf("setup enrolled unmanaged artifacts: %#v", receipt.Artifacts)
+	}
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Receipt, paths.Log} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("setup created installation lifecycle file %s", path)
+		}
 	}
 	pointer, err := loadPointer()
 	if err != nil {

@@ -32,15 +32,18 @@ var downloadClient = &http.Client{Timeout: 5 * time.Minute}
 // executablePath is a variable so tests can point updates at a temp binary.
 var executablePath = os.Executable
 
-var runUpdatedInstaller = func(ctx context.Context, executable string) (harnessIntegrationReport, error) {
-	command := exec.CommandContext(ctx, executable, "_install-integrations")
+var runUpdatedInstaller = func(ctx context.Context, executable string) (lifecycleIntegrationReport, error) {
+	command := exec.CommandContext(ctx, executable, "_post-update")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return harnessIntegrationReport{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+		return lifecycleIntegrationReport{}, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
-	var report harnessIntegrationReport
+	var report lifecycleIntegrationReport
 	if err := json.Unmarshal(output, &report); err != nil {
-		return harnessIntegrationReport{}, fmt.Errorf("reading updated integration report: %w", err)
+		return lifecycleIntegrationReport{}, fmt.Errorf("reading updated integration report: %w", err)
+	}
+	if !report.OK {
+		return report, fmt.Errorf("%s", report.Error)
 	}
 	return report, nil
 }
@@ -63,13 +66,20 @@ func (r githubRelease) asset(name string) (string, bool) {
 }
 
 func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
-	check := false
+	check, jsonOutput := false, false
 	for _, arg := range args {
-		if arg == "--check" {
+		switch arg {
+		case "--check":
 			check = true
-			continue
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("usage: mimir update [--check] [--json]")
 		}
-		return fmt.Errorf("usage: mimir update [--check]")
+	}
+	artifacts, err := checkManagedArtifacts()
+	if err != nil {
+		return err
 	}
 	release, err := fetchLatestRelease(ctx)
 	if err != nil {
@@ -77,25 +87,35 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	latest := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(version, "v")
-	if latest == current {
-		var integrations harnessIntegrationReport
+	binaryStatus := "available"
+	if latest == current || semverCompare(current, latest) > 0 {
+		binaryStatus = "current"
+		var lifecycle lifecycleIntegrationReport
 		if !check {
-			if _, pointerErr := loadPointer(); pointerErr == nil {
-				integrations, err = installCurrentHarnessIntegrations(ctx)
-				if err != nil {
-					return fmt.Errorf("mimir is current, but refreshing harness integrations failed: %w", err)
-				}
+			lifecycle = refreshLifecycleIntegrations(ctx, "update")
+			artifacts = lifecycle.Artifacts
+			if !lifecycle.OK {
+				return fmt.Errorf("mimir is current, but %s", lifecycle.Error)
 			}
 		}
+		report := newUpdateReport(check, binaryStatus, current, latest, artifacts, lifecycle.Integrations)
+		if jsonOutput {
+			return json.NewEncoder(out).Encode(report)
+		}
 		message := fmt.Sprintf("mimir %s is up to date", current)
-		if summary := integrationSummary(integrations); summary != "" {
+		message += "\n" + artifactSummary(artifacts)
+		if summary := integrationSummary(lifecycle.Integrations); summary != "" {
 			message += "\n" + summary
 		}
 		_, err := fmt.Fprintln(out, message)
 		return err
 	}
 	if check {
-		_, err := fmt.Fprintf(out, "mimir %s available (current %s)\n", latest, current)
+		report := newUpdateReport(true, binaryStatus, current, latest, artifacts, harnessIntegrationReport{})
+		if jsonOutput {
+			return json.NewEncoder(out).Encode(report)
+		}
+		_, err := fmt.Fprintf(out, "mimir %s available (current %s)\n%s\n", latest, current, artifactSummary(artifacts))
 		return err
 	}
 	assetName := releaseAssetName(latest, runtime.GOOS, runtime.GOARCH)
@@ -130,30 +150,73 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	target, err = filepath.EvalSymlinks(target)
+	target, err = filepath.Abs(target)
 	if err != nil {
 		return err
+	}
+	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+		return err
+	} else if symlink {
+		return fmt.Errorf("refusing to update symlinked executable path %s", target)
 	}
 	if managedByPackageManager(target) {
 		return fmt.Errorf("mimir at %s is managed by a package manager; update through it instead", target)
 	}
-	_, connectedErr := loadPointer()
 	if err := installBinary(target, binary); err != nil {
 		return fmt.Errorf("installing update: %w", err)
 	}
-	var integrations harnessIntegrationReport
-	if connectedErr == nil {
-		integrations, err = runUpdatedInstaller(ctx, target)
-		if err != nil {
-			return fmt.Errorf("mimir updated, but refreshing harness integrations failed: %w", err)
-		}
+	lifecycle, err := runUpdatedInstaller(ctx, target)
+	if err != nil {
+		return fmt.Errorf("mimir updated, but refreshing managed artifacts failed: %w", err)
+	}
+	artifacts = lifecycle.Artifacts
+	report := newUpdateReport(false, "updated", current, latest, artifacts, lifecycle.Integrations)
+	if jsonOutput {
+		return json.NewEncoder(out).Encode(report)
 	}
 	message := fmt.Sprintf("updated mimir %s → %s", current, latest)
-	if summary := integrationSummary(integrations); summary != "" {
+	message += "\n" + artifactSummary(artifacts)
+	if summary := integrationSummary(lifecycle.Integrations); summary != "" {
 		message += "\n" + summary
 	}
 	_, err = fmt.Fprintln(out, message)
 	return err
+}
+
+type updateReport struct {
+	Check        bool                     `json:"check"`
+	Binary       updateBinaryReport       `json:"binary"`
+	Artifacts    managedArtifactReport    `json:"artifacts"`
+	Integrations harnessIntegrationReport `json:"integrations,omitempty"`
+}
+
+type updateBinaryReport struct {
+	Status  string `json:"status"`
+	Current string `json:"current_version"`
+	Latest  string `json:"latest_version"`
+}
+
+func newUpdateReport(check bool, status, current, latest string, artifacts managedArtifactReport, integrations harnessIntegrationReport) updateReport {
+	return updateReport{Check: check, Binary: updateBinaryReport{Status: status, Current: current, Latest: latest}, Artifacts: artifacts, Integrations: integrations}
+}
+
+func semverCompare(left, right string) int {
+	var lmajor, lminor, lpatch, rmajor, rminor, rpatch int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(left, "v"), "%d.%d.%d", &lmajor, &lminor, &lpatch); err != nil {
+		return 0
+	}
+	if _, err := fmt.Sscanf(strings.TrimPrefix(right, "v"), "%d.%d.%d", &rmajor, &rminor, &rpatch); err != nil {
+		return 0
+	}
+	for _, pair := range [][2]int{{lmajor, rmajor}, {lminor, rminor}, {lpatch, rpatch}} {
+		if pair[0] < pair[1] {
+			return -1
+		}
+		if pair[0] > pair[1] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func releaseAssetName(version, goos, goarch string) string {
@@ -283,6 +346,23 @@ func managedByPackageManager(path string) bool {
 // aside first; the leftover is removed on the next update.
 func installBinary(target string, binary []byte) error {
 	dir := filepath.Dir(target)
+	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+		return err
+	} else if symlink {
+		return fmt.Errorf("refusing to update symlinked executable path %s", target)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to update non-regular executable path %s", target)
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	expectedHash := hashBytes(current)
 	staged, err := os.CreateTemp(dir, ".mimir-update-*")
 	if err != nil {
 		return err
@@ -297,6 +377,14 @@ func installBinary(target string, binary []byte) error {
 		return err
 	}
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
+		return err
+	}
+	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
+		return err
+	} else if symlink {
+		return fmt.Errorf("refusing to replace symlinked executable path %s", target)
+	}
+	if err := validateExecutableReplacement(target, expectedHash); err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" {

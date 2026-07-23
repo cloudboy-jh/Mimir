@@ -1,0 +1,3 @@
+package mimircli
+
+var launchDeferredBinaryRemoval = platformLaunchDeferredBinaryRemoval

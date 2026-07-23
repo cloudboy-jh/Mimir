@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -13,6 +16,7 @@ import (
 )
 
 func TestExecuteVersion(t *testing.T) {
+	isolatedInstallation(t, false)
 	oldVersion, oldCommit, oldDate := version, commit, date
 	t.Cleanup(func() { SetBuildInfo(oldVersion, oldCommit, oldDate) })
 	SetBuildInfo("1.2.3", "abc123", "2026-07-15")
@@ -23,6 +27,240 @@ func TestExecuteVersion(t *testing.T) {
 	}
 	if got, want := output.String(), "1.2.3 (abc123)\n"; got != want {
 		t.Fatalf("version output %q, want %q", got, want)
+	}
+}
+
+func TestExecuteBinaryVersionIgnoresMalformedReceipt(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if err := os.MkdirAll(filepath.Dir(paths.Receipt), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Receipt, []byte("{malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldVersion, oldCommit, oldDate := version, commit, date
+	t.Cleanup(func() { SetBuildInfo(oldVersion, oldCommit, oldDate) })
+	SetBuildInfo("4.5.6", "release", "2026-07-23")
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"--version"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "4.5.6 (release)\n" {
+		t.Fatalf("--version output = %q", got)
+	}
+	if err := ExecuteIO(context.Background(), []string{"version"}, IO{Out: &bytes.Buffer{}}); err == nil {
+		t.Fatal("version unexpectedly ignored malformed install receipt")
+	}
+}
+
+func TestExecuteVersionJSONIncludesInstallState(t *testing.T) {
+	isolatedInstallation(t, false)
+	if _, err := syncManagedArtifacts(true, "install"); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"version", "--json"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	var report versionReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.BundleVersion == "" || report.ReceiptPath == "" || report.ArtifactCounts[artifactCurrent] == 0 {
+		t.Fatalf("version report %#v", report)
+	}
+}
+
+func TestExecuteInstallJSONEnrollsArtifacts(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	binDir := t.TempDir()
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", binDir, "--json"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	var report installReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Artifacts.Operation != "install" || len(report.Artifacts.Artifacts) == 0 {
+		t.Fatalf("install report %#v", report)
+	}
+	name := "mimir"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	if report.Binary.Path != filepath.Join(binDir, name) || report.Binary.Hash == "" {
+		t.Fatalf("binary report %#v", report.Binary)
+	}
+	if _, err := os.Stat(paths.Receipt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecuteUninstallJSONReportsBinaryAndArtifacts(t *testing.T) {
+	isolatedInstallation(t, false)
+	binary := filepath.Join(t.TempDir(), "mimir")
+	binaryData := []byte("managed binary")
+	if err := os.WriteFile(binary, binaryData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncInstallArtifacts(installReceiptUpdate{
+		Source: "go-run", Method: "bootstrap-copy",
+		CLI: installReceiptCLI{Path: binary, Hash: hashBytes(binaryData)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"uninstall", "--keep-binary", "--json"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	var report uninstallReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Operation != "uninstall" || report.Binary.Status != "kept" || len(report.Artifacts) == 0 {
+		t.Fatalf("uninstall report %#v", report)
+	}
+	for _, artifact := range report.Artifacts {
+		if artifact.Status != artifactRemoved {
+			t.Fatalf("artifact status = %s", artifact.Status)
+		}
+	}
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("--keep-binary removed binary: %v", err)
+	}
+}
+
+func TestResolveInstallDirPrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("MIMIR_INSTALL_DIR", filepath.Join(home, "mimir-bin"))
+	t.Setenv("GOBIN", filepath.Join(home, "go-bin"))
+	t.Setenv("GOPATH", filepath.Join(home, "go-path")+string(os.PathListSeparator)+filepath.Join(home, "other"))
+	if got, _ := resolveInstallDir(""); got != filepath.Join(home, "mimir-bin") {
+		t.Fatalf("MIMIR_INSTALL_DIR target = %q", got)
+	}
+	t.Setenv("MIMIR_INSTALL_DIR", "")
+	if got, _ := resolveInstallDir(""); got != filepath.Join(home, "go-bin") {
+		t.Fatalf("GOBIN target = %q", got)
+	}
+	t.Setenv("GOBIN", "")
+	if got, _ := resolveInstallDir(""); got != filepath.Join(home, "go-path", "bin") {
+		t.Fatalf("GOPATH target = %q", got)
+	}
+	t.Setenv("GOPATH", "")
+	if got, _ := resolveInstallDir(""); got != filepath.Join(home, "go", "bin") {
+		t.Fatalf("home target = %q", got)
+	}
+}
+
+func TestInstallExecutableCopyFreshAndReplacement(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "new", "mimir")
+	if runtime.GOOS == "windows" {
+		target += ".exe"
+	}
+	if err := installExecutableCopy(target, []byte("first"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := installExecutableCopy(target, []byte("second"), hashBytes([]byte("first"))); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "second" {
+		t.Fatalf("installed binary = %q, %v", data, err)
+	}
+}
+
+func TestBootstrapCurrentExecutableDoesNotRewriteTarget(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	dir := t.TempDir()
+	name := "mimir"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	target := filepath.Join(dir, name)
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(target, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) { return target, nil }
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+	receipt := newInstallReceipt()
+	receipt.Source = "release"
+	receipt.Method = "bootstrap-copy"
+	receipt.CLI = installReceiptCLI{Path: target, Hash: hashBytes([]byte("binary"))}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+	report, err := bootstrapCurrentExecutable(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "current" || report.Source != "release" || report.Method != "bootstrap-copy" || !info.ModTime().Equal(stamp) {
+		t.Fatalf("report=%#v modtime=%s", report, info.ModTime())
+	}
+}
+
+func TestBootstrapCurrentExecutableRejectsUnownedDifferentTarget(t *testing.T) {
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+	name := "mimir"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	source := filepath.Join(sourceDir, name)
+	target := filepath.Join(targetDir, name)
+	if err := os.WriteFile(source, []byte("new binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("someone else's binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldExecutablePath := executablePath
+	executablePath = func() (string, error) { return source, nil }
+	t.Cleanup(func() { executablePath = oldExecutablePath })
+	if _, err := bootstrapCurrentExecutable(targetDir); err == nil || !strings.Contains(err.Error(), "unowned executable") {
+		t.Fatalf("error = %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "someone else's binary" {
+		t.Fatalf("unowned target changed to %q", got)
+	}
+}
+
+func TestInstallExecutableCopyRejectsChangedOwnedTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "mimir")
+	if err := os.WriteFile(target, []byte("changed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installExecutableCopy(target, []byte("new"), hashBytes([]byte("receipt bytes"))); err == nil || !strings.Contains(err.Error(), "no longer matches") {
+		t.Fatalf("error = %v", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "changed" {
+		t.Fatalf("target changed to %q", got)
+	}
+}
+
+func TestPostUpdateCommandUsesJSONProtocol(t *testing.T) {
+	isolatedInstallation(t, false)
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"_post-update"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	var report lifecycleIntegrationReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || report.Artifacts.Operation != "update" || !strings.Contains(report.Integrations.OpenCode.Detail, "without rewriting") {
+		t.Fatalf("post-update report %#v", report)
 	}
 }
 

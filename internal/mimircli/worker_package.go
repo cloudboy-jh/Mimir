@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -21,7 +19,9 @@ func workerDir(explicit string) (string, error) {
 		return "", err
 	}
 	for {
-		for _, candidate := range []string{dir, filepath.Join(dir, "worker")} {
+		module, readErr := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if readErr == nil && isMimirModule(module) {
+			candidate := filepath.Join(dir, "worker")
 			if pathExists(filepath.Join(candidate, "wrangler.jsonc")) {
 				return candidate, nil
 			}
@@ -32,15 +32,17 @@ func workerDir(explicit string) (string, error) {
 		}
 		dir = parent
 	}
-	cache, err := exec.Command("go", "env", "GOMODCACHE").Output()
-	if err == nil {
-		matches, _ := filepath.Glob(filepath.Join(strings.TrimSpace(string(cache)), "github.com", "cloudboy-jh", "mimir@*", "worker", "wrangler.jsonc"))
-		if len(matches) > 0 {
-			sort.Strings(matches)
-			return filepath.Dir(matches[len(matches)-1]), nil
+	return materializeEmbeddedWorker()
+}
+
+func isMimirModule(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" {
+			return fields[1] == "github.com/cloudboy-jh/mimir"
 		}
 	}
-	return "", fmt.Errorf("could not find the Mimir Worker package; install with go install github.com/cloudboy-jh/mimir/cmd/mimir@latest or pass --worker-dir")
+	return false
 }
 
 // materializeWorker keeps Wrangler's generated config and node modules outside
@@ -52,6 +54,17 @@ func materializeWorker(source string) (string, error) {
 		return "", err
 	}
 	target := filepath.Join(filepath.Dir(pointer), "worker")
+	sourceAbs, err := filepath.Abs(source)
+	if err != nil {
+		return "", err
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Clean(sourceAbs) == filepath.Clean(targetAbs) {
+		return target, nil
+	}
 	preserved := preservedWranglerVars(filepath.Join(target, "wrangler.jsonc"))
 	if err := filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {

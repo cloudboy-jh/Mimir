@@ -134,13 +134,14 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 		if err := savePointer(pointer); err != nil {
 			return err
 		}
-		integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
-		if integrationErr != nil {
-			fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
+		lifecycle := refreshConnectedLifecycleIntegrations(ctx, "setup")
+		if !lifecycle.OK {
+			fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
 		}
+		integrations := lifecycle.Integrations
 		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 		opts.Progress.Stop()
-		result := addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/"), "integrations": integrations}, opts.URL)
+		result := addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/"), "artifacts": lifecycle.Artifacts, "integrations": integrations}, opts.URL)
 		human := connectionSummary(opts.URL)
 		if summary := integrationSummary(integrations); summary != "" {
 			human += "\n\n" + summary
@@ -249,10 +250,11 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	if err := savePointer(pointer); err != nil {
 		return err
 	}
-	integrations, integrationErr := installCurrentHarnessIntegrations(ctx)
-	if integrationErr != nil {
-		fmt.Fprintf(ioctx.Err, "harness integrations not installed: %v\n", integrationErr)
+	lifecycle := refreshConnectedLifecycleIntegrations(ctx, "setup")
+	if !lifecycle.OK {
+		fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
 	}
+	integrations := lifecycle.Integrations
 	if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return err
 	}
@@ -278,7 +280,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	}
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 	opts.Progress.Stop()
-	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access, "integrations": integrations}
+	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access, "artifacts": lifecycle.Artifacts, "integrations": integrations}
 	human := connectionSummary(url)
 	if summary := integrationSummary(integrations); summary != "" {
 		human += "\n\n" + summary
