@@ -22,12 +22,26 @@ specification rather than an expanding completion log.
   implement and document the lifecycle process that consumes it. Do not keep
   accepting a setting with no behavioral effect.
 
+### Session lifecycle and harness capture
+
+The architecture is defined in [`session-lifecycle.md`](session-lifecycle.md).
+Foundation (event format, Session Durable Object, proxy reporting, session
+object routes) is implemented. Remaining build order:
+
+- Ship the OpenCode plugin on OpenCode's official plugin events, reporting to
+  `/sessions/:id/events`.
+- Add Hermes native reporting against the same events surface.
+- Build the dashboard live view consuming `/sessions/:id/live` and the
+  liveness projection from `/sessions/:id/object-state`.
+
 ### Safe OpenCode integration
 
 - Keep setup, login, update, doctor, and tests read-only with respect to
   OpenCode configuration.
-- Design an explicit opt-in integration command only after it can discover the
-  effective OpenCode config, preserve JSONC and precedence, prove ownership of
+- The capture plugin installs as one file through OpenCode's own plugin
+  mechanism with delete-to-uninstall; no wholesale config rewriting.
+- Any additional opt-in integration command must discover the effective
+  OpenCode config, preserve JSONC and precedence, prove ownership of
   generated files, back up prior values, detect concurrent edits, and restore
   safely on uninstall.
 - Gate all metadata headers on the effective destination being the configured
@@ -44,10 +58,12 @@ specification rather than an expanding completion log.
 
 ## Parked Decisions
 
-- **Generalized harness provider router** — extend the Hermes OpenRouter proof
-  of concept only when native provider credentials and protocols can remain
-  scoped and non-exportable. Do not intercept TLS or turn machine tokens into
-  provider credentials.
+- **Generalized harness provider router** — superseded by
+  [`session-lifecycle.md`](session-lifecycle.md). Capture moves to the
+  conversation layer (harness plugins reporting to session objects) instead of
+  a harness × provider routing matrix. The proxy remains only for API-key
+  providers with redirectable base URLs. Do not intercept TLS, impersonate
+  OAuth clients, or turn machine tokens into provider credentials.
 - **`mimir browse`** — keep parked unless the standard-library-only CLI
   constraint receives an explicit TUI dependency carve-out. The live dashboard
   and `mimir list` already provide session access.

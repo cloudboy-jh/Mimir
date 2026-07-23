@@ -28,5 +28,19 @@
       "binding": "LOGS",
       "bucket_name": "mimir-logs"
     }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionObject"]
+    }
   ]
 }

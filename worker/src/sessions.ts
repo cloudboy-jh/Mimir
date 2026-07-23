@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { readSaveConfig } from "./config";
+import { reportSessionEvent } from "./session-events";
 import type { AppEnv } from "./types";
 
 export const SESSION_COLUMNS = "id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent";
@@ -86,6 +87,7 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
     ]);
   }
   const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
+  await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
   return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
 }
 

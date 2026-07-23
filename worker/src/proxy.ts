@@ -1,11 +1,11 @@
 import type { Context } from "hono";
 import { capture, readBoundedText, type RequestKind } from "./capture";
 import { decideCapture, readSaveConfig } from "./config";
+import { SESSION_ID } from "./session-events";
 import { expireSessions } from "./sessions";
 import type { AppEnv } from "./types";
 
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_KINDS = new Set<RequestKind>(["primary", "title", "summary", "compaction"]);
 
 export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages", defaults: { harness?: string } = {}) {
