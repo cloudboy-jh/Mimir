@@ -74,8 +74,15 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   if (normalized && "error" in normalized) return c.json({ error: normalized.error }, 400);
   const id = c.req.param("id");
   if (!id) return c.json({ error: "session id is required" }, 400);
-  if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
   const now = new Date().toISOString();
+  // Sessions known only to the session object (harness-plugin reporting with
+  // no captured exchanges yet) have no D1 row until finalize. Explicit end
+  // must still work: forward the end so the object finalizes and upserts the
+  // row, then continue the normal flow. Sessions unknown to both D1 and the
+  // object keep the 404 contract.
+  if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) {
+    if (!await finalizeObjectOnlySession(c, id, now)) return c.json({ error: "session not found" }, 404);
+  }
   const endStatement = c.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE ended_at END, inactive_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE inactive_at END WHERE id = ?").bind(now, now, id);
   await endStatement.run();
   if (normalized && !("error" in normalized)) {
@@ -89,6 +96,20 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
   await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
   return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
+}
+
+async function finalizeObjectOnlySession(c: Context<AppEnv>, id: string, now: string): Promise<boolean> {
+  try {
+    const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
+    const state = await stub.fetch("https://session-object/state");
+    if (!state.ok) return false;
+    const body = await state.json<{ session_id?: string }>();
+    if (body.session_id !== id) return false;
+    await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
+    return await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first() !== null;
+  } catch {
+    return false;
+  }
 }
 
 async function endOutcomeEventID(id: string, generation: string, outcome: NormalizedOutcome) {
