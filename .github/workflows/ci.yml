@@ -28,6 +28,7 @@ jobs:
         working-directory: worker
       - run: npm test
         working-directory: worker
+      - run: bun test plugins/opencode/
       - run: npm run test:migrations
         working-directory: worker
       - run: npm run build:dashboard && npx wrangler deploy --dry-run

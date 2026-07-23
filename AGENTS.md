@@ -8,6 +8,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
 - CLI/MCP: `cmd/mimir/` is the Go entrypoint. Focused implementation files live in `internal/mimircli/`, including `mcp.go`, `client.go`, `connection.go`, `index.go`, `recall.go`, and deployment helpers. Keep the Go CLI standard-library-only.
+- OpenCode plugin: `plugins/opencode/mimir.ts` reports turns, heartbeats, and session ends to `/sessions/:id/events`. Single dependency-free file; tests run with `bun test plugins/opencode/`.
 - Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
 - Shared PNG assets: `assets/images/`. Worker materialization must preserve assets imported by the dashboard.
 - `AGENTS.md` and `skills/**` Markdown remain at their structural paths for automatic discovery.

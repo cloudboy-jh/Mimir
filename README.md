@@ -146,12 +146,14 @@ keeps a placeholder database ID by design.
 
 ### opencode
 
-Mimir does not edit OpenCode configuration. OpenCode merges JSON, JSONC,
-project, environment, and managed configuration with precedence rules that a
-safe external installer cannot preserve reliably. Use `mimir connection` to
-obtain the Worker URLs, credential source, and MCP command, then apply them
-through OpenCode's supported configuration flow. `mimir setup`, `mimir login`,
-`mimir update`, and `mimir doctor` are read-only with respect to OpenCode.
+Copy [`plugins/opencode/mimir.ts`](plugins/opencode/mimir.ts) into
+`~/.config/opencode/plugins/` (global) or `.opencode/plugins/` (project).
+The plugin observes completed turns inside the harness, so every OpenCode
+provider — OpenRouter, Zen subscription, Claude key, Codex/ChatGPT OAuth — is
+captured identically. It reads the Worker URL and machine token from
+`~/.mimir/` (written by setup/login); no credentials live in the file.
+Uninstall is deleting it. Mimir never rewrites OpenCode configuration —
+details in [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
