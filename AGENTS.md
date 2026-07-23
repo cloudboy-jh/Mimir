@@ -9,6 +9,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
 - CLI/MCP: `cmd/mimir/` is the Go entrypoint. Focused implementation files live in `internal/mimircli/`, including `mcp.go`, `client.go`, `connection.go`, `index.go`, `recall.go`, and deployment helpers. Keep the Go CLI standard-library-only.
 - OpenCode plugin: `plugins/opencode/mimir.ts` reports turns, heartbeats, and session ends to `/sessions/:id/events`. Single dependency-free file; tests run with `bun test plugins/opencode/`.
+- Hermes plugin: `plugins/hermes/` (Python, stdlib-only) reports the same events via Hermes' plugin hooks, covering Nous portal and direct providers; liveness-only when the managed OpenRouter redirect is active. Tests run with `python -m unittest discover -s plugins/hermes -p "test_*.py"`.
 - Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
 - Shared PNG assets: `assets/images/`. Worker materialization must preserve assets imported by the dashboard.
 - `AGENTS.md` and `skills/**` Markdown remain at their structural paths for automatic discovery.

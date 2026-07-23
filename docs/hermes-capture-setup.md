@@ -3,6 +3,37 @@
 Date: 2026-07-22
 Status: Implemented; pending first deployed desktop/TUI verification.
 
+## Two capture paths
+
+Hermes capture has two cooperating paths:
+
+1. **Proxy path** (this document) — redirects Hermes' built-in OpenRouter
+   provider through the Worker. Richest capture: token usage, full redacted
+   exchange archives.
+2. **Plugin path** — [`plugins/hermes/`](../plugins/hermes/) is a Hermes
+   plugin (Hermes' own plugin system, no upstream changes) that reports
+   turns, heartbeats, and session ends to `/sessions/:id/events`. It covers
+   the providers the proxy cannot reach: Nous portal account, direct
+   providers, anything not routed through the Worker.
+
+The plugin decides its mode once at startup: when the managed OpenRouter
+redirect is active (`OPENROUTER_BASE_URL` points at the Mimir Worker) it runs
+**liveness-only** — heartbeats and ends, no turn events, because the proxy is
+already capturing turns and double reporting would inflate the session. When
+Hermes talks to providers directly it runs **full mode** and reports every
+completed turn (via Hermes' `post_llm_call` hook) plus session lifecycle
+(`on_session_start`, `on_session_end`, `on_session_reset`,
+`on_session_finalize`).
+
+Install: copy [`plugins/hermes/`](../plugins/hermes/) into the plugins
+directory under the Hermes home (`~/.hermes/plugins/` or
+`%LOCALAPPDATA%/hermes/plugins` on Windows). Uninstall: delete the directory.
+The plugin carries no credentials; it resolves the Worker URL and machine
+token from `MIMIR_URL`/`MIMIR_TOKEN`, `$MIMIR_HOME`, or `~/.mimir/` exactly
+like the CLI. Delivery is best-effort and never blocks Hermes; the
+server-side silence timer finalizes sessions even when the process dies
+before an end event lands.
+
 ## Design
 
 Mimir redirects Hermes' built-in OpenRouter provider instead of registering a
@@ -51,9 +82,9 @@ Capture applies whenever Hermes' effective provider is `openrouter`, including
 mid-session switches between OpenRouter models. MCP does not perform capture.
 
 Direct Nous, Anthropic OAuth, Codex, Gemini, and other provider transports bypass
-the Worker and are not captured. Supporting them would require a Hermes-native
-global transport hook or separate protocol/authentication integrations; Mimir
-does not intercept TLS traffic.
+the Worker and are not captured **by the proxy** — install the Hermes plugin
+(above) to capture them from inside the harness. Mimir does not intercept TLS
+traffic.
 
 Hermes auxiliary tools that hard-code OpenRouter's URL also remain direct and
 uncaptured. They retain the real OpenRouter credential, so they continue working

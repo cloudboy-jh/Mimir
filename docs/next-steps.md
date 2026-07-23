@@ -26,11 +26,9 @@ specification rather than an expanding completion log.
 
 The architecture is defined in [`session-lifecycle.md`](session-lifecycle.md).
 Foundation (event format, Session Durable Object, proxy reporting, session
-object routes) is implemented. Remaining build order:
+object routes) is implemented, as are both reporters: the OpenCode plugin and
+the Hermes plugin. Remaining build order:
 
-- Ship the OpenCode plugin on OpenCode's official plugin events, reporting to
-  `/sessions/:id/events`.
-- Add Hermes native reporting against the same events surface.
 - Build the dashboard live view consuming `/sessions/:id/live` and the
   liveness projection from `/sessions/:id/object-state`.
 

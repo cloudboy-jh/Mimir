@@ -1,0 +1,5 @@
+name: mimir
+version: "1.0.0"
+description: "Reports turns, heartbeats, and session ends to the Mimir memory plane. Covers providers the Mimir proxy cannot reach (Nous portal, direct providers); liveness-only when the Mimir OpenRouter proxy profile is active."
+author: Mimir
+kind: standalone
