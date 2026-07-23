@@ -29,8 +29,22 @@ Foundation (event format, Session Durable Object, proxy reporting, session
 object routes) is implemented, as are both reporters: the OpenCode plugin and
 the Hermes plugin. Remaining build order:
 
-- Build the dashboard live view consuming `/sessions/:id/live` and the
-  liveness projection from `/sessions/:id/object-state`.
+- **Dashboard live view + liveness badges.** Consume what already shipped:
+  - Session detail page (`worker/web` sessions detail route): subscribe to
+    the live feed, render turns as they stream in, show finalization when it
+    happens.
+  - Sessions list: liveness badge per active session — `active` (<90s
+    heartbeat), `disconnected` (silence, unfinalized), `finalized` — from the
+    object-state projection.
+  - **Gotcha:** `/sessions/:id/live` and `/sessions/:id/object-state` are
+    machine-token routes; the browser must not hold machine tokens. Add
+    Access-protected equivalents under `/dashboard/api/sessions/:id/live`
+    (websocket passthrough to the object) and
+    `/dashboard/api/sessions/:id/object-state`, registered in
+    `worker/src/routes/dashboard.ts`. Dashboard API routes already bypass
+    Access on localhost for development.
+  - Session objects only exist for sessions that reported events; history
+    views keep reading D1 exactly as today. The live feed is additive.
 
 ### Safe OpenCode integration
 

@@ -4,9 +4,9 @@
 
 **Durable session memory for coding agents.**
 
-Mimir is a private memory plane for coding agents. It captures redacted model
-exchanges as searchable sessions and gives agents access to that history
-through MCP. Everything runs in your Cloudflare account.
+Mimir is a private memory plane. It captures what your agents did — every
+provider, every auth mode — as searchable sessions, and gives agents access
+to that history through MCP. Everything runs in your Cloudflare account.
 
 No Mimir account. No hosted backend. No shared memory service.
 
@@ -30,44 +30,33 @@ Agent avoids repeating it.
 
 ```mermaid
 flowchart LR
-    H[Agent harness] -->|Model requests| W[Mimir Worker]
+    H[Agent harness] -->|API-key model traffic| W[Worker proxy]
     W --> O[OpenRouter]
-    W -.->|Sessions and metadata| D[(D1)]
-    W -.->|Redacted exchanges| R[(R2)]
+    H -.->|plugin: turns, heartbeats, ends| S[Session Durable Object]
+    W -.->|exchange events| S
+    S -->|finalize| R[(R2)]
+    S -->|finalize| D[(D1)]
     H <-->|Memory tools| M[Local Mimir MCP]
     M <--> W
 ```
 
-Two connections, two jobs:
+Two reporters, one owner, one filing cabinet:
 
-1. **Model traffic** flows through the Worker proxy. Capture is a side effect
-   of this path — the Worker redacts a copy of each exchange, writes it to R2,
-   and indexes session metadata in D1 while streaming the upstream response.
-   There is no save operation and no backfill: if traffic does not pass
-   through the Worker, nothing is captured.
-2. **Memory access** flows through the local `mimir serve` MCP process. These
-   tools read and annotate what the proxy already captured — they never write
-   exchanges themselves.
+1. **The Worker proxy** captures API-key providers as a side effect of model
+   traffic — redacted exchanges to R2, metadata to D1, streamed upstream.
+2. **Harness plugins** (OpenCode, Hermes) observe completed turns inside the
+   agent, covering OAuth and subscription providers the proxy can't touch.
+3. **A Session Durable Object per session** owns the lifecycle: liveness, the
+   live feed, and the final write. Sessions end three ways — harness end
+   event, ~10-minute silence timer (covers killed terminals and crashes), or
+   explicit end via MCP or CLI. Closing a terminal always writes the session.
 
-Saved means an exchange is durably persisted; Landed means the work produced a
-kept result. Neither state implies the other.
-
-After meaningful work, agents verify capture through `session_status`. The
-harness receives one compact receipt instead of infrastructure output:
+Memory access flows through the local `mimir serve` MCP process. Agents
+verify capture with `session_status` and get one compact receipt:
 
 ```text
 Saved to Mimir · 14 exchanges in this session · View session
 ```
-
-The dashboard link appears only when Cloudflare Access is configured.
-
-`x-mimir-session` provides an exact session boundary when a harness supports
-it. Otherwise, Mimir groups requests using repository, harness, and a
-15-minute inactivity gap.
-
-Harness adapters classify title, summary, and compaction calls as auxiliary.
-Mimir captures those exchanges but only a primary user request can establish
-the session's displayed and searchable intent.
 
 ## Install
 
@@ -76,71 +65,13 @@ with npm, and Bun.
 
 ```bash
 go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-mimir setup
+mimir setup        # first machine: provision and deploy
+mimir login        # any other machine: register and connect
 ```
 
-Setup opens Cloudflare browser authentication on first run, provisions D1 and
-R2, builds and deploys the Worker, stores the OpenRouter key as a Worker
-secret, registers the machine, and verifies the connection. It also prompts
-for an optional Cloudflare API token that automates dashboard Access; press
-Enter to skip and finish Access later with `mimir access`. Secrets are entered
-through local masked prompts.
-
-On another machine:
-
-```bash
-go install github.com/cloudboy-jh/mimir/cmd/mimir@latest
-mimir login
-```
-
-`mimir setup`, `mimir login`, and `mimir update` install or refresh the
-Mimir-owned Hermes integration automatically. They never modify OpenCode
-configuration.
-
-For agent-assisted setup:
-
-```bash
-npx skills add cloudboy-jh/mimir
-```
-
-Then ask the agent to set up Mimir for the active harness.
-
-## Commands
-
-```bash
-mimir setup [--quick] [--json]      # provision and deploy the memory plane
-mimir login [--json]                # register this machine; refresh harness integrations
-mimir deploy [--json]               # ship Worker and dashboard changes
-mimir access [--token <api-token>]  # create or fix the dashboard Access application
-mimir dashboard                     # open the dashboard
-mimir list [--repo name] [--outcome <o>] [--limit 20]
-mimir session status <id> [--json]  # verified capture receipt
-mimir session end <id> [--outcome <o>] [--reason text]
-mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
-mimir reconcile                     # reconcile session state
-mimir doctor [--json]               # validate connection and harness wiring
-mimir update [--check]              # update the CLI
-```
-
-Diagnostics and harness integration (`mimir help advanced`):
-
-```bash
-mimir connection                    # connection manifest for harness wiring
-mimir whoami                        # deployment identity and counts
-mimir session <id>                  # read a session and its exchanges
-mimir search <query>                # search session memory
-mimir config get | set <key> <json> # deployment configuration
-mimir index [--full]                # build the local code index
-mimir recall <query> [--budget 4000] [--json]
-mimir mark <session> <outcome>      # deprecated; use session outcome
-mimir outcome git <session>         # derive outcome from git history
-mimir serve                         # run the MCP server (harness-managed)
-```
-
-`mimir deploy` materializes the packaged Worker, builds the dashboard, writes
-the real D1 database ID into the materialized config, and deploys. Do not run
-`wrangler deploy` from a source checkout; the checked-in `wrangler.jsonc`
-keeps a placeholder database ID by design.
+Setup provisions D1 and R2, deploys the Worker, stores the OpenRouter key as
+a Worker secret, and registers the machine. Secrets are entered through local
+masked prompts. For agent-assisted setup: `npx skills add cloudboy-jh/mimir`.
 
 ## Connect An Agent
 
@@ -148,28 +79,21 @@ keeps a placeholder database ID by design.
 
 Copy [`plugins/opencode/mimir.ts`](plugins/opencode/mimir.ts) into
 `~/.config/opencode/plugins/` (global) or `.opencode/plugins/` (project).
-The plugin observes completed turns inside the harness, so every OpenCode
-provider — OpenRouter, Zen subscription, Claude key, Codex/ChatGPT OAuth — is
-captured identically. It reads the Worker URL and machine token from
-`~/.mimir/` (written by setup/login); no credentials live in the file.
-Uninstall is deleting it. Mimir never rewrites OpenCode configuration —
-details in [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md).
+Covers every OpenCode provider — OpenRouter, Zen subscription, Claude key,
+Codex/ChatGPT OAuth. Uninstall is deleting the file.
+[Details](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
-Mimir transparently redirects Hermes' built-in OpenRouter provider. When a
-Hermes installation is detected, setup, login, and update append a reversible
-managed block to its profile `.env` containing the Mimir OpenRouter-compatible
-base URL. Hermes keeps its existing OpenRouter credential; the Worker accepts
-its registered hash only on the Hermes compatibility routes and forwards the
-original credential upstream. No custom provider or duplicate model list is
-created.
+Two cooperating paths, both installed automatically or by file copy:
 
-Restart Hermes after installation. Models selected from Hermes' built-in
-OpenRouter provider remain captured across model switches. Direct Nous,
-Anthropic OAuth, Codex, and other provider transports do not pass through the
-Worker and are not captured. Desktop and TUI share the same Hermes profile and
-are grouped as `hermes`. Run `mimir update` after switching Hermes profiles.
+- `mimir setup`/`login`/`update` redirect Hermes' built-in OpenRouter
+  provider through the Worker — richest capture, no config changes of yours.
+- Copy [`plugins/hermes/`](plugins/hermes/) into the plugins directory under
+  your Hermes home to capture Nous portal and direct providers from inside
+  the harness.
+
+[Details](docs/hermes-capture-setup.md).
 
 ### Other harnesses
 
@@ -177,61 +101,32 @@ are grouped as `hermes`. Run `mimir update` after switching Hermes profiles.
 mimir connection
 ```
 
-It returns the connection manifest: OpenAI and Anthropic base URLs, a secure
-local credential source (file path or command), the absolute MCP command, and
-the optional session metadata headers. Apply those values using the harness's
-own provider and MCP configuration.
+Prints the connection manifest: base URLs, local credential source, MCP
+command, and optional session metadata headers. Apply them through the
+harness's own provider and MCP configuration.
 
-Provider configuration has this general shape — point the harness's
-OpenAI-compatible provider at the Worker, sourced from the credential file
-rather than pasted:
+## Commands
 
-```json
-{
-  "provider": {
-    "mimir": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "<openai_base_url from mimir connection>",
-        "apiKey": "<value read from credential_file>",
-        "headers": { "x-mimir-harness": "<harness-name>" }
-      }
-    }
-  }
-}
+```bash
+mimir setup [--quick]               # provision and deploy the memory plane
+mimir login                         # register this machine
+mimir deploy                        # ship Worker and dashboard changes
+mimir access                        # create or fix dashboard Access
+mimir dashboard                     # open the dashboard
+mimir list [--repo name]            # recent sessions
+mimir session status <id>           # verified capture receipt
+mimir session end <id>              # end a session, optionally with outcome
+mimir search <query>                # search session memory
+mimir doctor                        # validate connection and harness wiring
+mimir update [--check]              # update the CLI
 ```
 
-The model IDs in the provider's model list only control the harness's picker;
-the Worker passes through any OpenRouter model ID.
+More (`mimir help advanced`): `connection`, `whoami`, `session <id>`,
+`session outcome`, `reconcile`, `config`, `index`, `recall`, `serve` (MCP).
 
-A local MCP registration has this general shape:
-
-```json
-{
-  "mimir": {
-    "type": "local",
-    "command": ["/absolute/path/to/mimir", "serve"],
-    "enabled": true
-  }
-}
-```
-
-The compact MCP surface includes:
-
-| Tool | Purpose |
-| --- | --- |
-| `whoami` | Verify the deployment. |
-| `sessions_list` | List captured sessions. |
-| `sessions_get` | Read a session and its exchanges. |
-| `session_status` | Show a verified capture receipt and, when Access is configured, a dashboard link. |
-| `session_end` | End a session, optionally record its outcome, and return the final receipt. |
-| `search` | Search session memory and optional local code recall. |
-| `session_set_outcome` | Record a work outcome with evidence. |
-| `config_get` | Read deployment configuration. |
-| `config_set` | Update deployment configuration. |
-
-The included `mimir-use` skill teaches agents to search this memory and verify
-capture automatically during normal work.
+Deploys go through `mimir deploy` only — the checked-in `wrangler.jsonc`
+keeps a placeholder database ID by design; never `wrangler deploy` from a
+source checkout.
 
 ## Dashboard
 
@@ -239,39 +134,17 @@ capture automatically during normal work.
 mimir dashboard
 ```
 
-The dashboard reads live session metadata from D1 and redacted request and
-response payloads from R2. Browser routes live under `/dashboard/*`, so direct
-session links refresh safely without colliding with machine APIs. Cloudflare
-Access protects dashboard data and receipt links without storing machine
-tokens in the browser.
-
-The Access application must cover exactly two destinations: `/dashboard` and
-`/dashboard/*` (Access paths are exact matches, so the wildcard is required
-for the API routes underneath). Machine API routes stay outside Access; the
-Worker authenticates them with bearer tokens. Covering the bare hostname
-blocks the proxy, CLI, and MCP. `mimir access` creates or corrects the
-application automatically:
-
-```bash
-mimir access
-```
-
-With a Cloudflare API token (flag, env, or masked prompt), `mimir access`
-creates or fixes the application and allow policy, writes the verification
-variables, and redeploys. Without a token it prints the manual checklist.
-
-The token needs exactly two permission rows, account-scoped with no zones:
-`Access: Apps and Policies → Edit` and
-`Access: Organizations, Identity Providers, and Groups → Read`. Create it at
-<https://dash.cloudflare.com/profile/api-tokens>.
+Reads session metadata from D1 and redacted payloads from R2. Cloudflare
+Access protects browser data without storing machine tokens in the browser;
+`mimir access` automates the application (it must cover exactly `/dashboard`
+and `/dashboard/*`). Machine API routes stay outside Access on bearer tokens.
 
 ## Documentation
 
-- [`docs/Spec.md`](docs/Spec.md): architecture, APIs, storage, security, and current limitations
-- [`docs/session-lifecycle.md`](docs/session-lifecycle.md): planned session ownership, harness plugins, and end-of-session guarantees
+- [`docs/Spec.md`](docs/Spec.md): architecture, APIs, storage, security
+- [`docs/session-lifecycle.md`](docs/session-lifecycle.md): session objects, reporters, end-of-session guarantees
+- [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md) / [`docs/hermes-capture-setup.md`](docs/hermes-capture-setup.md): harness capture
 - [`docs/PRODUCT.md`](docs/PRODUCT.md): product direction
 - [`docs/DESIGN.md`](docs/DESIGN.md): dashboard design system
 - [`docs/next-steps.md`](docs/next-steps.md): incomplete implementation work
-- [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md): how capture works and how to wire a harness provider
-- [`docs/hermes-capture-setup.md`](docs/hermes-capture-setup.md): transparent Hermes desktop and TUI capture
 - [`AGENTS.md`](AGENTS.md): repository structure and development commands
