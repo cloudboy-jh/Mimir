@@ -634,4 +634,20 @@ describe("Session object", () => {
     expect(body).toMatchObject({ liveness: "finalized", end_reason: "explicit" });
     expect(await env.LOGS.get("sessions/object-explicit-end/transcript.json")).not.toBeNull();
   });
+
+  it("ends sessions known only to the session object", async () => {
+    await postEvent("object-only-end", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test" } });
+    expect(await env.DB.prepare("SELECT 1 FROM sessions WHERE id = 'object-only-end'").first()).toBeNull();
+    const ended = await request("/sessions/object-only-end/end", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+    expect(ended.status).toBe(200);
+    expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'object-only-end'").first<{ state: string }>())?.state).toBe("inactive");
+    const { body } = await objectState("object-only-end");
+    expect(body).toMatchObject({ liveness: "finalized", end_reason: "explicit" });
+    expect(await env.LOGS.get("sessions/object-only-end/transcript.json")).not.toBeNull();
+  });
+
+  it("keeps the 404 contract for sessions unknown to D1 and the object", async () => {
+    const response = await request("/sessions/object-never-seen/end", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+    expect(response.status).toBe(404);
+  });
 });
