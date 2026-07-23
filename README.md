@@ -266,6 +266,7 @@ The token needs exactly two permission rows, account-scoped with no zones:
 ## Documentation
 
 - [`docs/Spec.md`](docs/Spec.md): architecture, APIs, storage, security, and current limitations
+- [`docs/session-lifecycle.md`](docs/session-lifecycle.md): planned session ownership, harness plugins, and end-of-session guarantees
 - [`docs/PRODUCT.md`](docs/PRODUCT.md): product direction
 - [`docs/DESIGN.md`](docs/DESIGN.md): dashboard design system
 - [`docs/next-steps.md`](docs/next-steps.md): incomplete implementation work

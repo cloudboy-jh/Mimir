@@ -28,7 +28,9 @@ The Worker uses:
 - **OpenRouter** as the only model upstream
 - **D1** for sessions, searchable exchange metadata, configuration, facets,
   and machine-token hashes
-- **R2** for complete redacted request/response objects
+- **R2** for complete redacted request/response objects and session transcripts
+- **Session Durable Objects** for live session lifecycle: event collection,
+  liveness, the live feed, and finalization
 - **Cloudflare Access** for deployed dashboard API authentication
 
 The Go binary provides setup, login, diagnostics, local code indexing, and the
@@ -120,7 +122,10 @@ personal single-owner trust model.
 | `GET` | `/sessions` | List up to 100 recent sessions with optional filters. |
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
 | `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
-| `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. |
+| `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. Also notifies the session object, which finalizes. |
+| `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `end`) to the session object. The path session ID is authoritative. |
+| `GET` | `/sessions/:id/live` | WebSocket live feed from the session object: snapshot plus event broadcast. |
+| `GET` | `/sessions/:id/object-state` | Read the session object's liveness projection and counters. |
 | `POST` | `/sessions/:id/outcome` | Append an evidenced work-outcome event. |
 | `POST` | `/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `POST` | `/reconcile` | Reconcile bounded D1 capture rows against R2 and report orphans. |
@@ -229,9 +234,32 @@ Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 `unresolved`. Outcome is independent from capture: `landed` says the result was
 kept, while `saved` says an exchange is durably represented in both R2 and D1.
 
-Session responses expose the latest outcome projection:
+### 7.1 Session Objects
 
-| Field | Contract |
+Each session is owned live by a Session Durable Object named by the session
+ID. Reporters append versioned events (`turn`, `heartbeat`, `end`); capture
+reports a `turn` after every saved exchange, and `/sessions/:id/end` reports
+`end`. The object tracks liveness and performs the final write. It is a
+buffer and coordinator: R2 and D1 remain canonical.
+
+A session finalizes when any of three triggers fires: an `end` event, a
+10-minute silence alarm (re-armed by every event, so clean exits finalize
+immediately and hard deaths finalize within ~10 minutes), or the explicit
+end route. Finalization writes a session transcript manifest to
+`sessions/<id>/transcript.json` in R2 and marks the D1 session inactive using
+the same generation semantics as the explicit end route. It is idempotent per
+active period and retries on failure.
+
+Liveness is a read-time projection from heartbeat age: `active` within 90
+seconds, `disconnected` past 90 seconds but not yet finalized, and
+`finalized` after the final write. The silence timer is a durability
+backstop, not a UX promise.
+
+New events on a finalized session reopen it: the same object wakes, D1 flips
+back to `active`, and history continues. Finalized is a state, not a
+tombstone.
+
+Session responses expose the latest outcome projection:| Field | Contract |
 | --- | --- |
 | `state` | Session activity: `active` or `inactive`. |
 | `outcome` | Canonical work outcome from `work_outcome`; defaults to `unresolved`. |
