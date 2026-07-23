@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
+import { parseSessionEvent, SESSION_ID } from "../session-events";
 import { canonicalOutcome, endSession, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
 import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
 import type { AppEnv } from "../types";
@@ -96,6 +97,40 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   });
 
   app.post("/sessions/:id/end", (c) => endSession(c, "agent"));
+
+  // Session object surface. Reporters (harness plugins, native harness
+  // reporting) append events here; the session ID in the path is
+  // authoritative. The live feed streams object state to subscribers.
+  app.post("/sessions/:id/events", async (c) => {
+    const id = c.req.param("id");
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const parsed = parseSessionEvent({ ...(typeof body === "object" && body && !Array.isArray(body) ? body as Record<string, unknown> : {}), session_id: id });
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
+    const response = await stub.fetch("https://session-object/event", { method: "POST", body: JSON.stringify(parsed) });
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  });
+
+  app.get("/sessions/:id/live", async (c) => {
+    if ((c.req.header("upgrade") ?? "").toLowerCase() !== "websocket") return c.json({ error: "websocket upgrade required" }, 426);
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
+    return stub.fetch("https://session-object/feed", { headers: { Upgrade: "websocket" } });
+  });
+
+  app.get("/sessions/:id/object-state", async (c) => {
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
+    const response = await stub.fetch("https://session-object/state");
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
+  });
 
   app.post("/reconcile", async (c) => c.json(await reconcile(
     c.env,

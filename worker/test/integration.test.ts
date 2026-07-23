@@ -530,3 +530,108 @@ describe("Worker integration", () => {
     }
   });
 });
+
+describe("Session object", () => {
+  const authHeaders = { authorization: "Bearer machine-token", "content-type": "application/json" };
+  const postEvent = (id: string, event: Record<string, unknown>) => request(`/sessions/${id}/events`, { method: "POST", headers: authHeaders, body: JSON.stringify(event) });
+  const objectState = async (id: string) => {
+    const response = await request(`/sessions/${id}/object-state`, { headers: { authorization: "Bearer machine-token" } });
+    return { status: response.status, body: await response.json<Record<string, unknown>>() };
+  };
+
+  it("tracks turn events and projects liveness", async () => {
+    const accepted = await postEvent("object-live", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", usage: { input_tokens: 5, output_tokens: 3 }, latency_ms: 42 } });
+    expect(accepted.status).toBe(200);
+    const { body } = await objectState("object-live");
+    expect(body).toMatchObject({ session_id: "object-live", liveness: "active", turn_count: 1, tokens_in: 5, tokens_out: 3, finalized_at: null });
+  });
+
+  it("rejects invalid events and requires auth", async () => {
+    expect((await postEvent("object-invalid", { version: 1, kind: "note", ts: new Date().toISOString() })).status).toBe(400);
+    expect((await request("/sessions/object-invalid/events", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+    expect((await postEvent("object-invalid", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { usage: { input_tokens: -1, output_tokens: 0 } } })).status).toBe(400);
+  });
+
+  it("projects disconnected after the liveness window without finalizing", async () => {
+    const stale = new Date(Date.now() - 3 * 60_000).toISOString();
+    await postEvent("object-stale", { version: 1, kind: "heartbeat", ts: stale });
+    const { body } = await objectState("object-stale");
+    expect(body).toMatchObject({ liveness: "disconnected", finalized_at: null });
+  });
+
+  it("finalizes on an end event: transcript in R2, session inactive in D1", async () => {
+    await postEvent("object-end", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", usage: { input_tokens: 2, output_tokens: 1 } } });
+    const ended = await postEvent("object-end", { version: 1, kind: "end", ts: new Date().toISOString(), reason: "user closed" });
+    expect(ended.status).toBe(200);
+    const { body } = await objectState("object-end");
+    expect(body).toMatchObject({ liveness: "finalized", end_reason: "user closed", turn_count: 1 });
+    expect(typeof body.finalized_at).toBe("string");
+    const session = await env.DB.prepare("SELECT state, ended_at, inactive_at FROM sessions WHERE id = 'object-end'").first<{ state: string; ended_at: string | null; inactive_at: string | null }>();
+    expect(session?.state).toBe("inactive");
+    expect(session?.ended_at).toBeTruthy();
+    const transcript = await env.LOGS.get("sessions/object-end/transcript.json");
+    expect(transcript).not.toBeNull();
+    const manifest = JSON.parse(await transcript!.text());
+    expect(manifest).toMatchObject({ schema_version: 1, session_id: "object-end", end_reason: "user closed", turn_count: 1, usage: { input_tokens: 2, output_tokens: 1 } });
+  });
+
+  it("reopens a finalized session when new events arrive", async () => {
+    await postEvent("object-reopen", { version: 1, kind: "end", ts: new Date().toISOString() });
+    expect((await objectState("object-reopen")).body.liveness).toBe("finalized");
+    expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'object-reopen'").first<{ state: string }>())?.state).toBe("inactive");
+    await postEvent("object-reopen", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test" } });
+    const { body } = await objectState("object-reopen");
+    expect(body).toMatchObject({ liveness: "active", finalized_at: null, turn_count: 1 });
+    expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'object-reopen'").first<{ state: string }>())?.state).toBe("active");
+  });
+
+  it("requires a websocket upgrade for the live feed", async () => {
+    const response = await request("/sessions/object-live/live", { headers: { authorization: "Bearer machine-token" } });
+    expect(response.status).toBe(426);
+  });
+
+  it("serves a live feed snapshot over websocket", async () => {
+    await postEvent("object-feed", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", excerpt: "hello" } });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request("https://mimir.test/sessions/object-feed/live", { headers: { authorization: "Bearer machine-token", upgrade: "websocket" } }), env as Env & { OPENROUTER_API_KEY: string }, ctx);
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    socket.accept();
+    const message = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("snapshot timeout")), 5_000);
+      socket.addEventListener("message", (event) => {
+        clearTimeout(timer);
+        resolve(String(event.data));
+      }, { once: true });
+    });
+    const snapshot = JSON.parse(message);
+    expect(snapshot.type).toBe("snapshot");
+    expect(snapshot.state).toMatchObject({ session_id: "object-feed", liveness: "active", turn_count: 1 });
+    expect(snapshot.turns).toHaveLength(1);
+    socket.close(1000);
+  });
+
+  it("reports proxied exchanges to the session object", async () => {
+    const stream = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\ndata: [DONE]\n';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } })));
+    const response = await request("/v1/chat/completions", {
+      method: "POST",
+      headers: { ...authHeaders, "x-mimir-session": "object-proxied", "x-mimir-harness": "test" },
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "hello" }], stream: true }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const { body } = await objectState("object-proxied");
+    expect(body).toMatchObject({ session_id: "object-proxied", liveness: "active", turn_count: 1, tokens_in: 4, tokens_out: 2, harness: "test" });
+  });
+
+  it("finalizes the session object on explicit end", async () => {
+    await postEvent("object-explicit-end", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test" } });
+    await env.DB.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary) VALUES ('object-explicit-end', ?, ?, 'test', 'header')").bind(new Date().toISOString(), new Date().toISOString()).run();
+    const ended = await request("/sessions/object-explicit-end/end", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+    expect(ended.status).toBe(200);
+    const { body } = await objectState("object-explicit-end");
+    expect(body).toMatchObject({ liveness: "finalized", end_reason: "explicit" });
+    expect(await env.LOGS.get("sessions/object-explicit-end/transcript.json")).not.toBeNull();
+  });
+});

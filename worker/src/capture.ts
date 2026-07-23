@@ -1,4 +1,5 @@
 import { finiteNumber, parseJSON, readConfig, stringArray } from "./config";
+import { reportSessionEvent } from "./session-events";
 import { resolveSession, ulid } from "./sessions";
 import type { Bindings } from "./types";
 
@@ -117,6 +118,23 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
 
   const provider = prepared.provider ? ` · ${prepared.provider}` : "";
   console.log(`saved exchange ${id} to session ${session.id} · ${input.model}${provider} · ${prepared.usage.prompt_tokens} in / ${prepared.usage.completion_tokens} out · ${latency}ms`);
+  await reportSessionEvent(env, {
+    version: 1,
+    kind: "turn",
+    session_id: session.id,
+    harness: input.harness,
+    repo: input.repo,
+    ts: new Date().toISOString(),
+    turn: {
+      exchange_id: id,
+      model: input.model,
+      provider: prepared.provider,
+      request_kind: requestKind,
+      usage: { input_tokens: prepared.usage.prompt_tokens, output_tokens: prepared.usage.completion_tokens },
+      latency_ms: latency,
+      excerpt: requestExcerpt.slice(0, 500),
+    },
+  });
 }
 
 async function acceptExchange(db: D1Database, input: CaptureInput, id: string, sessionId: string, activityAt: string, acceptedAt: string, r2Key: string, requestExcerpt: string, requestKind: RequestKind, intentCandidate: string | null) {
