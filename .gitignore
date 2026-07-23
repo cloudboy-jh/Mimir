@@ -10,3 +10,5 @@ coverage/
 worker/node_modules/
 worker/.wrangler/
 worker/web/node_modules
+
+__pycache__/
