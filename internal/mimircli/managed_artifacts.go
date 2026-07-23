@@ -878,10 +878,29 @@ func pathContainsSymlink(root, target string) (bool, error) {
 			return false, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
+			if allowedDarwinFilesystemAlias(current) {
+				continue
+			}
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func allowedDarwinFilesystemAlias(path string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	want, ok := map[string]string{
+		string(filepath.Separator) + "etc": "private/etc",
+		string(filepath.Separator) + "tmp": "private/tmp",
+		string(filepath.Separator) + "var": "private/var",
+	}[filepath.Clean(path)]
+	if !ok {
+		return false
+	}
+	target, err := os.Readlink(path)
+	return err == nil && filepath.Clean(target) == want
 }
 
 func filesystemRoot(path string) string {

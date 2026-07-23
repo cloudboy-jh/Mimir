@@ -495,6 +495,20 @@ func TestPathContainsSymlinkChecksAncestorAboveManagedRoot(t *testing.T) {
 	}
 }
 
+func TestPathContainsSymlinkAllowsDarwinSystemAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS filesystem alias")
+	}
+	target := filepath.Join(os.TempDir(), "mimir", "file")
+	got, err := pathContainsSymlink(filesystemRoot(target), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatalf("macOS system alias was treated as an unsafe symlink: %s", target)
+	}
+}
+
 func TestUninstallRemovesUnchangedPreservesModifiedAndUpdatesReceiptAndLog(t *testing.T) {
 	paths := isolatedInstallation(t, true)
 	binary := filepath.Join(t.TempDir(), "mimir")
