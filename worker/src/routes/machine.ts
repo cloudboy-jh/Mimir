@@ -7,6 +7,8 @@ import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcil
 import type { AppEnv } from "../types";
 
 const SEARCH_TYPES = ["intent", "excerpts", "files", "errors"] as const;
+const MACHINE_API_VERSION = 1;
+const MACHINE_CAPABILITIES = ["hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search"] as const;
 type SearchType = (typeof SEARCH_TYPES)[number];
 
 // searchTypes resolves the requested column groups, defaulting to all.
@@ -26,7 +28,14 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
       c.env.DB.prepare("SELECT COUNT(*) AS count FROM sessions").first<{ count: number }>(),
       c.env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges WHERE capture_status = 'saved'").first<{ count: number }>(),
     ]);
-    return c.json({ url: new URL(c.req.url).origin, sessions: sessions?.count ?? 0, log: exchanges?.count ?? 0 });
+		return c.json({
+			service: "mimir",
+			api_version: MACHINE_API_VERSION,
+			capabilities: MACHINE_CAPABILITIES,
+			url: new URL(c.req.url).origin,
+			sessions: sessions?.count ?? 0,
+			log: exchanges?.count ?? 0,
+		});
   });
 
   app.get("/sessions", async (c) => {

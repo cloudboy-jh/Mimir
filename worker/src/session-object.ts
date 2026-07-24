@@ -66,20 +66,33 @@ export class SessionObject implements DurableObject {
 
   private async applyEvent(event: SessionEvent): Promise<void> {
     const meta = this.meta!;
-    if (meta.finalizedAt) await this.reopen();
+		let duplicateTurn = false;
+		let dedupKey: string | null = null;
+		if (event.kind === "turn" && event.turn?.exchange_id) {
+			dedupKey = `exchange:${event.turn.exchange_id}`;
+			duplicateTurn = await this.ctx.storage.get<boolean>(dedupKey) === true
+				|| this.turns!.some((turn) => turn.exchange_id === event.turn?.exchange_id);
+		}
+		if (duplicateTurn) return;
+		if (meta.finalizedAt) {
+			if (event.kind === "end") return;
+			if (event.kind === "heartbeat" && Date.parse(event.ts) <= Date.parse(meta.finalizedAt)) return;
+			await this.reopen();
+		}
     meta.lastEventAt = event.ts;
     if (event.harness) meta.harness = meta.harness ?? event.harness;
     if (event.repo) meta.repo = meta.repo ?? event.repo;
     if (event.kind === "turn" && event.turn) {
-      meta.turnCount += 1;
-      meta.tokensIn += event.turn.usage?.input_tokens ?? 0;
-      meta.tokensOut += event.turn.usage?.output_tokens ?? 0;
-      this.turns!.push({ ...event.turn, ts: event.ts });
-      if (this.turns!.length > MAX_STORED_TURNS) this.turns = this.turns!.slice(-MAX_STORED_TURNS);
-      await this.ctx.storage.put("turns", this.turns);
+		meta.turnCount += 1;
+		meta.tokensIn += event.turn.usage?.input_tokens ?? 0;
+		meta.tokensOut += event.turn.usage?.output_tokens ?? 0;
+		this.turns!.push({ ...event.turn, ts: event.ts });
+		if (this.turns!.length > MAX_STORED_TURNS) this.turns = this.turns!.slice(-MAX_STORED_TURNS);
+		await this.ctx.storage.put("turns", this.turns);
     }
     await this.ctx.storage.put("meta", meta);
     await this.ctx.storage.setAlarm(Date.parse(event.ts) + SESSION_SILENCE_MS);
+		if (dedupKey) await this.ctx.storage.put(dedupKey, true);
     this.broadcast({ type: "event", event });
   }
 

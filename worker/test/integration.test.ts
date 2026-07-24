@@ -546,11 +546,40 @@ describe("Session object", () => {
     expect(body).toMatchObject({ session_id: "object-live", liveness: "active", turn_count: 1, tokens_in: 5, tokens_out: 3, finalized_at: null });
   });
 
+  it("reports the machine API version and capabilities", async () => {
+		const response = await request("/whoami", { headers: { authorization: "Bearer machine-token" } });
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			service: "mimir",
+			api_version: 1,
+			capabilities: expect.arrayContaining(["hermes_authorization", "session_events", "session_lifecycle"]),
+		});
+	});
+
+  it("deduplicates retried turn events by exchange ID", async () => {
+		const event = { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { exchange_id: "retry-1", model: "openai/test", usage: { input_tokens: 5, output_tokens: 3 } } };
+		expect((await postEvent("object-retry", event)).status).toBe(200);
+		expect((await postEvent("object-retry", { ...event, ts: new Date().toISOString() })).status).toBe(200);
+		const { body } = await objectState("object-retry");
+		expect(body).toMatchObject({ turn_count: 1, tokens_in: 5, tokens_out: 3 });
+	});
+
   it("rejects invalid events and requires auth", async () => {
     expect((await postEvent("object-invalid", { version: 1, kind: "note", ts: new Date().toISOString() })).status).toBe(400);
     expect((await request("/sessions/object-invalid/events", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
     expect((await postEvent("object-invalid", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { usage: { input_tokens: -1, output_tokens: 0 } } })).status).toBe(400);
   });
+
+  it("does not reopen a finalized session for duplicate turns or stale heartbeats", async () => {
+		const beforeEnd = new Date(Date.now() - 1_000).toISOString();
+		const turn = { version: 1, kind: "turn", ts: beforeEnd, turn: { exchange_id: "finalized-retry", model: "openai/test" } };
+		await postEvent("object-finalized-retry", turn);
+		await postEvent("object-finalized-retry", { version: 1, kind: "end", ts: new Date().toISOString(), reason: "done" });
+		await postEvent("object-finalized-retry", turn);
+		await postEvent("object-finalized-retry", { version: 1, kind: "heartbeat", ts: beforeEnd });
+		const { body } = await objectState("object-finalized-retry");
+		expect(body).toMatchObject({ liveness: "finalized", turn_count: 1, end_reason: "done" });
+	});
 
   it("projects disconnected after the liveness window without finalizing", async () => {
     const stale = new Date(Date.now() - 3 * 60_000).toISOString();
