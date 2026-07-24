@@ -155,6 +155,18 @@ func TestResolveInstallDirPrecedence(t *testing.T) {
 	}
 }
 
+func TestTemporaryExecutableRecognizesGoBuildCache(t *testing.T) {
+	cache := filepath.Join(filepath.Dir(os.TempDir()), "mimir-test-go-cache")
+	t.Setenv("GOCACHE", cache)
+	path := filepath.Join(cache, "d6", "build-id-d", "mimir.exe")
+	if !temporaryExecutable(path) {
+		t.Fatalf("go-run executable under GOCACHE was not temporary: %s", path)
+	}
+	if temporaryExecutable(filepath.Join(filepath.Dir(cache), "bin", "mimir.exe")) {
+		t.Fatal("installed executable outside temporary roots was temporary")
+	}
+}
+
 func TestInstallExecutableCopyFreshAndReplacement(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "new", "mimir")
 	if runtime.GOOS == "windows" {

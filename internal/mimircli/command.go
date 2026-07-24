@@ -436,13 +436,25 @@ func resolveInstallDir(explicit string) (string, error) {
 }
 
 func temporaryExecutable(path string) bool {
-	temp, err := filepath.Abs(os.TempDir())
-	if err != nil {
-		return false
+	roots := []string{os.TempDir(), os.Getenv("GOTMPDIR"), os.Getenv("GOCACHE")}
+	if cache, err := os.UserCacheDir(); err == nil {
+		roots = append(roots, filepath.Join(cache, "go-build"))
 	}
-	path = filepath.Clean(path)
-	rel, err := filepath.Rel(temp, path)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" || root == "off" {
+			continue
+		}
+		root, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, filepath.Clean(path))
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameFilePath(left, right string) bool {
