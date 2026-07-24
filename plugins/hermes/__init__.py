@@ -4,15 +4,9 @@ Reports completed turns, heartbeats, and session ends to the Mimir session
 object. Capture happens above provider transport, so providers the Mimir
 proxy cannot reach (Nous portal account, direct providers) are covered.
 
-Two modes, decided once at startup:
-
-- Full mode: turn + heartbeat + end events. Used when Hermes talks to
-  providers directly.
-- Liveness-only mode: heartbeat + end events, no turn events. Used when the
-  Mimir-managed OpenRouter redirect is active (OPENROUTER_BASE_URL points at
-  the Mimir Worker), because the proxy already captures those turns with
-  token usage and full exchange archives; reporting them here would double
-  count the session.
+Each turn is classified from Hermes' pre_api_request transport metadata.
+Turns routed through the Mimir OpenRouter redirect are liveness-only to avoid
+double counting; direct-provider turns are reported in full.
 
 Install: copy this directory to the plugins directory under your Hermes home
 (~/.hermes/plugins/ or %LOCALAPPDATA%/hermes/plugins on Windows). Uninstall:
@@ -24,9 +18,8 @@ No credentials live here. Connection resolves from, in order:
   3. ~/.mimir/config + ~/.mimir/token (written by `mimir setup`/`mimir login`)
 
 Delivery is best-effort and never blocks or raises into Hermes. Session ends
-are reported by on_session_end/on_session_reset/on_session_finalize; if the
-process dies first, the server-side silence timer finalizes the session
-within ~10 minutes regardless.
+are reported by on_session_finalize; if the process dies first, the
+server-side silence timer finalizes the session within ~10 minutes.
 """
 
 import json
@@ -93,7 +86,7 @@ def repo_name(directory):
     return parts[-1] if parts else None
 
 
-def build_turn_event(session_id, model, user_message, repo):
+def build_turn_event(session_id, turn_id, model, user_message, repo):
     return {
         "version": 1,
         "kind": "turn",
@@ -102,6 +95,7 @@ def build_turn_event(session_id, model, user_message, repo):
         "repo": repo,
         "ts": _now(),
         "turn": {
+            "exchange_id": turn_id if isinstance(turn_id, str) and turn_id else None,
             "model": model if isinstance(model, str) and model else None,
             "request_kind": "primary",
             "excerpt": (user_message or "")[:500] if isinstance(user_message, str) else None,
@@ -123,10 +117,34 @@ def build_simple_event(kind, session_id, repo, reason=None):
     return event
 
 
+def _uses_connection_url(base_url, connection_url):
+    if not isinstance(base_url, str) or not base_url.strip() or not connection_url:
+        return False
+    try:
+        target = urllib.parse.urlsplit(base_url.strip())
+        connection = urllib.parse.urlsplit(connection_url.strip())
+    except ValueError:
+        return False
+    if target.scheme.lower() != connection.scheme.lower() or target.netloc.lower() != connection.netloc.lower():
+        return False
+    root = connection.path.rstrip("/")
+    path = target.path.rstrip("/")
+    return path == root or path.startswith(root + "/")
+
+
 def liveness_only(env, connection_url):
     """True when the Mimir-managed OpenRouter redirect is active."""
     base = (env.get("OPENROUTER_BASE_URL") or "").strip()
-    return bool(base and connection_url and connection_url in base)
+    return _uses_connection_url(base, connection_url)
+
+
+def turn_uses_proxy(provider, base_url, env, connection_url):
+    """True only when this turn used the Mimir-managed provider route."""
+    if isinstance(base_url, str) and base_url.strip():
+        return _uses_connection_url(base_url, connection_url)
+    if isinstance(provider, str) and provider and provider.lower() != "openrouter":
+        return False
+    return liveness_only(env, connection_url)
 
 
 class _Reporter:
@@ -137,6 +155,7 @@ class _Reporter:
         self._reported_set = set()
         self._last_session = None
         self._last_activity = 0.0
+        self._turn_routes = {}
         self._lock = threading.Lock()
 
     def _dedup(self, key):
@@ -149,7 +168,15 @@ class _Reporter:
                 self._reported_set.discard(self._reported.pop(0))
             return True
 
-    def _touch(self, session_id):
+    def _forget(self, key):
+        with self._lock:
+            self._reported_set.discard(key)
+            try:
+                self._reported.remove(key)
+            except ValueError:
+                pass
+
+    def touch(self, session_id):
         with self._lock:
             self._last_session = session_id
             self._last_activity = time.monotonic()
@@ -162,8 +189,6 @@ class _Reporter:
 
     def post(self, event):
         session_id = event.get("session_id")
-        if session_id:
-            self._touch(session_id)
         url = f"{self._connection['url']}/sessions/{urllib.parse.quote(session_id or '', safe='')}/events"
         body = json.dumps(event).encode("utf-8")
         request = urllib.request.Request(
@@ -177,15 +202,52 @@ class _Reporter:
         )
         try:
             with urllib.request.urlopen(request, timeout=10):
-                pass
+                return True
         except Exception:
             # Best-effort: capture must never interrupt the harness.
-            pass
+            return False
+
+    def _deliver_attempt(self, event, key, attempt, wait_on_exit):
+        if self.post(event):
+            return
+        if attempt >= 4:
+            if key:
+                self._forget(key)
+            return
+        timer = threading.Timer(0.25 * (2 ** (attempt - 1)), self._deliver_attempt, args=(event, key, attempt + 1, wait_on_exit))
+        timer.daemon = not wait_on_exit
+        timer.start()
+
+    def deliver(self, event, key=None, wait_on_exit=False):
+        if key and not self._dedup(key):
+            return
+        worker = threading.Thread(target=self._deliver_attempt, args=(event, key, 1, wait_on_exit), daemon=not wait_on_exit)
+        worker.start()
+
+    def record_turn_route(self, session_id, turn_id, provider, base_url):
+        if not session_id or not turn_id:
+            return
+        proxied = turn_uses_proxy(provider, base_url, os.environ, self._connection["url"])
+        with self._lock:
+            self._turn_routes[(session_id, turn_id)] = proxied
+
+    def take_turn_route(self, session_id, turn_id):
+        if not session_id or not turn_id:
+            return None
+        with self._lock:
+            return self._turn_routes.pop((session_id, turn_id), None)
+
+    def end(self, session_id, reason):
+        with self._lock:
+            if self._last_session == session_id:
+                self._last_session = None
+                self._last_activity = 0.0
+        self.deliver(build_simple_event("end", session_id, self._repo, reason=reason), wait_on_exit=True)
 
     def heartbeat_if_active(self):
         session_id = self.active_session()
         if session_id:
-            self.post(build_simple_event("heartbeat", session_id, self._repo))
+            self.deliver(build_simple_event("heartbeat", session_id, self._repo))
 
 
 def register(ctx):
@@ -197,8 +259,6 @@ def register(ctx):
     except Exception:
         repo = None
     reporter = _Reporter(connection, repo)
-    turns_enabled = not liveness_only(os.environ, connection["url"])
-
     def heartbeat_loop():
         while True:
             threading.Event().wait(HEARTBEAT_SECONDS)
@@ -206,28 +266,34 @@ def register(ctx):
 
     threading.Thread(target=heartbeat_loop, daemon=True).start()
 
+    def on_transport(session_id=None, turn_id=None, provider=None, base_url=None, **_kwargs):
+        reporter.record_turn_route(session_id, turn_id, provider, base_url)
+
     def on_turn(session_id=None, turn_id=None, user_message=None, model=None, **_kwargs):
-        if not turns_enabled or not session_id:
+        if not session_id:
             return
-        if turn_id and not reporter._dedup(f"turn:{turn_id}"):
+        reporter.touch(session_id)
+        proxied = reporter.take_turn_route(session_id, turn_id)
+        if proxied is None:
+            proxied = liveness_only(os.environ, connection["url"])
+        if proxied:
             return
-        reporter.post(build_turn_event(session_id, model, user_message, repo))
+        key = f"turn:{turn_id}" if turn_id else None
+        reporter.deliver(build_turn_event(session_id, turn_id, model, user_message, repo), key=key)
 
     def on_start(session_id=None, **_kwargs):
         if session_id:
-            reporter.post(build_simple_event("heartbeat", session_id, repo))
+            reporter.touch(session_id)
+            reporter.deliver(build_simple_event("heartbeat", session_id, repo))
 
-    def on_end(reason):
-        def handler(session_id=None, **_kwargs):
-            if session_id:
-                reporter.post(build_simple_event("end", session_id, repo, reason=reason))
-        return handler
+    def on_finalize(session_id=None, reason=None, **_kwargs):
+        if session_id:
+            reporter.end(session_id, reason or "session finalized")
 
+    ctx.register_hook("pre_api_request", on_transport)
     ctx.register_hook("post_llm_call", on_turn)
     ctx.register_hook("on_session_start", on_start)
-    ctx.register_hook("on_session_end", on_end("harness exit"))
-    ctx.register_hook("on_session_reset", on_end("session reset"))
-    ctx.register_hook("on_session_finalize", on_end("session finalized"))
+    ctx.register_hook("on_session_finalize", on_finalize)
 
 
 # Test surface.
@@ -237,5 +303,7 @@ __testing = {
     "repo_name": repo_name,
     "build_turn_event": build_turn_event,
     "build_simple_event": build_simple_event,
+    "uses_connection_url": _uses_connection_url,
     "liveness_only": liveness_only,
+    "turn_uses_proxy": turn_uses_proxy,
 }
