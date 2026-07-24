@@ -162,8 +162,27 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if managedByPackageManager(target) {
 		return fmt.Errorf("mimir at %s is managed by a package manager; update through it instead", target)
 	}
-	if err := installBinary(target, binary); err != nil {
+	currentBinary, err := os.ReadFile(target)
+	if err != nil {
+		return fmt.Errorf("reading current Mimir executable: %w", err)
+	}
+	previousHash := hashBytes(currentBinary)
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return err
+	}
+	if receipt.CLI.Path == "" || !sameFilePath(receipt.CLI.Path, target) || receipt.CLI.Hash == "" || receipt.CLI.Hash != previousHash {
+		return fmt.Errorf("mimir update requires the receipt-owned executable; run mimir install first")
+	}
+	if err := installBinary(target, binary, previousHash); err != nil {
 		return fmt.Errorf("installing update: %w", err)
+	}
+	nextHash := hashBytes(binary)
+	if err := recordManagedBinaryUpdate(target, previousHash, nextHash, latest); err != nil {
+		if rollbackErr := rollbackUpdatedBinary(target, currentBinary, nextHash); rollbackErr != nil {
+			return fmt.Errorf("recording updated binary: %w; rollback failed: %v", err, rollbackErr)
+		}
+		return fmt.Errorf("recording updated binary: %w", err)
 	}
 	lifecycle, err := runUpdatedInstaller(ctx, target)
 	if err != nil {
@@ -181,6 +200,31 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	}
 	_, err = fmt.Fprintln(out, message)
 	return err
+}
+
+func rollbackUpdatedBinary(target string, previousBinary []byte, updatedHash string) error {
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	if hashBytes(data) != updatedHash {
+		return fmt.Errorf("refusing to roll back changed executable %s", target)
+	}
+	old := target + ".old"
+	if oldData, oldErr := os.ReadFile(old); oldErr == nil && hashBytes(oldData) == hashBytes(previousBinary) {
+		failed := target + ".rollback"
+		_ = os.Remove(failed)
+		if err := os.Rename(target, failed); err != nil {
+			return err
+		}
+		if err := os.Rename(old, target); err != nil {
+			_ = os.Rename(failed, target)
+			return err
+		}
+		_ = os.Remove(failed)
+		return nil
+	}
+	return installBinary(target, previousBinary, updatedHash)
 }
 
 type updateReport struct {
@@ -344,7 +388,7 @@ func managedByPackageManager(path string) bool {
 // installBinary atomically swaps the running binary. On Windows a running
 // executable can be renamed but not replaced, so the current binary is moved
 // aside first; the leftover is removed on the next update.
-func installBinary(target string, binary []byte) error {
+func installBinary(target string, binary []byte, requiredHash ...string) error {
 	dir := filepath.Dir(target)
 	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
 		return err
@@ -363,6 +407,12 @@ func installBinary(target string, binary []byte) error {
 		return err
 	}
 	expectedHash := hashBytes(current)
+	if len(requiredHash) > 0 {
+		if expectedHash != requiredHash[0] {
+			return fmt.Errorf("refusing to replace changed executable %s", target)
+		}
+		expectedHash = requiredHash[0]
+	}
 	staged, err := os.CreateTemp(dir, ".mimir-update-*")
 	if err != nil {
 		return err

@@ -148,10 +148,13 @@ func TestBuildDashboard(t *testing.T) {
 
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("HERMES_HOME", t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
 	t.Setenv("OPENROUTER_API_KEY", "hermes-openrouter-key")
+	recordCurrentExecutableInReceipt(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer machine-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -204,7 +207,7 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{paths.Receipt, paths.Log} {
+	for _, path := range []string{paths.Log} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("setup created installation lifecycle file %s", path)
 		}
@@ -328,6 +331,7 @@ func TestCloudflareIdentityCacheRoundTrip(t *testing.T) {
 func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(envMimirHome, home)
+	recordCurrentExecutableInReceipt(t)
 	manifest, err := currentConnectionManifest("https://mimir.example.workers.dev")
 	if err != nil {
 		t.Fatal(err)
@@ -340,6 +344,28 @@ func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	}
 	if len(manifest.MCPCommand) != 2 || !filepath.IsAbs(manifest.MCPCommand[0]) || manifest.MCPCommand[1] != "serve" {
 		t.Fatalf("MCP command %#v", manifest.MCPCommand)
+	}
+}
+
+func recordCurrentExecutableInReceipt(t *testing.T) {
+	t.Helper()
+	path, err := executablePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.CLI = installReceiptCLI{Path: path, Version: version, Hash: hashBytes(data)}
+	if paths, err := managedInstallationPaths(); err != nil {
+		t.Fatal(err)
+	} else if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -2,6 +2,10 @@ package mimircli
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -61,6 +65,52 @@ func TestInstallHermesIntegrationPreservesEnvAndIsIdempotent(t *testing.T) {
 	}
 	if key, err := hermesOpenRouterKey(home); err != nil || key != "original-key" {
 		t.Fatalf("key=%q err=%v", key, err)
+	}
+}
+
+func TestEnableHermesPluginUsesHermesCLI(t *testing.T) {
+	old := runHermesPluginCommand
+	var gotHome string
+	var gotArgs []string
+	runHermesPluginCommand = func(_ context.Context, home string, args ...string) error {
+		gotHome = home
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+	t.Cleanup(func() { runHermesPluginCommand = old })
+	home := t.TempDir()
+	if err := enableHermesPlugin(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	if gotHome != home || strings.Join(gotArgs, " ") != "enable mimir" {
+		t.Fatalf("Hermes plugin command home=%q args=%q", gotHome, gotArgs)
+	}
+}
+
+func TestAuthorizeHermesCredentialReportsStaleWorker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/integrations/hermes/authorize" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}))
+	defer server.Close()
+	err := authorizeHermesCredential(context.Background(), Pointer{URL: server.URL, Token: "machine"}, "openrouter")
+	if err == nil || !strings.Contains(err.Error(), "run mimir deploy") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAuthorizeHermesCredentialSendsDigest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/integrations/hermes/authorize" || r.Header.Get("Authorization") != "Bearer machine" {
+			t.Fatalf("request = %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		fmt.Fprint(w, `{"authorized":true}`)
+	}))
+	defer server.Close()
+	if err := authorizeHermesCredential(context.Background(), Pointer{URL: server.URL, Token: "machine"}, "openrouter"); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package mimircli
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +25,7 @@ type managedArtifactStatus string
 const (
 	artifactInstalled       managedArtifactStatus = "installed"
 	artifactAdopted         managedArtifactStatus = "adopted"
+	artifactMigrated        managedArtifactStatus = "migrated"
 	artifactUpdated         managedArtifactStatus = "updated"
 	artifactCurrent         managedArtifactStatus = "current"
 	artifactIdentical       managedArtifactStatus = "identical"
@@ -222,7 +224,42 @@ func refreshManagedInstallation(enroll bool, operation string) (managedArtifactR
 	if err != nil {
 		return managedArtifactReport{}, err
 	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	if receipt.CLI.Path == "" || !sameFilePath(receipt.CLI.Path, cli.Path) || receipt.CLI.Hash == "" || receipt.CLI.Hash != cli.Hash {
+		// Artifact refresh must never transfer binary ownership to whichever
+		// executable happened to invoke it. Only an in-place update of the
+		// receipt-recorded binary may refresh its version and hash.
+		return reconcileManagedArtifacts(enroll, operation, true, true, false, nil)
+	}
 	return reconcileManagedArtifacts(enroll, operation, true, true, false, &installReceiptUpdate{CLI: cli})
+}
+
+func recordManagedBinaryUpdate(path, previousHash, nextHash, nextVersion string) error {
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return err
+	}
+	if receipt.CLI.Path == "" || !sameFilePath(receipt.CLI.Path, path) || receipt.CLI.Hash == "" || receipt.CLI.Hash != previousHash {
+		return fmt.Errorf("refusing to transfer Mimir binary ownership during update")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if hashBytes(data) != nextHash {
+		return fmt.Errorf("updated Mimir executable hash changed before receipt refresh")
+	}
+	receipt.CLI.Hash = nextHash
+	receipt.CLI.Version = nextVersion
+	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return err
+	}
+	return writeJSONAtomic(paths.Receipt, receipt)
 }
 
 func checkManagedArtifacts() (managedArtifactReport, error) {
@@ -230,6 +267,10 @@ func checkManagedArtifacts() (managedArtifactReport, error) {
 }
 
 func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
+	return uninstallManagedInstallationWithContext(context.Background(), keepBinary)
+}
+
+func uninstallManagedInstallationWithContext(ctx context.Context, keepBinary bool) (uninstallReport, error) {
 	paths, err := managedInstallationPaths()
 	if err != nil {
 		return uninstallReport{}, err
@@ -263,6 +304,17 @@ func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
 	sort.Strings(targets)
 
 	report := uninstallReport{Operation: "uninstall", ReceiptPath: paths.Receipt, LogPath: paths.Log}
+	var hermesDisableErr error
+	hermesOwned := false
+	for _, owned := range receipt.Artifacts {
+		if strings.HasPrefix(filepath.ToSlash(owned.Source), "plugins/hermes/") {
+			hermesOwned = true
+			break
+		}
+	}
+	if paths.HermesDetected && hermesOwned {
+		hermesDisableErr = disableHermesPlugin(ctx, paths.HermesHome)
+	}
 	for _, target := range targets {
 		spec := byTarget[target]
 		owned, isOwned := receipt.Artifacts[target]
@@ -276,6 +328,10 @@ func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
 		}
 	}
 	report.Hermes = uninstallHermesIntegration()
+	if hermesDisableErr != nil {
+		report.Hermes.State = "preserved"
+		report.Hermes.Detail = hermesDisableErr.Error()
+	}
 	report.Binary = uninstallManagedBinary(receipt.CLI, receipt.Method, keepBinary)
 	if report.Binary.Status == "removed" {
 		receipt.CLI = installReceiptCLI{}
@@ -816,6 +872,19 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 		return result, true, owned.Hash != spec.hash || owned.Source != spec.source, nil
 	}
 	if owned.Hash == "" {
+		if legacyMimirArtifact(spec.source, currentHash) {
+			if !write {
+				result.Status = artifactOutdated
+				result.Detail = "known legacy Mimir artifact is ready to migrate"
+				return result, false, false, nil
+			}
+			if err := writeFileAtomic(spec.root, spec.target, spec.data); err != nil {
+				return result, false, false, err
+			}
+			result.Status, result.Hash = artifactMigrated, spec.hash
+			result.Detail = "replaced an exact historical Mimir artifact"
+			return result, true, true, nil
+		}
 		result.Status = artifactConflict
 		result.Detail = "unowned file differs from bundled content"
 		return result, false, false, nil
@@ -836,6 +905,60 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 	}
 	result.Status, result.Hash = artifactUpdated, spec.hash
 	return result, true, true, nil
+}
+
+// legacyMimirArtifact recognizes only byte-exact files shipped or generated
+// by earlier Mimir versions. This lets the receipt-based installer take over
+// old Mimir files without treating a filename or marker as proof of ownership.
+var legacyMimirArtifactHashes = map[string][]string{
+	// Byte-exact OpenCode plugin adapters shipped before receipt enrollment.
+	"plugins/opencode/mimir.ts": {
+		"d64904099935cfd66f8f602313683d517bafd8a4fa5224203f42bf4a94fcab4d",
+		"4700091554a312e3b3a666d284365c768c722e0fdf10d38806969bc844c96d79",
+	},
+	// v0.3.2-v0.3.3 Hermes capture plugin, before Hermes artifacts were enrolled.
+	"plugins/hermes/__init__.py": {
+		"bc969928e011416ddd38fa81d09d50b6536f2b2212cac3b7880a359e4735dc12",
+	},
+	"plugins/hermes/plugin.yaml": {
+		"e3b43f6cdd6d8c5eec368e600083db71735a4bea474cfcb0a6b1b7d03f74f71e",
+	},
+	// Historical generated setup adapters, including the v0.3.3 Hermes copy.
+	"skills/mimir-setup/SKILL.md": {
+		"5fc2311997589f5b0c68fa0aa23453ff0854b210ac67f1d1f70738b648c4652d",
+		"d0dc18bdcdb7498e72ea8174c989617d9255f56e0afa76a5d12dcc12ea021543",
+		"30ed036d030a40f0bdbdf7b69e24044bc1f9aae7e10569d9980f055cb50ff5ce",
+		"9004e3a65d31d563b1ef1b874a09a8f395c842211a4166310a7da75434ed3013",
+		"139eddbfd5832a1c1b23f232206f7be0b048d3eacff39bec3147b92385b2811c",
+		"e875414e7a7896b5c497ec5aa7103e88557c83fd791f448b4f4d066c303d6e6b",
+		"815a7bd4683e3ccc629368b039848d82441660cd3254566f8314be0249d4a134",
+	},
+	// Historical generated setup references, including the v0.3.3 Hermes copy.
+	"skills/mimir-setup/references/connection-manifest.md": {
+		"d0f406e44eff94f1c5bcda4d6af83be9ccf5040cc9e978e22ba772bc3107b81b",
+		"e1fe17a596b0967397dc1df4547c4fc4f0410be5fa87ee7d2dd753cb41723e82",
+		"05d0cc77f08e98b2d17dbb452257208fed8a09c29cfb5e484f3ea164e2d98a37",
+		"09ad8cdc88fa7b0312e01fe49547a664e2d703ce076d284a58cdbc46e2a39e0b",
+		"7073294becca721f70e802fe9241eebb5d17174e14c2c7c865a725a91dedd4c8",
+	},
+	// Historical generated usage adapters, including the v0.3.3 Hermes copy.
+	"skills/mimir-use/SKILL.md": {
+		"35d3f052078d7c05413a078da31538627dfaa95bf585367d7816dcfe854c4252",
+		"ff0e811c8b18a96a54be145c6513b698d85a92700f5c06558ca84da06e714335",
+		"81017ad976d9825b42a1b7d37595cf54d1686aa3bb23cc129b3c51cdb09a9a57",
+		"39e2f26fd62e52b8071170010e79f3628cebce5544f2ddd9e17e4e1a96c1ef2f",
+		"ae7a8ce6c0f107cf010de191d3a63e114c30147f712680cad833701f2dec6f9f",
+		"deeaa9eaa5874191dda4efed36b55b42ba4960f726904d4b96457922ed064708",
+	},
+}
+
+func legacyMimirArtifact(source, hash string) bool {
+	for _, candidate := range legacyMimirArtifactHashes[source] {
+		if hash == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func hashBytes(data []byte) string {

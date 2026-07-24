@@ -24,7 +24,7 @@ func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			fmt.Fprint(w, `{"sessions":0,"log":0}`)
+			fmt.Fprint(w, `{"service":"mimir","api_version":1,"capabilities":["hermes_authorization","session_events","session_lifecycle"],"sessions":0,"log":0}`)
 		case "/integrations/hermes/authorize":
 			if r.Header.Get("Authorization") != "Bearer machine-token" {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -45,12 +45,30 @@ func TestRunDoctorHealthyHermesIntegration(t *testing.T) {
 	if err := savePointer(Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := syncManagedArtifacts(true, "install"); err != nil {
+	artifacts, err := syncManagedArtifacts(true, "install")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installCurrentHarnessIntegrations(context.Background()); err != nil {
+	recordCurrentExecutableInReceipt(t)
+	oldRunHermesPluginCommand := runHermesPluginCommand
+	runHermesPluginCommand = func(context.Context, string, ...string) error { return nil }
+	oldListHermesPlugins := listHermesPlugins
+	listHermesPlugins = func(context.Context, string) (string, error) { return "enabled user 1.0.0 mimir\n", nil }
+	oldFindOpenCode := findOpenCode
+	findOpenCode = func() (string, error) { return "opencode-test", nil }
+	t.Cleanup(func() {
+		runHermesPluginCommand = oldRunHermesPluginCommand
+		listHermesPlugins = oldListHermesPlugins
+		findOpenCode = oldFindOpenCode
+	})
+	if _, err := installCurrentHarnessIntegrations(context.Background(), artifacts); err != nil {
 		t.Fatal(err)
 	}
+	manifest, err := currentConnectionManifest(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = manifest
 	report := runDoctor(context.Background())
 	if !report.OK {
 		t.Fatalf("doctor report: %#v", report)
@@ -67,5 +85,14 @@ func TestRunDoctorReportsMissingConnection(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("doctor created %s", path)
 		}
+	}
+}
+
+func TestValidateWorkerIdentityRejectsStaleWorker(t *testing.T) {
+	if err := validateWorkerIdentity([]byte(`{"sessions":0,"log":0}`)); err == nil {
+		t.Fatal("legacy Worker was accepted")
+	}
+	if err := validateWorkerIdentity([]byte(`{"service":"mimir","api_version":1,"capabilities":["session_events"]}`)); err == nil {
+		t.Fatal("Worker missing required capabilities was accepted")
 	}
 }

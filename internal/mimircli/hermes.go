@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -33,6 +35,9 @@ func installCurrentHermesIntegration(ctx context.Context) (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
+	if err := enableHermesPlugin(ctx, home); err != nil {
+		return false, err
+	}
 	hermesKey, err := hermesOpenRouterKey(home)
 	if err != nil {
 		return false, err
@@ -46,9 +51,60 @@ func installCurrentHermesIntegration(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+var runHermesPluginCommand = func(ctx context.Context, home string, args ...string) error {
+	command := exec.CommandContext(ctx, "hermes", append([]string{"plugins"}, args...)...)
+	command.Env = append(os.Environ(), "HERMES_HOME="+home)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("hermes plugins %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+var listHermesPlugins = func(ctx context.Context, home string) (string, error) {
+	command := exec.CommandContext(ctx, "hermes", "plugins", "list", "--plain", "--no-bundled")
+	command.Env = append(os.Environ(), "HERMES_HOME="+home)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("hermes plugins list: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+func hermesPluginEnabled(ctx context.Context, home string) (bool, error) {
+	output, err := listHermesPlugins(ctx, home)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && fields[0] == "enabled" && fields[len(fields)-1] == "mimir" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func enableHermesPlugin(ctx context.Context, home string) error {
+	if err := runHermesPluginCommand(ctx, home, "enable", "mimir"); err != nil {
+		return fmt.Errorf("enabling Hermes Mimir plugin: %w", err)
+	}
+	return nil
+}
+
+func disableHermesPlugin(ctx context.Context, home string) error {
+	if err := runHermesPluginCommand(ctx, home, "disable", "mimir"); err != nil {
+		return fmt.Errorf("disabling Hermes Mimir plugin: %w", err)
+	}
+	return nil
+}
+
 func authorizeHermesCredential(ctx context.Context, pointer Pointer, token string) error {
 	hash := sha256.Sum256([]byte(token))
 	_, err := remoteRequestWithPointer(ctx, pointer, "POST", "/integrations/hermes/authorize", map[string]string{"token_hash": hex.EncodeToString(hash[:])})
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {
+		return fmt.Errorf("deployed Worker is older than this CLI and lacks Hermes authorization; run mimir deploy")
+	}
 	return err
 }
 

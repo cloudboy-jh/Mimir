@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,9 @@ func TestExecuteVersionJSONIncludesInstallState(t *testing.T) {
 
 func TestExecuteInstallJSONEnrollsArtifacts(t *testing.T) {
 	paths := isolatedInstallation(t, false)
+	oldFindOpenCode := findOpenCode
+	findOpenCode = func() (string, error) { return "", errors.New("not installed") }
+	t.Cleanup(func() { findOpenCode = oldFindOpenCode })
 	binDir := t.TempDir()
 	var output bytes.Buffer
 	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", binDir, "--json"}, IO{Out: &output}); err != nil {
@@ -94,6 +98,37 @@ func TestExecuteInstallJSONEnrollsArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.Receipt); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExecuteInstallPreservesConflictingHermesPluginWithoutEnablingIt(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	conflict := filepath.Join(paths.HermesHome, "plugins", "mimir", "plugin.yaml")
+	if err := os.MkdirAll(filepath.Dir(conflict), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conflict, []byte("name: user-plugin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldFindOpenCode := findOpenCode
+	findOpenCode = func() (string, error) { return "", errors.New("not installed") }
+	oldRunHermesPluginCommand := runHermesPluginCommand
+	commands := 0
+	runHermesPluginCommand = func(context.Context, string, ...string) error { commands++; return nil }
+	t.Cleanup(func() {
+		findOpenCode = oldFindOpenCode
+		runHermesPluginCommand = oldRunHermesPluginCommand
+	})
+	var output bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", t.TempDir(), "--json"}, IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	var report installReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.ActionRequired || commands != 0 {
+		t.Fatalf("report=%#v Hermes commands=%d", report, commands)
 	}
 }
 
@@ -132,6 +167,9 @@ func TestExecuteUninstallJSONReportsBinaryAndArtifacts(t *testing.T) {
 }
 
 func TestResolveInstallDirPrecedence(t *testing.T) {
+	oldReadGoEnv := readGoEnv
+	readGoEnv = func(string) string { return "" }
+	t.Cleanup(func() { readGoEnv = oldReadGoEnv })
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -155,6 +193,25 @@ func TestResolveInstallDirPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveInstallDirUsesPersistedGoEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MIMIR_INSTALL_DIR", "")
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "")
+	oldReadGoEnv := readGoEnv
+	readGoEnv = func(key string) string {
+		if key == "GOBIN" {
+			return filepath.Join(home, "persisted-bin")
+		}
+		return ""
+	}
+	t.Cleanup(func() { readGoEnv = oldReadGoEnv })
+	got, err := resolveInstallDir("")
+	if err != nil || got != filepath.Join(home, "persisted-bin") {
+		t.Fatalf("install dir = %q, %v", got, err)
+	}
+}
+
 func TestTemporaryExecutableRecognizesGoBuildCache(t *testing.T) {
 	cache := filepath.Join(filepath.Dir(os.TempDir()), "mimir-test-go-cache")
 	t.Setenv("GOCACHE", cache)
@@ -164,6 +221,23 @@ func TestTemporaryExecutableRecognizesGoBuildCache(t *testing.T) {
 	}
 	if temporaryExecutable(filepath.Join(filepath.Dir(cache), "bin", "mimir.exe")) {
 		t.Fatal("installed executable outside temporary roots was temporary")
+	}
+}
+
+func TestTemporaryExecutableUsesPersistedGoCache(t *testing.T) {
+	cache := filepath.Join(filepath.Dir(os.TempDir()), "persisted-go-cache")
+	t.Setenv("GOCACHE", "")
+	t.Setenv("GOTMPDIR", "")
+	oldReadGoEnv := readGoEnv
+	readGoEnv = func(key string) string {
+		if key == "GOCACHE" {
+			return cache
+		}
+		return ""
+	}
+	t.Cleanup(func() { readGoEnv = oldReadGoEnv })
+	if !temporaryExecutable(filepath.Join(cache, "ab", "build-d", "mimir.exe")) {
+		t.Fatal("persisted GOCACHE executable was not temporary")
 	}
 }
 
@@ -248,6 +322,41 @@ func TestBootstrapCurrentExecutableRejectsUnownedDifferentTarget(t *testing.T) {
 	}
 }
 
+func TestBootstrapCurrentExecutableReplacesVerifiedUnownedMimir(t *testing.T) {
+	isolatedInstallation(t, false)
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+	name := "mimir"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	source := filepath.Join(sourceDir, name)
+	target := filepath.Join(targetDir, name)
+	if err := os.WriteFile(source, []byte("new Mimir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("go-installed Mimir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldExecutablePath, oldIsMimirExecutable := executablePath, isMimirExecutable
+	executablePath = func() (string, error) { return source, nil }
+	isMimirExecutable = func(path string) bool { return path == target }
+	t.Cleanup(func() {
+		executablePath = oldExecutablePath
+		isMimirExecutable = oldIsMimirExecutable
+	})
+	report, err := bootstrapCurrentExecutable(targetDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "updated" || report.Method != "bootstrap-copy" {
+		t.Fatalf("report %#v", report)
+	}
+	if got := mustReadFile(t, target); string(got) != "new Mimir" {
+		t.Fatalf("target = %q", got)
+	}
+}
+
 func TestInstallExecutableCopyRejectsChangedOwnedTarget(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "mimir")
 	if err := os.WriteFile(target, []byte("changed"), 0o755); err != nil {
@@ -271,7 +380,7 @@ func TestPostUpdateCommandUsesJSONProtocol(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if !report.OK || report.Artifacts.Operation != "update" || !strings.Contains(report.Integrations.OpenCode.Detail, "without rewriting") {
+	if !report.OK || report.Artifacts.Operation != "update" || !strings.Contains(report.Integrations.OpenCode.Detail, "not connected") {
 		t.Fatalf("post-update report %#v", report)
 	}
 }

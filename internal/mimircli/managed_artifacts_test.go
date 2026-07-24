@@ -3,6 +3,7 @@ package mimircli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -150,6 +151,66 @@ func TestSyncManagedArtifactsAdoptsIdenticalAndPreservesConflict(t *testing.T) {
 	}
 	if _, ok := receipt.Artifacts[skill]; ok {
 		t.Fatal("conflicting file was incorrectly adopted")
+	}
+}
+
+func TestSyncManagedArtifactsMigratesExactLegacyMimirFile(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	target := filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts")
+	legacy := []byte("exact historical Mimir plugin\n")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := append([]string(nil), legacyMimirArtifactHashes["plugins/opencode/mimir.ts"]...)
+	legacyMimirArtifactHashes["plugins/opencode/mimir.ts"] = append(old, hashBytes(legacy))
+	t.Cleanup(func() { legacyMimirArtifactHashes["plugins/opencode/mimir.ts"] = old })
+
+	report, err := syncManagedArtifacts(false, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resultForPath(t, report, target).Status; got != artifactMigrated {
+		t.Fatalf("status = %s, want migrated", got)
+	}
+	want, _ := mimirassets.Bundle.ReadFile("plugins/opencode/mimir.ts")
+	if got := mustReadFile(t, target); !bytes.Equal(got, want) {
+		t.Fatal("legacy file was not replaced with bundled content")
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil || receipt.Artifacts[target].Hash != hashBytes(want) {
+		t.Fatalf("legacy file was not enrolled: %#v, %v", receipt.Artifacts[target], err)
+	}
+}
+
+func TestLegacyHashesIncludeV033HermesArtifacts(t *testing.T) {
+	cases := map[string]string{
+		"plugins/hermes/__init__.py":                           "bc969928e011416ddd38fa81d09d50b6536f2b2212cac3b7880a359e4735dc12",
+		"plugins/hermes/plugin.yaml":                           "e3b43f6cdd6d8c5eec368e600083db71735a4bea474cfcb0a6b1b7d03f74f71e",
+		"skills/mimir-setup/SKILL.md":                          "815a7bd4683e3ccc629368b039848d82441660cd3254566f8314be0249d4a134",
+		"skills/mimir-setup/references/connection-manifest.md": "7073294becca721f70e802fe9241eebb5d17174e14c2c7c865a725a91dedd4c8",
+		"skills/mimir-use/SKILL.md":                            "deeaa9eaa5874191dda4efed36b55b42ba4960f726904d4b96457922ed064708",
+	}
+	for source, hash := range cases {
+		if !legacyMimirArtifact(source, hash) {
+			t.Errorf("missing v0.3.3 legacy hash for %s", source)
+		}
+	}
+}
+
+func TestUninstallDoesNotDisableUnownedHermesPlugin(t *testing.T) {
+	isolatedInstallation(t, true)
+	oldRun := runHermesPluginCommand
+	commands := 0
+	runHermesPluginCommand = func(context.Context, string, ...string) error { commands++; return nil }
+	t.Cleanup(func() { runHermesPluginCommand = oldRun })
+	if _, err := uninstallManagedInstallation(true); err != nil {
+		t.Fatal(err)
+	}
+	if commands != 0 {
+		t.Fatalf("disabled unowned Hermes plugin %d times", commands)
 	}
 }
 
@@ -433,7 +494,7 @@ func TestConnectedRefreshWithoutManagedReceiptDoesNotEnrollOrLog(t *testing.T) {
 	}
 }
 
-func TestRefreshManagedInstallationUpdatesCLIAndPreservesIdentity(t *testing.T) {
+func TestRefreshManagedInstallationDoesNotTransferCLIToDifferentExecutable(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	oldCLI := installReceiptCLI{Path: filepath.Join(t.TempDir(), "old-mimir"), Version: "1.0.0", Commit: "old", BuildDate: "old-date", Hash: hashBytes([]byte("old"))}
 	if _, err := syncInstallArtifacts(installReceiptUpdate{Source: "release", Method: "bootstrap-copy", CLI: oldCLI}); err != nil {
@@ -464,17 +525,52 @@ func TestRefreshManagedInstallationUpdatesCLIAndPreservesIdentity(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.BeforeVersion != "1.0.0" || report.AfterVersion != "2.0.0" {
+	if report.BeforeVersion != "1.0.0" || report.AfterVersion != "1.0.0" {
 		t.Fatalf("version transition = %q -> %q", report.BeforeVersion, report.AfterVersion)
 	}
-	if after.CLI.Path != newExecutable || after.CLI.Version != "2.0.0" || after.CLI.Commit != "new-commit" || after.CLI.BuildDate != "new-date" || after.CLI.Hash != hashBytes(newBytes) {
-		t.Fatalf("refreshed CLI %#v", after.CLI)
+	if after.CLI != oldCLI {
+		t.Fatalf("CLI ownership transferred: %#v", after.CLI)
 	}
 	if after.InstallationID != before.InstallationID || after.InstalledAt != before.InstalledAt || after.Source != before.Source || after.Method != before.Method {
 		t.Fatalf("installation identity changed: before=%#v after=%#v", before, after)
 	}
 	if lines := jsonLines(t, paths.Log); lines != 2 {
 		t.Fatalf("install log lines = %d, want 2", lines)
+	}
+}
+
+func TestRefreshManagedInstallationDoesNotAdoptReplacedBinaryInPlace(t *testing.T) {
+	isolatedInstallation(t, false)
+	binary := filepath.Join(t.TempDir(), "mimir")
+	oldBytes := []byte("old executable")
+	newBytes := []byte("new executable")
+	if err := os.WriteFile(binary, oldBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldCLI := installReceiptCLI{Path: binary, Version: "1.0.0", Hash: hashBytes(oldBytes)}
+	if _, err := syncInstallArtifacts(installReceiptUpdate{Source: "release", Method: "bootstrap-copy", CLI: oldCLI}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, newBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldExecutablePath := executablePath
+	oldVersion, oldCommit, oldDate := version, commit, date
+	executablePath = func() (string, error) { return binary, nil }
+	SetBuildInfo("2.0.0", "new", "new-date")
+	t.Cleanup(func() {
+		executablePath = oldExecutablePath
+		SetBuildInfo(oldVersion, oldCommit, oldDate)
+	})
+	if _, err := refreshManagedInstallation(true, "update"); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CLI != oldCLI || receipt.Method != "bootstrap-copy" {
+		t.Fatalf("in-place receipt %#v", receipt)
 	}
 }
 
@@ -511,6 +607,9 @@ func TestPathContainsSymlinkAllowsDarwinSystemAlias(t *testing.T) {
 
 func TestUninstallRemovesUnchangedPreservesModifiedAndUpdatesReceiptAndLog(t *testing.T) {
 	paths := isolatedInstallation(t, true)
+	oldRunHermesPluginCommand := runHermesPluginCommand
+	runHermesPluginCommand = func(context.Context, string, ...string) error { return nil }
+	t.Cleanup(func() { runHermesPluginCommand = oldRunHermesPluginCommand })
 	binary := filepath.Join(t.TempDir(), "mimir")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"

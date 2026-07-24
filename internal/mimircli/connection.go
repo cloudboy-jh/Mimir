@@ -52,11 +52,7 @@ func currentConnectionManifest(url string) (connectionManifest, error) {
 	if err != nil {
 		return connectionManifest{}, err
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return connectionManifest{}, err
-	}
-	executable, err = filepath.Abs(executable)
+	executable, err := manifestExecutable()
 	if err != nil {
 		return connectionManifest{}, err
 	}
@@ -69,6 +65,51 @@ func currentConnectionManifest(url string) (connectionManifest, error) {
 		MCPCommand:        []string{executable, "serve"},
 		OptionalHeaders:   []string{"x-mimir-session", "x-mimir-repo", "x-mimir-harness", "x-mimir-git-ref", "x-mimir-request-kind"},
 	}, nil
+}
+
+func manifestExecutable() (string, error) {
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return "", err
+	}
+	if receipt.CLI.Path != "" && receipt.CLI.Hash != "" {
+		path, err := filepath.Abs(receipt.CLI.Path)
+		if err != nil {
+			return "", err
+		}
+		if symlink, err := pathContainsSymlink(filesystemRoot(path), path); err != nil {
+			return "", err
+		} else if symlink {
+			return "", fmt.Errorf("receipt-recorded Mimir executable is symlinked: %s", path)
+		}
+		info, statErr := os.Lstat(path)
+		if statErr == nil && info.Mode().IsRegular() {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return "", readErr
+			}
+			if hashBytes(data) == receipt.CLI.Hash {
+				return path, nil
+			}
+		}
+		return "", fmt.Errorf("receipt-recorded Mimir executable is missing or changed; run mimir install")
+	}
+	executable, err := executablePath()
+	if err != nil {
+		return "", err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", err
+	}
+	if temporaryExecutable(executable) {
+		return "", fmt.Errorf("refusing to publish a temporary go-run executable; run mimir install first")
+	}
+	info, err := os.Lstat(executable)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("current Mimir executable is unavailable: %s", executable)
+	}
+	return executable, nil
 }
 
 func writeConnectionManifest(out io.Writer) error {

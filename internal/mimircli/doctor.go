@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 )
 
 type doctorCheck struct {
@@ -17,6 +19,12 @@ type doctorCheck struct {
 type doctorReport struct {
 	OK     bool          `json:"ok"`
 	Checks []doctorCheck `json:"checks"`
+}
+
+type workerIdentity struct {
+	Service      string   `json:"service"`
+	APIVersion   int      `json:"api_version"`
+	Capabilities []string `json:"capabilities"`
 }
 
 func doctor(ctx context.Context, args []string, out io.Writer) error {
@@ -66,7 +74,14 @@ func runDoctor(ctx context.Context) doctorReport {
 			repair := ""
 			if artifact.Status != artifactCurrent {
 				status = "failed"
-				repair = "mimir install or mimir update"
+				switch artifact.Status {
+				case artifactOutdated, artifactMissing:
+					repair = "mimir install"
+				case artifactConflict, artifactModified:
+					repair = "review the preserved Mimir file; remove or restore it, then run mimir install"
+				default:
+					repair = "mimir install or mimir update"
+				}
 			}
 			add("managed-artifact "+artifact.Source, status, string(artifact.Status)+" · "+artifact.Path, repair)
 		}
@@ -76,8 +91,10 @@ func runDoctor(ctx context.Context) doctorReport {
 		add("connection", "failed", err.Error(), "mimir login")
 		return report
 	}
-	if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err != nil {
+	if data, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err != nil {
 		add("worker", "failed", err.Error(), "mimir login")
+	} else if err := validateWorkerIdentity(data); err != nil {
+		add("worker", "failed", err.Error(), "mimir deploy")
 	} else {
 		add("worker", "ok", pointer.URL, "")
 	}
@@ -86,9 +103,46 @@ func runDoctor(ctx context.Context) doctorReport {
 		add("connection.manifest", "failed", err.Error(), "mimir login")
 		return report
 	}
-	add("opencode", "skipped", "managed artifacts do not rewrite OpenCode configuration", "")
+	checkOpenCodeMCP(add, manifest)
 	checkHermesIntegration(ctx, add, pointer, manifest)
 	return report
+}
+
+func validateWorkerIdentity(data []byte) error {
+	var identity workerIdentity
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return fmt.Errorf("invalid /whoami response: %w", err)
+	}
+	if identity.Service != "mimir" || identity.APIVersion < 1 {
+		return fmt.Errorf("deployed Worker predates the versioned machine API")
+	}
+	capabilities := make(map[string]bool, len(identity.Capabilities))
+	for _, capability := range identity.Capabilities {
+		capabilities[capability] = true
+	}
+	for _, required := range []string{"hermes_authorization", "session_events", "session_lifecycle"} {
+		if !capabilities[required] {
+			return fmt.Errorf("deployed Worker lacks required capability %s", required)
+		}
+	}
+	return nil
+}
+
+func checkOpenCodeMCP(add func(string, string, string, string), manifest connectionManifest) {
+	if _, err := findOpenCode(); err != nil {
+		add("opencode.mcp", "skipped", "OpenCode is not installed", "")
+		return
+	}
+	command := manifest.MCPCommand
+	if len(command) != 2 || command[1] != "serve" {
+		add("opencode.mcp", "failed", "Mimir connection manifest has a malformed MCP command", "mimir login")
+		return
+	}
+	if info, err := os.Lstat(command[0]); err != nil || !info.Mode().IsRegular() {
+		add("opencode.mcp", "failed", "Mimir MCP executable does not exist: "+command[0], "mimir install")
+		return
+	}
+	add("opencode.mcp", "ok", "managed plugin injects "+strings.Join(command, " ")+" at startup", "")
 }
 
 func checkHermesIntegration(ctx context.Context, add func(string, string, string, string), pointer Pointer, manifest connectionManifest) {
@@ -100,6 +154,13 @@ func checkHermesIntegration(ctx context.Context, add func(string, string, string
 	if !hermesFound {
 		add("hermes", "skipped", "Hermes is not installed", "")
 		return
+	}
+	if enabled, err := hermesPluginEnabled(ctx, hermesHome); err != nil {
+		add("hermes.plugin", "failed", err.Error(), "hermes plugins enable mimir")
+	} else if !enabled {
+		add("hermes.plugin", "failed", "Mimir plugin is disabled", "hermes plugins enable mimir")
+	} else {
+		add("hermes.plugin", "ok", "Mimir plugin is enabled", "")
 	}
 	if matches, detail := hermesIntegrationMatches(hermesHome, manifest); !matches {
 		add("hermes.openrouter", "failed", detail, "mimir update")

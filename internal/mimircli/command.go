@@ -2,11 +2,13 @@ package mimircli
 
 import (
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -120,9 +122,9 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "login":
 		return login(ctx, args[1:], ioctx)
 	case "install":
-		return cmdInstall(args[1:], ioctx.Out)
+		return cmdInstall(ctx, args[1:], ioctx.Out)
 	case "uninstall":
-		return cmdUninstall(args[1:], ioctx.Out)
+		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
 		return dashboard(ctx, ioctx)
 	case "connection":
@@ -161,8 +163,13 @@ type versionReport struct {
 }
 
 type installReport struct {
-	Binary    installBinaryReport   `json:"binary"`
-	Artifacts managedArtifactReport `json:"artifacts"`
+	Binary         installBinaryReport     `json:"binary"`
+	Artifacts      managedArtifactReport   `json:"artifacts"`
+	OpenCode       harnessIntegrationState `json:"opencode"`
+	Hermes         harnessIntegrationState `json:"hermes"`
+	OpenCodeReady  bool                    `json:"open_code_ready"`
+	HermesReady    bool                    `json:"hermes_ready"`
+	ActionRequired bool                    `json:"action_required"`
 }
 
 type installBinaryReport struct {
@@ -208,7 +215,7 @@ func cmdVersion(args []string, out io.Writer) error {
 	return err
 }
 
-func cmdInstall(args []string, out io.Writer) error {
+func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 	jsonOutput, binDir := false, ""
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -244,7 +251,41 @@ func cmdInstall(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	report := installReport{Binary: binary, Artifacts: artifacts}
+	paths, pathErr := managedInstallationPaths()
+	hermesIntegration := harnessIntegrationState{State: "skipped", Detail: "Hermes is not installed"}
+	hermesReady := true
+	if pathErr != nil {
+		return pathErr
+	} else if paths.HermesDetected {
+		if harnessArtifactsReady(artifacts, paths.HermesHome, "plugins/hermes/") {
+			if err := enableHermesPlugin(ctx, paths.HermesHome); err != nil {
+				return err
+			}
+			hermesIntegration = harnessIntegrationState{State: "installed", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin enabled"}
+		} else {
+			hermesReady = false
+			hermesIntegration = harnessIntegrationState{State: "failed", Scope: "all-providers", Detail: "conflicting or modified Hermes plugin files were preserved"}
+		}
+	}
+	openCodeIntegration := harnessIntegrationState{State: "failed", Scope: "mcp", Detail: "conflicting or modified OpenCode files were preserved"}
+	if harnessArtifactsReady(artifacts, paths.OpenCodeHome, "plugins/opencode/", "skills/mimir-") {
+		openCodeIntegration, err = installCurrentOpenCodeMCP(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	openCodeReady := true
+	for _, artifact := range artifacts.Artifacts {
+		if strings.HasPrefix(artifact.Source, "plugins/opencode/") || strings.HasPrefix(artifact.Path, filepath.Join(paths.OpenCodeHome, "skills")+string(filepath.Separator)) {
+			if artifact.Status != artifactCurrent && artifact.Status != artifactInstalled && artifact.Status != artifactAdopted && artifact.Status != artifactMigrated && artifact.Status != artifactUpdated {
+				openCodeReady = false
+			}
+		}
+	}
+	if openCodeIntegration.State == "failed" {
+		openCodeReady = false
+	}
+	report := installReport{Binary: binary, Artifacts: artifacts, OpenCode: openCodeIntegration, Hermes: hermesIntegration, OpenCodeReady: openCodeReady, HermesReady: hermesReady, ActionRequired: artifactIssueCount(artifacts) > 0 || !openCodeReady || !hermesReady}
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
@@ -253,6 +294,21 @@ func cmdInstall(args []string, out io.Writer) error {
 	}
 	for _, artifact := range artifacts.Artifacts {
 		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
+			return err
+		}
+	}
+	if openCodeIntegration.State == "installed" {
+		if _, err := fmt.Fprintln(out, "opencode  configured  Mimir plugin and MCP · restart OpenCode"); err != nil {
+			return err
+		}
+	}
+	if !openCodeReady {
+		if _, err := fmt.Fprintln(out, "OpenCode integration incomplete: conflicting or modified Mimir files were preserved; stale skills or capture code may still be active."); err != nil {
+			return err
+		}
+	}
+	if !hermesReady {
+		if _, err := fmt.Fprintln(out, "Hermes integration incomplete: conflicting or modified Mimir plugin files were preserved and were not enabled."); err != nil {
 			return err
 		}
 	}
@@ -269,7 +325,7 @@ func containsBinDirArg(args []string) bool {
 	return false
 }
 
-func cmdUninstall(args []string, out io.Writer) error {
+func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 	keepBinary, jsonOutput := false, false
 	for _, arg := range args {
 		switch arg {
@@ -281,7 +337,7 @@ func cmdUninstall(args []string, out io.Writer) error {
 			return fmt.Errorf("usage: mimir uninstall [--keep-binary] [--json]")
 		}
 	}
-	report, err := uninstallManagedInstallation(keepBinary)
+	report, err := uninstallManagedInstallationWithContext(ctx, keepBinary)
 	if err != nil {
 		return err
 	}
@@ -364,7 +420,8 @@ func bootstrapCurrentExecutable(explicitDir string) (installBinaryReport, error)
 				if err != nil {
 					return installBinaryReport{}, err
 				}
-				if !sameFilePath(receipt.CLI.Path, target) || receipt.CLI.Hash == "" || receipt.CLI.Hash != currentHash {
+				owned := sameFilePath(receipt.CLI.Path, target) && receipt.CLI.Hash != "" && receipt.CLI.Hash == currentHash
+				if !owned && !isMimirExecutable(target) {
 					return installBinaryReport{}, fmt.Errorf("refusing to overwrite unowned executable %s", target)
 				}
 				if err := installExecutableCopy(target, sourceData, currentHash); err != nil {
@@ -406,18 +463,26 @@ func bootstrapCurrentExecutable(explicitDir string) (installBinaryReport, error)
 	}, nil
 }
 
+var isMimirExecutable = func(path string) bool {
+	info, err := buildinfo.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return info.Path == "github.com/cloudboy-jh/mimir/cmd/mimir" && info.Main.Path == "github.com/cloudboy-jh/mimir"
+}
+
 func resolveInstallDir(explicit string) (string, error) {
 	dir := strings.TrimSpace(explicit)
 	if dir == "" {
 		for _, key := range []string{"MIMIR_INSTALL_DIR", "GOBIN"} {
-			if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if value := configuredGoEnv(key); value != "" {
 				dir = value
 				break
 			}
 		}
 	}
 	if dir == "" {
-		if paths := filepath.SplitList(os.Getenv("GOPATH")); len(paths) > 0 && strings.TrimSpace(paths[0]) != "" {
+		if paths := filepath.SplitList(configuredGoEnv("GOPATH")); len(paths) > 0 && strings.TrimSpace(paths[0]) != "" {
 			dir = filepath.Join(paths[0], "bin")
 		}
 	}
@@ -436,7 +501,7 @@ func resolveInstallDir(explicit string) (string, error) {
 }
 
 func temporaryExecutable(path string) bool {
-	roots := []string{os.TempDir(), os.Getenv("GOTMPDIR"), os.Getenv("GOCACHE")}
+	roots := []string{os.TempDir(), configuredGoEnv("GOTMPDIR"), configuredGoEnv("GOCACHE")}
 	if cache, err := os.UserCacheDir(); err == nil {
 		roots = append(roots, filepath.Join(cache, "go-build"))
 	}
@@ -455,6 +520,24 @@ func temporaryExecutable(path string) bool {
 		}
 	}
 	return false
+}
+
+var readGoEnv = func(key string) string {
+	output, err := exec.Command("go", "env", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func configuredGoEnv(key string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	if key == "MIMIR_INSTALL_DIR" {
+		return ""
+	}
+	return readGoEnv(key)
 }
 
 func sameFilePath(left, right string) bool {

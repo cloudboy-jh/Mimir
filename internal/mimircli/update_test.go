@@ -84,6 +84,7 @@ func stubReleaseServer(t *testing.T, version string, binary []byte, corrupt bool
 }
 
 func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
+	isolatedInstallation(t, false)
 	server := stubReleaseServer(t, "9.9.9", []byte("new-binary"), false)
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
@@ -91,6 +92,9 @@ func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "mimir")
 	if err := os.WriteFile(target, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncInstallArtifacts(installReceiptUpdate{Source: "test", Method: "bootstrap-copy", CLI: installReceiptCLI{Path: target, Version: "1.0.0", Hash: hashBytes([]byte("old-binary"))}}); err != nil {
 		t.Fatal(err)
 	}
 	oldExec := executablePath
@@ -120,9 +124,17 @@ func TestCmdUpdateInstallsVerifiedBinary(t *testing.T) {
 	if string(contents) != "new-binary" {
 		t.Fatalf("binary %q", contents)
 	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CLI.Version != "9.9.9" || receipt.CLI.Hash != hashBytes([]byte("new-binary")) {
+		t.Fatalf("updated receipt %#v", receipt.CLI)
+	}
 }
 
 func TestCmdUpdateRejectsChecksumMismatch(t *testing.T) {
+	isolatedInstallation(t, false)
 	server := stubReleaseServer(t, "9.9.9", []byte("new-binary"), true)
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
@@ -147,6 +159,45 @@ func TestCmdUpdateRejectsChecksumMismatch(t *testing.T) {
 	contents, _ := os.ReadFile(target)
 	if string(contents) != "old-binary" {
 		t.Fatalf("binary replaced despite mismatch: %q", contents)
+	}
+}
+
+func TestInstallBinaryRequiredHashPreservesConcurrentReplacement(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "mimir")
+	if err := os.WriteFile(target, []byte("external-replacement"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installBinary(target, []byte("rollback"), hashBytes([]byte("expected-update"))); err == nil {
+		t.Fatal("concurrent replacement was overwritten")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "external-replacement" {
+		t.Fatalf("concurrent replacement changed to %q", data)
+	}
+}
+
+func TestRollbackUpdatedBinaryRestoresWindowsOldPath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "mimir")
+	previous := []byte("previous-binary")
+	updated := []byte("updated-binary")
+	if err := os.WriteFile(target, updated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target+".old", previous, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackUpdatedBinary(target, previous, hashBytes(updated)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(previous) {
+		t.Fatalf("rollback restored %q", data)
 	}
 }
 
