@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
 func TestDashboardOpensDeploymentURL(t *testing.T) {
@@ -15,7 +17,7 @@ func TestDashboardOpensDeploymentURL(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv(envMimirHome, t.TempDir())
-	if err := savePointer(Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "test-token"}); err != nil {
 		t.Fatal(err)
 	}
 	oldOpenBrowser := openBrowser

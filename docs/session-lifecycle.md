@@ -1,133 +1,113 @@
 # Session Lifecycle And Harness Capture
 
-**Status: capture path implemented.** The session event format, Session
-Durable Object, proxy reporting, events/live/object-state routes, explicit-end
-notification, OpenCode plugin, and Hermes plugin are live (see
-[`Spec.md`](Spec.md) §7.1). The dashboard live view remains planned.
-
-## The Problem
-
-Transport interception works only when the provider uses a plain API key and
-the harness lets its base URL be redirected. Account and subscription
-providers (ChatGPT/Codex OAuth, OpenCode subscriptions, the Nous portal) need a
-harness-level reporter. The Session Durable Object provides one owner for both
-reporting paths while a session is alive.
-
-## The Model
-
-**Two reporters, one owner, one filing cabinet.**
+Mimir combines two capture paths around one lifecycle owner. The Worker proxy
+persists full redacted OpenRouter exchanges. Harness plugins report completed
+turn summaries and lifecycle events across harness providers; Hermes suppresses
+turns known to have traversed the proxy. One Session Durable Object coordinates
+each exact session ID.
 
 ```mermaid
 flowchart LR
-    P[Worker proxy] -->|exchange events| S[Session Durable Object]
-    G[Harness plugins] -->|turn events + heartbeats| S
-    S -->|live feed| D[Dashboard]
-    S -->|on finalize| R[(R2 transcript)]
-    S -->|on finalize| Q[(D1 metadata)]
-    M[MCP / CLI] -->|recall + explicit end| W[Worker API]
-    W --> S
+    H[Harness] -->|redirected traffic| W[Worker proxy]
+    W -->|redacted exchange| R[(R2)]
+    W -->|search metadata| D[(D1)]
+    H -.->|turns, heartbeats, ends| S[Session Durable Object]
+    W -.->|saved exchange event| S
+    S -->|transcript manifest| R
+    S -->|lifecycle state| D
+    C[CLI / optional MCP] -->|status, outcome, end| W
 ```
 
-- **Reporters** deliver events. The proxy is one reporter (API-key providers).
-  A harness plugin is another (every
-  provider, including OAuth and subscription auth, because it observes
-  completed turns inside the harness process, above transport and auth
-  entirely).
-- **The Session Durable Object owns one live session.** It is addressed by
-  the session ID (`x-mimir-session` remains the authoritative boundary). It
-  collects events, tracks liveness, serves the dashboard's live view, and
-  performs the final write. It is a buffer and coordinator, never the source
-  of truth.
-- **R2 and D1 remain canonical.** Transcripts in R2, searchable metadata in
-  D1. The storage model does not change.
+`x-mimir-session` is the authoritative boundary. R2 and D1 are canonical for
+saved proxy exchanges, searchable metadata, and finalized lifecycle state. The
+Durable Object owns the bounded live plugin-turn buffer; plugin excerpts are
+not promoted into the R2 transcript manifest or D1 search metadata.
 
-One plugin per harness covers every provider that harness can use. The
-harness × provider × auth matrix collapses into one reporter per harness.
+## Starting
 
-## How A Session Ends
+Sessions start lazily. There is no separate start command.
 
-A session is finalized when **any** of three triggers fires:
+A session starts from the first activity carrying its session ID:
 
-1. **End event.** The harness shuts down cleanly and the plugin reports
-   `session.end`. Finalization is immediate.
-2. **Silence timer.** The plugin heartbeats every 60 seconds while alive. The
-   session object arms an alarm on every event; if no event or heartbeat
-   arrives for ~10 minutes, the object finalizes the session itself.
-3. **Explicit request.** Always available, from two places:
-   - **MCP** — `session_end` (already exists). Telling the agent "wrap up and
-     end the session" finalizes on the spot.
-   - **CLI** — `mimir session end <id>` (exists today as an API client;
-     retargeted at the session object). For the human, from any terminal.
+1. A harness start hook sends a heartbeat.
+2. The first completed turn arrives if the start hook was missed.
+3. The first capture-eligible proxied request carrying `x-mimir-session` is
+   successfully saved and reported to the session object.
 
-All three converge on the same operation: write the transcript to R2, update
-the D1 row, let the object sleep.
+Installing Mimir, launching an idle harness, or starting `mimir serve` does not
+create a session.
 
-### Terminal closes
+## Finalizing
 
-The terminal emulator is irrelevant — it can kill the reporter, never the
-session object, which lives on Cloudflare.
+A session finalizes through any of three triggers:
 
-| What happens | Trigger | Session written |
-| --- | --- | --- |
-| Clean quit (exit command, handled SIGHUP) | End event | Immediately |
-| Window closed, `kill -9`, crash, network drop | Silence timer | Within ~10 minutes |
-| Laptop sleeps mid-session | Silence timer | Finalizes while asleep; continues on wake (see below) |
+1. **End event.** A supported session-finalize hook reports an end and
+   finalization begins immediately. OpenCode sends this for `session.deleted`;
+   ordinary process exit relies on the silence timer.
+2. **Silence timer.** Every accepted non-duplicate event re-arms a server-side
+   alarm. About ten minutes without an event finalizes sessions left by a
+   crash, killed terminal, laptop sleep, or network loss.
+3. **Explicit request.** MCP `session_end` or CLI
+   `mimir session end <id>` finalizes the active generation.
 
-### Liveness is a projection, not a state
+All three write or rewrite `sessions/<id>/transcript.json` in R2, update the D1
+lifecycle row, broadcast the final state, and let the Durable Object sleep.
+Finalization failures schedule a retry.
 
-"Is it alive?" and "is it written?" are different questions. The dashboard
-answers the first at read time from heartbeat age, which the session object
-already tracks — no D1 writes on heartbeat, no lifecycle change:
+Repeated end requests are safe. Retried turns are deduplicated by exchange ID,
+and stale heartbeat retries cannot reopen a session that has already
+finalized.
 
-- Heartbeat within ~90 seconds → **active**.
-- Silence past ~90 seconds, not yet finalized → **disconnected · last seen N
-  min ago**. Returning heartbeats flip it back to active on the next read.
-- Silence timer fires → finalized and written.
+## Reopening
 
-The 10-minute timer is a durability backstop, never a UX promise.
+Finalization is not a tombstone. New activity carrying the same exact session
+ID wakes the same object, preserves its history, and starts another active
+generation. The next finalization rewrites the transcript manifest with every
+saved proxy exchange still indexed for that session and aggregate plugin-turn
+counters. Plugin turn payloads remain only in the bounded Durable Object live
+buffer. A genuinely new harness session receives a new ID and therefore a new
+object.
 
-### Reopening a session
+This is intentional: a user can resume the same harness conversation after a
+clean end, a silence timeout, sleep, or disconnection.
 
-The session object is named by the harness's own session ID. Reopening a
-conversation in the same harness reuses that ID, so the reporter's next event
-wakes the same object and the session continues with its full history.
+## Liveness
 
-"Finalized" is a state, not a tombstone. New events on a finalized session
-flip it back to active; the next finalize rewrites the transcript including
-everything. A genuinely new conversation gets a new session ID and a new
-object — no deduplication logic.
+Liveness is a projection from event age, independent of durable capture state
+and work outcome:
 
-## Surface After This Lands
+- **`active`** — an event arrived within about 90 seconds.
+- **`disconnected`** — the session has been silent for more than about 90
+  seconds, but its finalization alarm has not fired.
+- **`finalized`** — the final transcript and lifecycle write completed.
 
-| Piece | Role | Change |
-| --- | --- | --- |
-| Worker proxy | Capture for API-key providers | Reports to session object instead of writing R2/D1 directly |
-| Session Durable Object | Owns live sessions: events, liveness, live feed, final write | **New — the only new component** |
-| OpenCode and Hermes plugins | Capture for non-proxied providers (OAuth, subscriptions) | Reporter to the same destination |
-| MCP (`mimir serve`) | Recall, status, explicit end | Unchanged role |
-| CLI | Deploy, login, doctor, serve, session control | No capture path; session control only |
-| Dashboard | Sessions from D1 as today, plus live view subscribed to the object | Gains live view, nothing replaced |
-| R2 + D1 | Canonical storage | Unchanged |
+Returning activity can move `disconnected` or `finalized` back to `active`.
+The ten-minute timer is a durability backstop, not a liveness promise.
 
-The CLI deliberately has no capture path: it is never inside the harness's
-conversation loop, and wrapping launches would duplicate the plugin worse
-from outside.
+## Capture Responsibilities
 
-## Implementation Status
+| Component | Responsibility |
+| --- | --- |
+| Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; report saved exchanges to the session object |
+| OpenCode plugin | Report completed turns, heartbeats, and supported lifecycle events across OpenCode providers |
+| Hermes plugin | Report direct-provider turns and lifecycle events; suppress duplicate turns for known proxied traffic |
+| Session Durable Object | Coordinate liveness, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
+| CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |
+| MCP | Optional adapter over the same memory operations |
+| Dashboard | Access-protected session and request views backed by Worker APIs |
 
-1. **Session event format** — small: session ID, harness, turn payload,
-   timestamp, event kind (`turn`, `heartbeat`, `end`).
-2. **Session Durable Object** — append events, heartbeat/alarm liveness,
-   finalize to R2/D1, websocket feed for the dashboard.
-3. **Rewire the proxy** to report to the session object. Existing capture
-   behavior must not regress; this is a plumbing change, not a rewrite.
-4. **OpenCode plugin** uses OpenCode's official plugin events and resolves the
-   Worker URL and token from the Mimir connection files.
-5. **Hermes plugin** uses Hermes' plugin hooks. It reports full turns for
-   direct providers and liveness-only when the managed proxy route already
-   captures turns.
-6. **Dashboard live view** consuming the object's feed remains incomplete.
+Plugin events contain summaries and excerpts, not full transport archives.
+Only traffic that reaches the Worker proxy produces full redacted exchange
+objects.
 
-Steps 1–5 are implemented. The reporter plugins are embedded in the Mimir
-binary and managed as exact receipt-owned files; manual copying is recovery
-only.
+## Persistence Verification
+
+Transport success is not proof that an exchange was saved. Use:
+
+```bash
+mimir session status <id>
+```
+
+or MCP `session_status`. The authoritative receipt distinguishes saved,
+pending, partial, failed, and uncaptured sessions. Capture state and work
+outcome remain independent.

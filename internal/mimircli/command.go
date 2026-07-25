@@ -1,18 +1,21 @@
 package mimircli
 
 import (
+	"bytes"
 	"context"
-	"debug/buildinfo"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strings"
+
+	"github.com/cloudboy-jh/mimir/internal/codeindex"
+	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/mcp"
+	"github.com/cloudboy-jh/mimir/internal/sessions"
 )
 
 type IO struct {
@@ -57,7 +60,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		res, err := runIndex(ctx, indexOptions{Dir: ".", Full: *full})
+		res, err := codeindex.Build(ctx, codeindex.BuildOptions{Dir: ".", Full: *full})
 		if err != nil {
 			return err
 		}
@@ -78,20 +81,32 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		_, err = fmt.Fprintln(ioctx.Out, res.Output)
 		return err
 	case "serve":
-		return serveMCP(ctx, mcpOptions{Dir: ".", In: ioctx.In, Out: ioctx.Out})
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir serve")
+		}
+		return serveMCP(ctx, mcpOptions{In: ioctx.In, Out: ioctx.Out})
 	case "whoami":
+		if !onlyJSONFlag(args[1:]) {
+			return fmt.Errorf("usage: mimir whoami [--json]")
+		}
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
+	case "tools":
+		return cmdTools(args[1:], ioctx.Out)
 	case "list":
 		return cmdList(ctx, args[1:], ioctx.Out)
 	case "sessions":
+		if !onlyJSONFlag(args[1:]) {
+			return fmt.Errorf("usage: mimir sessions [--json]")
+		}
 		return remotePrint(ctx, ioctx.Out, "GET", "/sessions", nil)
 	case "session":
 		return cmdSession(ctx, args[1:], ioctx.Out)
 	case "search":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: mimir search <query>")
+		query, err := parseSearchArgs(args[1:])
+		if err != nil {
+			return err
 		}
-		data, err := federatedSearch(ctx, strings.Join(args[1:], " "))
+		data, err := currentSearchService().Search(ctx, query)
 		if err != nil {
 			return err
 		}
@@ -101,12 +116,12 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if len(args) != 3 {
 			return fmt.Errorf("usage: mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>")
 		}
-		return remotePrint(ctx, ioctx.Out, "POST", "/sessions/"+args[1]+"/mark", map[string]string{"outcome": args[2]})
+		return remotePrint(ctx, ioctx.Out, "POST", "/sessions/"+url.PathEscape(args[1])+"/mark", map[string]string{"outcome": args[2]})
 	case "reconcile":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir reconcile")
 		}
-		data, err := runReconcile(ctx)
+		data, err := currentSessionService().Reconcile(ctx)
 		if err != nil {
 			return err
 		}
@@ -128,6 +143,9 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "dashboard":
 		return dashboard(ctx, ioctx)
 	case "connection":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir connection")
+		}
 		return writeConnectionManifest(ioctx.Out)
 	case "update":
 		return cmdUpdate(ctx, args[1:], ioctx.Out)
@@ -137,13 +155,14 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir _post-update")
 		}
-		report := refreshLifecycleIntegrations(ctx, "update")
+		configureInstall()
+		report := lifecycleService().Refresh(ctx, "update")
 		return json.NewEncoder(ioctx.Out).Encode(report)
 	case "outcome":
 		if len(args) != 3 || args[1] != "git" {
 			return fmt.Errorf("usage: mimir outcome git <session>")
 		}
-		data, err := markGitOutcome(ctx, args[2])
+		data, err := currentSessionService().SetGitOutcome(ctx, args[2], checkoutGitEvidence{Dir: "."})
 		if err != nil {
 			return err
 		}
@@ -154,33 +173,12 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 }
 
 type versionReport struct {
-	Version        string                        `json:"version"`
-	Commit         string                        `json:"commit"`
-	Date           string                        `json:"date"`
-	BundleVersion  string                        `json:"bundle_version,omitempty"`
-	ReceiptPath    string                        `json:"receipt_path"`
-	ArtifactCounts map[managedArtifactStatus]int `json:"artifact_counts"`
-}
-
-type installReport struct {
-	Binary         installBinaryReport     `json:"binary"`
-	Artifacts      managedArtifactReport   `json:"artifacts"`
-	OpenCode       harnessIntegrationState `json:"opencode"`
-	Hermes         harnessIntegrationState `json:"hermes"`
-	OpenCodeReady  bool                    `json:"open_code_ready"`
-	HermesReady    bool                    `json:"hermes_ready"`
-	ActionRequired bool                    `json:"action_required"`
-}
-
-type installBinaryReport struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	BuildDate string `json:"build_date"`
-	Hash      string `json:"sha256"`
-	Source    string `json:"source"`
-	Method    string `json:"method"`
+	Version        string                            `json:"version"`
+	Commit         string                            `json:"commit"`
+	Date           string                            `json:"date"`
+	BundleVersion  string                            `json:"bundle_version,omitempty"`
+	ReceiptPath    string                            `json:"receipt_path"`
+	ArtifactCounts map[installpkg.ArtifactStatus]int `json:"artifact_counts"`
 }
 
 func cmdVersion(args []string, out io.Writer) error {
@@ -190,18 +188,19 @@ func cmdVersion(args []string, out io.Writer) error {
 	} else if len(args) != 0 {
 		return fmt.Errorf("usage: mimir version [--json]")
 	}
-	artifacts, err := checkManagedArtifacts()
+	configureInstall()
+	artifacts, err := installpkg.CheckArtifacts()
 	if err != nil {
 		return err
 	}
-	receipt, err := loadInstallReceipt()
+	receipt, err := installpkg.LoadReceipt()
 	if err != nil {
 		return err
 	}
 	report := versionReport{
 		Version: version, Commit: commit, Date: date,
 		BundleVersion: receipt.BundleVersion, ReceiptPath: artifacts.ReceiptPath,
-		ArtifactCounts: managedArtifactCounts(artifacts),
+		ArtifactCounts: installpkg.ArtifactCounts(artifacts),
 	}
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
@@ -210,7 +209,7 @@ func cmdVersion(args []string, out io.Writer) error {
 		return err
 	}
 	if receipt.BundleVersion != "" {
-		_, err = fmt.Fprintf(out, "Bundle %s · %s\n", receipt.BundleVersion, artifactSummary(artifacts))
+		_, err = fmt.Fprintf(out, "Bundle %s · %s\n", receipt.BundleVersion, installpkg.ArtifactSummary(artifacts))
 	}
 	return err
 }
@@ -236,83 +235,37 @@ func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
 		return fmt.Errorf("--bin-dir requires a value")
 	}
-	binary, err := bootstrapCurrentExecutable(binDir)
+	report, err := installManaged(ctx, binDir)
 	if err != nil {
 		return err
 	}
-	artifacts, err := syncInstallArtifacts(installReceiptUpdate{
-		Source: binary.Source,
-		Method: binary.Method,
-		CLI: installReceiptCLI{
-			Path: binary.Path, Version: binary.Version, Commit: binary.Commit,
-			BuildDate: binary.BuildDate, Hash: binary.Hash,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	paths, pathErr := managedInstallationPaths()
-	hermesIntegration := harnessIntegrationState{State: "skipped", Detail: "Hermes is not installed"}
-	hermesReady := true
-	if pathErr != nil {
-		return pathErr
-	} else if paths.HermesDetected {
-		if harnessArtifactsReady(artifacts, paths.HermesHome, "plugins/hermes/") {
-			if err := enableHermesPlugin(ctx, paths.HermesHome); err != nil {
-				return err
-			}
-			hermesIntegration = harnessIntegrationState{State: "installed", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin enabled"}
-		} else {
-			hermesReady = false
-			hermesIntegration = harnessIntegrationState{State: "failed", Scope: "all-providers", Detail: "conflicting or modified Hermes plugin files were preserved"}
-		}
-	}
-	openCodeIntegration := harnessIntegrationState{State: "failed", Scope: "mcp", Detail: "conflicting or modified OpenCode files were preserved"}
-	if harnessArtifactsReady(artifacts, paths.OpenCodeHome, "plugins/opencode/", "skills/mimir-") {
-		openCodeIntegration, err = installCurrentOpenCodeMCP(ctx)
-		if err != nil {
-			return err
-		}
-	}
-	openCodeReady := true
-	for _, artifact := range artifacts.Artifacts {
-		if strings.HasPrefix(artifact.Source, "plugins/opencode/") || strings.HasPrefix(artifact.Path, filepath.Join(paths.OpenCodeHome, "skills")+string(filepath.Separator)) {
-			if artifact.Status != artifactCurrent && artifact.Status != artifactInstalled && artifact.Status != artifactAdopted && artifact.Status != artifactMigrated && artifact.Status != artifactUpdated {
-				openCodeReady = false
-			}
-		}
-	}
-	if openCodeIntegration.State == "failed" {
-		openCodeReady = false
-	}
-	report := installReport{Binary: binary, Artifacts: artifacts, OpenCode: openCodeIntegration, Hermes: hermesIntegration, OpenCodeReady: openCodeReady, HermesReady: hermesReady, ActionRequired: artifactIssueCount(artifacts) > 0 || !openCodeReady || !hermesReady}
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
-	if _, err := fmt.Fprintf(out, "mimir %s  %s  %s\n", binary.Version, binary.Status, binary.Path); err != nil {
+	if _, err := fmt.Fprintf(out, "mimir %s  %s  %s\n", report.Binary.Version, report.Binary.Status, report.Binary.Path); err != nil {
 		return err
 	}
-	for _, artifact := range artifacts.Artifacts {
+	for _, artifact := range report.Artifacts.Artifacts {
 		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
 			return err
 		}
 	}
-	if openCodeIntegration.State == "installed" {
+	if report.OpenCode.State == "installed" {
 		if _, err := fmt.Fprintln(out, "opencode  configured  Mimir plugin and MCP · restart OpenCode"); err != nil {
 			return err
 		}
 	}
-	if !openCodeReady {
+	if !report.OpenCodeReady {
 		if _, err := fmt.Fprintln(out, "OpenCode integration incomplete: conflicting or modified Mimir files were preserved; stale skills or capture code may still be active."); err != nil {
 			return err
 		}
 	}
-	if !hermesReady {
+	if !report.HermesReady {
 		if _, err := fmt.Fprintln(out, "Hermes integration incomplete: conflicting or modified Mimir plugin files were preserved and were not enabled."); err != nil {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(out, "%s\nInstall log: %s\n", artifacts.Summary, artifacts.LogPath)
+	_, err = fmt.Fprintf(out, "%s\nInstall log: %s\n", report.Artifacts.Summary, report.Artifacts.LogPath)
 	return err
 }
 
@@ -337,7 +290,8 @@ func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 			return fmt.Errorf("usage: mimir uninstall [--keep-binary] [--json]")
 		}
 	}
-	report, err := uninstallManagedInstallationWithContext(ctx, keepBinary)
+	configureInstall()
+	report, err := lifecycleService().Uninstall(ctx, keepBinary)
 	if err != nil {
 		return err
 	}
@@ -348,7 +302,7 @@ func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	for _, artifact := range report.Artifacts {
-		if artifact.Status == artifactUnowned {
+		if artifact.Status == installpkg.ArtifactUnowned {
 			continue
 		}
 		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
@@ -362,299 +316,43 @@ func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 	return err
 }
 
-func bootstrapCurrentExecutable(explicitDir string) (installBinaryReport, error) {
-	sourcePath, err := executablePath()
-	if err != nil {
-		return installBinaryReport{}, fmt.Errorf("locating current executable: %w", err)
-	}
-	sourcePath, err = filepath.Abs(sourcePath)
-	if err != nil {
-		return installBinaryReport{}, err
-	}
-	sourceData, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return installBinaryReport{}, fmt.Errorf("reading current executable: %w", err)
-	}
-	temporary := temporaryExecutable(sourcePath)
-	target := sourcePath
-	method, status := "existing", "current"
-	if explicitDir != "" || temporary {
-		dir, err := resolveInstallDir(explicitDir)
-		if err != nil {
-			return installBinaryReport{}, err
-		}
-		name := "mimir"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		target = filepath.Join(dir, name)
-		if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
-			return installBinaryReport{}, err
-		} else if symlink {
-			return installBinaryReport{}, fmt.Errorf("refusing to overwrite symlinked executable path %s", target)
-		}
-		if managedByPackageManager(target) {
-			return installBinaryReport{}, fmt.Errorf("refusing to overwrite package-manager-owned path %s", target)
-		}
-		if resolved, err := filepath.EvalSymlinks(target); err == nil && managedByPackageManager(resolved) {
-			return installBinaryReport{}, fmt.Errorf("refusing to overwrite package-manager-owned path %s", resolved)
-		}
-		if !sameFilePath(sourcePath, target) {
-			sourceHash := hashBytes(sourceData)
-			info, statErr := os.Lstat(target)
-			switch {
-			case statErr == nil:
-				if !info.Mode().IsRegular() {
-					return installBinaryReport{}, fmt.Errorf("refusing to overwrite non-regular executable path %s", target)
-				}
-				current, err := os.ReadFile(target)
-				if err != nil {
-					return installBinaryReport{}, err
-				}
-				currentHash := hashBytes(current)
-				if currentHash == sourceHash {
-					method, status = "existing", "current"
-					break
-				}
-				receipt, err := loadInstallReceipt()
-				if err != nil {
-					return installBinaryReport{}, err
-				}
-				owned := sameFilePath(receipt.CLI.Path, target) && receipt.CLI.Hash != "" && receipt.CLI.Hash == currentHash
-				if !owned && !isMimirExecutable(target) {
-					return installBinaryReport{}, fmt.Errorf("refusing to overwrite unowned executable %s", target)
-				}
-				if err := installExecutableCopy(target, sourceData, currentHash); err != nil {
-					return installBinaryReport{}, fmt.Errorf("installing CLI binary: %w", err)
-				}
-				method, status = "bootstrap-copy", "updated"
-			case os.IsNotExist(statErr):
-				if err := installExecutableCopy(target, sourceData, ""); err != nil {
-					return installBinaryReport{}, fmt.Errorf("installing CLI binary: %w", err)
-				}
-				method, status = "bootstrap-copy", "installed"
-			default:
-				return installBinaryReport{}, statErr
-			}
-		}
-	}
-	source := "executable"
-	if temporary {
-		source = "go-run"
-	}
-	targetHash := hashBytes(sourceData)
-	if status == "current" {
-		receipt, err := loadInstallReceipt()
-		if err != nil {
-			return installBinaryReport{}, err
-		}
-		if sameFilePath(receipt.CLI.Path, target) && receipt.CLI.Hash == targetHash {
-			if receipt.Source != "" {
-				source = receipt.Source
-			}
-			if receipt.Method != "" {
-				method = receipt.Method
-			}
-		}
-	}
-	return installBinaryReport{
-		Path: target, Status: status, Version: version, Commit: commit,
-		BuildDate: date, Hash: targetHash, Source: source, Method: method,
-	}, nil
-}
-
-var isMimirExecutable = func(path string) bool {
-	info, err := buildinfo.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return info.Path == "github.com/cloudboy-jh/mimir/cmd/mimir" && info.Main.Path == "github.com/cloudboy-jh/mimir"
-}
-
-func resolveInstallDir(explicit string) (string, error) {
-	dir := strings.TrimSpace(explicit)
-	if dir == "" {
-		for _, key := range []string{"MIMIR_INSTALL_DIR", "GOBIN"} {
-			if value := configuredGoEnv(key); value != "" {
-				dir = value
-				break
-			}
-		}
-	}
-	if dir == "" {
-		if paths := filepath.SplitList(configuredGoEnv("GOPATH")); len(paths) > 0 && strings.TrimSpace(paths[0]) != "" {
-			dir = filepath.Join(paths[0], "bin")
-		}
-	}
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolving install directory: %w", err)
-		}
-		dir = filepath.Join(home, "go", "bin")
-	}
-	dir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolving install directory: %w", err)
-	}
-	return dir, nil
-}
-
-func temporaryExecutable(path string) bool {
-	roots := []string{os.TempDir(), configuredGoEnv("GOTMPDIR"), configuredGoEnv("GOCACHE")}
-	if cache, err := os.UserCacheDir(); err == nil {
-		roots = append(roots, filepath.Join(cache, "go-build"))
-	}
-	for _, root := range roots {
-		root = strings.TrimSpace(root)
-		if root == "" || root == "off" {
-			continue
-		}
-		root, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		rel, err := filepath.Rel(root, filepath.Clean(path))
-		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
-
-var readGoEnv = func(key string) string {
-	output, err := exec.Command("go", "env", key).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(output))
-}
-
-func configuredGoEnv(key string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	if key == "MIMIR_INSTALL_DIR" {
-		return ""
-	}
-	return readGoEnv(key)
-}
-
-func sameFilePath(left, right string) bool {
-	left, _ = filepath.Abs(left)
-	right, _ = filepath.Abs(right)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
-}
-
-// installExecutableCopy installs only when target is absent (expectedHash is
-// empty) or still contains the exact receipt-owned bytes checked by the caller.
-func installExecutableCopy(target string, data []byte, expectedHash string) error {
-	dir := filepath.Dir(target)
-	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
-		return err
-	} else if symlink {
-		return fmt.Errorf("refusing to install through symlinked path %s", target)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	staged, err := os.CreateTemp(dir, ".mimir-install-*")
-	if err != nil {
-		return err
-	}
-	stagedPath := staged.Name()
-	defer os.Remove(stagedPath)
-	if _, err := staged.Write(data); err != nil {
-		_ = staged.Close()
-		return err
-	}
-	if err := staged.Sync(); err != nil {
-		_ = staged.Close()
-		return err
-	}
-	if err := staged.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(stagedPath, 0o755); err != nil {
-		return err
-	}
-	if symlink, err := pathContainsSymlink(filesystemRoot(target), target); err != nil {
-		return err
-	} else if symlink {
-		return fmt.Errorf("refusing to replace symlinked path %s", target)
-	}
-	if err := validateExecutableReplacement(target, expectedHash); err != nil {
-		return err
-	}
-	if expectedHash == "" {
-		return os.Rename(stagedPath, target)
-	}
-	if runtime.GOOS == "windows" {
-		old := target + ".old"
-		_ = os.Remove(old)
-		if err := os.Rename(target, old); err != nil {
-			return err
-		}
-		if err := os.Rename(stagedPath, target); err != nil {
-			_ = os.Rename(old, target)
-			return err
-		}
-		_ = os.Remove(old)
-		return nil
-	}
-	return os.Rename(stagedPath, target)
-}
-
-func validateExecutableReplacement(target, expectedHash string) error {
-	info, err := os.Lstat(target)
-	if os.IsNotExist(err) {
-		if expectedHash == "" {
-			return nil
-		}
-		return fmt.Errorf("refusing to replace executable %s: owned target disappeared", target)
-	}
-	if err != nil {
-		return err
-	}
-	if expectedHash == "" {
-		return fmt.Errorf("refusing to overwrite unowned executable %s", target)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("refusing to overwrite non-regular executable path %s", target)
-	}
-	current, err := os.ReadFile(target)
-	if err != nil {
-		return err
-	}
-	if hashBytes(current) != expectedHash {
-		return fmt.Errorf("refusing to replace executable %s: current hash no longer matches install receipt", target)
-	}
-	return nil
-}
-
 func cmdSession(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) > 0 && args[0] == "status" && len(args) < 2 {
+	if len(args) > 0 && args[0] == "get" {
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") || len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
+			return fmt.Errorf("usage: mimir session get <id> [--json]")
+		}
+		return remotePrint(ctx, out, "GET", "/sessions/"+url.PathEscape(args[1]), nil)
+	}
+	if len(args) > 0 && args[0] == "status" && (len(args) < 2 || strings.HasPrefix(args[1], "-")) {
 		return fmt.Errorf("usage: mimir session status <id> [--json]")
 	}
 	if len(args) > 0 && args[0] == "end" && len(args) < 2 {
-		return fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]")
+		return fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json]")
+	}
+	if len(args) > 0 && args[0] == "outcome" && len(args) < 3 {
+		return fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json] [--json]")
 	}
 	if len(args) == 1 {
-		return remotePrint(ctx, out, "GET", "/sessions/"+args[0], nil)
+		return remotePrint(ctx, out, "GET", "/sessions/"+url.PathEscape(args[0]), nil)
 	}
 	if len(args) >= 2 && args[0] == "end" {
-		id, body, err := parseSessionEndArgs(args[1:])
+		parsed, jsonOutput := stripJSONFlag(args[1:])
+		id, body, err := parseSessionEndArgs(parsed)
 		if err != nil {
 			return err
 		}
-		status, err := endRemoteSession(ctx, id, body)
+		status, err := currentSessionService().End(ctx, id, body)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, endedReceiptText(status))
+		if jsonOutput {
+			data, err := sessions.StatusJSON(status)
+			if err != nil {
+				return err
+			}
+			return printRemoteData(out, data)
+		}
+		_, err = fmt.Fprintln(out, sessions.EndedReceiptText(status))
 		return err
 	}
 	if len(args) >= 2 && args[0] == "status" {
@@ -664,74 +362,95 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 		return printSessionStatus(ctx, out, args[1], len(args) == 3)
 	}
 	if len(args) >= 3 && args[0] == "outcome" {
-		id, outcome, reason, err := parseSessionOutcomeArgs(args[1:])
+		parsed, _ := stripJSONFlag(args[1:])
+		id, outcome, reason, evidence, err := parseSessionOutcomeArgs(parsed)
 		if err != nil {
 			return err
 		}
-		body := map[string]any{"outcome": outcome, "source": "agent"}
-		if reason != "" {
-			body["reason"] = reason
+		options := sessions.SetOutcomeOptions{Outcome: outcome, Reason: reason}
+		if evidence != nil {
+			options.Evidence, options.EvidenceSet = evidence.Value, true
 		}
-		return remotePrint(ctx, out, "POST", "/sessions/"+id+"/outcome", body)
+		data, err := currentSessionService().SetOutcome(ctx, id, options)
+		if err != nil {
+			return err
+		}
+		return printRemoteData(out, data)
 	}
-	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session end <id> [--outcome value] [--reason text] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
 }
 
-func parseSessionEndArgs(args []string) (string, map[string]any, error) {
+func parseSessionEndArgs(args []string) (string, sessions.EndOptions, error) {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return "", nil, fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]")
+		return "", sessions.EndOptions{}, fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json]")
 	}
 	id := args[0]
-	body := map[string]any{}
+	options := sessions.EndOptions{}
+	hasOutcome, hasReason := false, false
 	for i := 1; i < len(args); i++ {
 		switch {
 		case args[i] == "--outcome" && i+1 < len(args):
-			if _, exists := body["outcome"]; exists {
-				return "", nil, fmt.Errorf("--outcome may only be specified once")
+			if hasOutcome {
+				return "", sessions.EndOptions{}, fmt.Errorf("--outcome may only be specified once")
 			}
-			body["outcome"] = args[i+1]
+			hasOutcome, options.Outcome = true, args[i+1]
 			i++
 		case strings.HasPrefix(args[i], "--outcome="):
-			if _, exists := body["outcome"]; exists {
-				return "", nil, fmt.Errorf("--outcome may only be specified once")
+			if hasOutcome {
+				return "", sessions.EndOptions{}, fmt.Errorf("--outcome may only be specified once")
 			}
-			body["outcome"] = strings.TrimPrefix(args[i], "--outcome=")
+			hasOutcome, options.Outcome = true, strings.TrimPrefix(args[i], "--outcome=")
 		case args[i] == "--reason" && i+1 < len(args):
-			if _, exists := body["reason"]; exists {
-				return "", nil, fmt.Errorf("--reason may only be specified once")
+			if hasReason {
+				return "", sessions.EndOptions{}, fmt.Errorf("--reason may only be specified once")
 			}
-			body["reason"] = args[i+1]
+			hasReason, options.Reason = true, args[i+1]
 			i++
 		case strings.HasPrefix(args[i], "--reason="):
-			if _, exists := body["reason"]; exists {
-				return "", nil, fmt.Errorf("--reason may only be specified once")
+			if hasReason {
+				return "", sessions.EndOptions{}, fmt.Errorf("--reason may only be specified once")
 			}
-			body["reason"] = strings.TrimPrefix(args[i], "--reason=")
+			hasReason, options.Reason = true, strings.TrimPrefix(args[i], "--reason=")
+		case args[i] == "--evidence" && i+1 < len(args):
+			if options.EvidenceSet {
+				return "", sessions.EndOptions{}, fmt.Errorf("--evidence may only be specified once")
+			}
+			if err := json.Unmarshal([]byte(args[i+1]), &options.Evidence); err != nil {
+				return "", sessions.EndOptions{}, fmt.Errorf("invalid --evidence JSON: %w", err)
+			}
+			options.EvidenceSet = true
+			i++
+		case strings.HasPrefix(args[i], "--evidence="):
+			if options.EvidenceSet {
+				return "", sessions.EndOptions{}, fmt.Errorf("--evidence may only be specified once")
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(args[i], "--evidence=")), &options.Evidence); err != nil {
+				return "", sessions.EndOptions{}, fmt.Errorf("invalid --evidence JSON: %w", err)
+			}
+			options.EvidenceSet = true
 		default:
-			return "", nil, fmt.Errorf("unexpected argument %q", args[i])
+			return "", sessions.EndOptions{}, fmt.Errorf("unexpected argument %q", args[i])
 		}
 	}
-	if value, exists := body["outcome"]; exists {
-		outcome, _ := value.(string)
-		if !canonicalOutcome(outcome) {
-			return "", nil, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
-		}
+	if hasOutcome && !canonicalOutcome(options.Outcome) {
+		return "", sessions.EndOptions{}, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", options.Outcome)
 	}
-	if _, hasReason := body["reason"]; hasReason {
-		if _, hasOutcome := body["outcome"]; !hasOutcome {
-			return "", nil, fmt.Errorf("--reason requires --outcome")
-		}
+	if hasReason && !hasOutcome {
+		return "", sessions.EndOptions{}, fmt.Errorf("--reason requires --outcome")
 	}
-	return id, body, nil
+	if options.EvidenceSet && !hasOutcome {
+		return "", sessions.EndOptions{}, fmt.Errorf("--evidence requires --outcome")
+	}
+	return id, options, nil
 }
 
 func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutput bool) error {
-	status, err := getSessionStatus(ctx, id)
+	status, err := currentSessionService().GetStatus(ctx, id)
 	if err != nil {
 		return err
 	}
 	if jsonOutput {
-		data, err := sessionStatusJSON(status)
+		data, err := sessions.StatusJSON(status)
 		if err != nil {
 			return err
 		}
@@ -741,7 +460,7 @@ func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutpu
 	if status.Capture.LastSavedAt != nil {
 		lastSaved = *status.Capture.LastSavedAt
 	}
-	_, err = fmt.Fprintf(out, "%s\nSession   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", receiptSummary(status), status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
+	_, err = fmt.Fprintf(out, "%s\nSession   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", sessions.ReceiptSummary(status), status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
 	if err == nil && status.DashboardURL != nil {
 		_, err = fmt.Fprintf(out, "Dashboard %s\n", *status.DashboardURL)
 	}
@@ -755,50 +474,69 @@ func displayState(value string) string {
 	return strings.ToUpper(value[:1]) + value[1:]
 }
 
-func parseSessionOutcomeArgs(args []string) (id, outcome, reason string, err error) {
+type outcomeEvidence struct {
+	Value any
+}
+
+func parseSessionOutcomeArgs(args []string) (id, outcome, reason string, evidence *outcomeEvidence, err error) {
 	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
-		return "", "", "", fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]")
+		return "", "", "", nil, fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
 	}
 	id, outcome = args[0], args[1]
 	if !canonicalOutcome(outcome) {
-		return "", "", "", fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
+		return "", "", "", nil, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
 	}
 	for i := 2; i < len(args); i++ {
 		switch {
 		case args[i] == "--reason":
 			if reason != "" || i+1 >= len(args) {
-				return "", "", "", fmt.Errorf("--reason requires one value")
+				return "", "", "", nil, fmt.Errorf("--reason requires one value")
 			}
 			reason = args[i+1]
 			if strings.TrimSpace(reason) == "" {
-				return "", "", "", fmt.Errorf("--reason requires one value")
+				return "", "", "", nil, fmt.Errorf("--reason requires one value")
 			}
 			i++
 		case strings.HasPrefix(args[i], "--reason="):
 			if reason != "" {
-				return "", "", "", fmt.Errorf("--reason may only be specified once")
+				return "", "", "", nil, fmt.Errorf("--reason may only be specified once")
 			}
 			reason = strings.TrimPrefix(args[i], "--reason=")
 			if strings.TrimSpace(reason) == "" {
-				return "", "", "", fmt.Errorf("--reason requires one value")
+				return "", "", "", nil, fmt.Errorf("--reason requires one value")
 			}
+		case args[i] == "--evidence":
+			if evidence != nil || i+1 >= len(args) {
+				return "", "", "", nil, fmt.Errorf("--evidence requires one JSON value")
+			}
+			var value any
+			if err := json.Unmarshal([]byte(args[i+1]), &value); err != nil {
+				return "", "", "", nil, fmt.Errorf("invalid --evidence JSON: %w", err)
+			}
+			evidence = &outcomeEvidence{Value: value}
+			i++
+		case strings.HasPrefix(args[i], "--evidence="):
+			if evidence != nil {
+				return "", "", "", nil, fmt.Errorf("--evidence may only be specified once")
+			}
+			var value any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(args[i], "--evidence=")), &value); err != nil {
+				return "", "", "", nil, fmt.Errorf("invalid --evidence JSON: %w", err)
+			}
+			evidence = &outcomeEvidence{Value: value}
 		default:
-			return "", "", "", fmt.Errorf("unexpected argument %q", args[i])
+			return "", "", "", nil, fmt.Errorf("unexpected argument %q", args[i])
 		}
 	}
-	return id, outcome, reason, nil
+	return id, outcome, reason, evidence, nil
 }
 
 func canonicalOutcome(outcome string) bool {
-	switch outcome {
-	case "landed", "discarded", "abandoned", "unresolved":
-		return true
-	default:
-		return false
-	}
+	return sessions.ValidOutcome(outcome)
 }
 
 func cmdConfig(ctx context.Context, args []string, out io.Writer) error {
+	args, _ = stripJSONFlag(args)
 	if len(args) == 1 && args[0] == "get" {
 		return remotePrint(ctx, out, "GET", "/config", nil)
 	}
@@ -809,7 +547,38 @@ func cmdConfig(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return remotePrint(ctx, out, "PUT", "/config", map[string]any{args[1]: value})
 	}
-	return fmt.Errorf("usage: mimir config get | mimir config set <key> <json-value>")
+	return fmt.Errorf("usage: mimir config get [--json] | mimir config set <key> <json-value> [--json]")
+}
+
+func cmdTools(args []string, out io.Writer) error {
+	if !onlyJSONFlag(args) {
+		return fmt.Errorf("usage: mimir tools [--json]")
+	}
+	return json.NewEncoder(out).Encode(map[string]any{"schema_version": 1, "tools": mcp.Tools()})
+}
+
+func onlyJSONFlag(args []string) bool {
+	return len(args) == 0 || (len(args) == 1 && args[0] == "--json")
+}
+
+func stripJSONFlag(args []string) ([]string, bool) {
+	if len(args) > 0 && args[len(args)-1] == "--json" {
+		return args[:len(args)-1], true
+	}
+	return args, false
+}
+
+func parseSearchArgs(args []string) (string, error) {
+	args, _ = stripJSONFlag(args)
+	if len(args) == 0 {
+		return "", fmt.Errorf("usage: mimir search <query> [--json]")
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--") {
+			return "", fmt.Errorf("unexpected argument %q", arg)
+		}
+	}
+	return strings.Join(args, " "), nil
 }
 
 func remotePrint(ctx context.Context, out io.Writer, method, path string, body any) error {
@@ -821,9 +590,9 @@ func remotePrint(ctx context.Context, out io.Writer, method, path string, body a
 }
 
 func printRemoteData(out io.Writer, data []byte) error {
-	var formatted any
-	if json.Unmarshal(data, &formatted) == nil {
-		data, _ = json.MarshalIndent(formatted, "", "  ")
+	var formatted bytes.Buffer
+	if json.Indent(&formatted, data, "", "  ") == nil {
+		data = formatted.Bytes()
 	}
 	_, err := fmt.Fprintln(out, string(data))
 	return err
@@ -837,13 +606,16 @@ Usage:
   mimir install [--bin-dir <dir>] [--json]
   mimir uninstall [--keep-binary] [--json]
   mimir deploy [--json]
-  mimir access [--token <api-token> | --aud <tag> --team-domain <domain>]
+  mimir access [--token <api-token> --email <address> | --aud <tag> --team-domain <domain>] [--json]
   mimir login [--json]
   mimir dashboard
-  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
+  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20] [--json]
+  mimir search <query> [--json]
+  mimir session get <id> [--json]
   mimir session status <id> [--json]
-  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
-  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
+  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json] [--json]
+  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json] [--json]
+  mimir tools [--json]
   mimir reconcile
   mimir doctor [--json]
   mimir update [--check] [--json]
@@ -861,19 +633,21 @@ These commands support harness integrations, diagnostics, and development.
 Usage:
   mimir connection
   mimir doctor [--json]
-  mimir whoami
+  mimir whoami [--json]
   mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
   mimir sessions
   mimir session <id>
+  mimir session get <id> [--json]
   mimir session status <id>
   mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
-  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text]
-  mimir search <query>
+  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]
+  mimir search <query> [--json]
   mimir reconcile
   mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>
   mimir outcome git <session>
-  mimir config get
-  mimir config set <key> <json-value>
+  mimir config get [--json]
+  mimir config set <key> <json-value> [--json]
+  mimir tools [--json]
   mimir index [--full]
   mimir recall <query> [--budget 4000] [--json]
   mimir serve`)

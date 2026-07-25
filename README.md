@@ -4,9 +4,11 @@
 
 **Durable session memory for coding agents.**
 
-Mimir is a private memory plane. It captures what your agents did — every
-provider, every auth mode — as searchable sessions, and gives agents access
-to that history through MCP. Everything runs in your Cloudflare account.
+Mimir is a private, self-hosted memory plane in your Cloudflare account. It
+combines full exchange capture for redirected OpenRouter traffic with
+harness-level turn and lifecycle reporting for supported OAuth, subscription,
+and direct-provider paths. Agents search and control that memory through the
+CLI, optional MCP, and a private dashboard.
 
 No Mimir account. No hosted backend. No shared memory service.
 
@@ -26,33 +28,66 @@ Mimir finds:
 Agent avoids repeating it.
 ```
 
+Capture state says whether memory was saved. Outcome says whether the work
+landed, was discarded, was abandoned, or remains unresolved.
+
 ## How It Works
 
 ```mermaid
 flowchart LR
-    H[Agent harness] -->|API-key model traffic| W[Worker proxy]
+    H[Agent harness] -->|redirected OpenRouter traffic| W[Worker proxy]
     W --> O[OpenRouter]
-    H -.->|plugin: turns, heartbeats, ends| S[Session Durable Object]
-    W -.->|exchange events| S
-    S -->|finalize| R[(R2)]
-    S -->|finalize| D[(D1)]
-    H <-->|Memory tools| M[Local Mimir MCP]
-    M <--> W
+    W -->|redacted exchanges| R[(R2)]
+    W -->|searchable metadata| D[(D1)]
+    H -.->|turns, heartbeats, ends| S[Session Durable Object]
+    W -.->|saved exchange events| S
+    S -->|transcript manifest| R
+    S -->|lifecycle state| D
+    H <-->|memory commands| C[Mimir CLI / optional MCP]
+    C <--> W
 ```
 
-Two reporters, one owner, one filing cabinet:
+1. **Worker proxy:** streams redirected OpenRouter traffic and writes full
+   redacted exchanges to R2 with searchable metadata in D1.
+2. **Harness plugins:** report completed-turn summaries and lifecycle events
+   across harness providers. Hermes suppresses turns known to have traversed
+   the proxy. Plugin summaries are not full request/response archives.
+3. **Session Durable Object:** owns live lifecycle, liveness, the bounded plugin
+   turn feed, reopening, and transcript finalization. R2 and D1 remain
+   canonical for saved proxy exchanges, searchable metadata, and finalized
+   lifecycle state.
 
-1. **The Worker proxy** captures API-key providers as a side effect of model
-   traffic — redacted exchanges to R2, metadata to D1, streamed upstream.
-2. **Harness plugins** (OpenCode, Hermes) observe completed turns inside the
-   agent, covering OAuth and subscription providers the proxy can't touch.
-3. **A Session Durable Object per session** owns the lifecycle: liveness, the
-   live feed, and the final write. Sessions end three ways — harness end
-   event, ~10-minute silence timer (covers killed terminals and crashes), or
-   explicit end via MCP or CLI. Closing a terminal always writes the session.
+## Session Lifecycle
 
-Memory access flows through the local `mimir serve` MCP process. Agents
-verify capture with `session_status` and get one compact receipt:
+Sessions start lazily. There is no separate start command.
+
+A session starts from the first activity carrying its session ID:
+
+1. Harness start hook sends a heartbeat.
+2. First completed turn arrives if the start hook was missed.
+3. First capture-eligible proxied request carrying `x-mimir-session` is saved.
+
+Sessions finalize three ways:
+
+1. A supported harness finalize hook sends an end event. OpenCode sends this
+   for `session.deleted`; ordinary process exit falls back to silence timeout.
+2. Approximately ten minutes of silence triggers the Durable Object alarm.
+3. The user or agent explicitly ends it through CLI or MCP.
+
+Reopening is intentional:
+
+- Finalization is not a tombstone.
+- New activity with the same session ID reopens the same session.
+- Existing history remains attached.
+- A genuinely new harness session receives a new ID.
+- Repeated end requests remain safe.
+- Finalization failures schedule retries.
+- Liveness is derived independently as `active`, `disconnected`, or `finalized`.
+
+`active` means activity arrived within about 90 seconds. `disconnected` means
+the session is silent but its finalization alarm has not fired. `finalized`
+means the final transcript and lifecycle write completed. The ten-minute
+silence timer is a durability backstop, not a liveness promise.
 
 ```text
 Saved to Mimir · 14 exchanges in this session · View session
@@ -60,70 +95,47 @@ Saved to Mimir · 14 exchanges in this session · View session
 
 ## Install
 
-You need a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
+Requirements: Cloudflare account, OpenRouter API key, Go 1.25+, Node.js 22
 with npm, and Bun.
 
 ```bash
 go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
-mimir setup        # first machine: provision and deploy
-# On another machine with an existing deployment:
+mimir setup
+```
+
+Connect another machine to an existing deployment:
+
+```bash
+go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
 mimir login
 ```
 
-Setup provisions D1 and R2, deploys the Worker, stores the OpenRouter key as
-a Worker secret, and registers the machine. Secrets are entered through local
-masked prompts. The installed binary embeds the Worker, dashboard sources,
-OpenCode and Hermes plugins, and Mimir skills, so setup and deploy do not select
-another version from the Go module cache or require a source checkout. Node.js,
-npm, and Bun are still used locally to build the embedded Worker package.
+Setup materializes the embedded Worker and dashboard, provisions or discovers
+D1 and R2, stores the OpenRouter key through a masked prompt, deploys, and
+registers a per-machine token. Mimir changes only exact receipt-owned plugin
+and skill files, preserves conflicts and local edits, and never rewrites
+general OpenCode configuration. See [the specification](docs/Spec.md) for the
+full ownership contract.
 
-Mimir records the exact harness files it owns in
-`~/.mimir/install-receipt.json` and appends operations to
-`~/.mimir/install-log.jsonl` (under `$MIMIR_HOME` when set). It creates absent
-opted-in files, adopts byte-identical files, updates only receipt-owned and
-unmodified files, preserves modified or conflicting files, and rejects
-symlinked targets. It never manages general OpenCode configuration.
-
-`mimir update --check` checks release status. Explicit `mimir install` and
-`mimir update` enroll safe absent or byte-identical global harness files and
-refresh unchanged receipt-owned files. They also remove retired bundle files
-only when the receipt still owns their exact bytes; changed, missing, or unsafe
-retired paths remain recorded and preserved. Setup and login only refresh an
-existing managed installation. `mimir doctor` reports connection and integration
-problems. `mimir uninstall` removes only
-unchanged receipt-owned plugin and skill files and the verified installer-owned
-binary. Modified, missing, unowned, non-regular, and symlinked paths are
-preserved and reported. The exact Mimir-managed Hermes `.env` route block is
-removed without touching `OPENROUTER_API_KEY`; malformed or modified blocks are
-preserved. On Windows, a running verified binary is renamed and a detached
-standard-user cleanup process deletes it after the uninstall process exits;
-the uninstall report marks that removal as deferred. Use `--keep-binary` to
-retain the CLI.
+The embedded Worker is always the default source, even when commands run from a
+Mimir checkout. Development or arbitrary source requires explicit
+`--worker-dir <path>`.
 
 ## Connect An Agent
 
-### opencode
+### OpenCode
 
-The installer enrolls the bundled plugin as the exact global file
-`~/.config/opencode/plugins/mimir.ts`; lifecycle updates may refresh that
-receipt-owned file but never rewrite OpenCode JSON/JSONC, providers,
-credentials, commands, or MCP settings. It covers every OpenCode provider:
-OpenRouter, Zen subscription, Claude key, and Codex/ChatGPT OAuth. Manual copy
-is a recovery path only.
-[Details](docs/opencode-capture-setup.md).
+The installer manages the exact global Mimir plugin and skills. The plugin
+reports turns and lifecycle events and injects the receipt-owned optional MCP
+command at startup without rewriting JSON/JSONC. Restart OpenCode after an
+install or update. [OpenCode details](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
-Two cooperating paths are installed from the embedded bundle when Hermes is
-detected:
-
-- `mimir setup`/`login`/`update` redirect Hermes' built-in OpenRouter
-  provider through the Worker using a bounded managed `.env` block while
-  preserving existing assignments.
-- The Hermes plugin captures Nous portal and direct providers from inside the
-  harness. Manual copying is a recovery path only.
-
-[Details](docs/hermes-capture-setup.md).
+Mimir redirects Hermes' built-in OpenRouter provider through `/v1/hermes` and
+enables a plugin for direct-provider turns and lifecycle events. The plugin
+suppresses duplicate turn reporting for known proxied requests. Restart Hermes
+after an install or update. [Hermes details](docs/hermes-capture-setup.md).
 
 ### Other harnesses
 
@@ -131,59 +143,57 @@ detected:
 mimir connection
 ```
 
-Prints the connection manifest: base URLs, local credential source, MCP
-command, and optional session metadata headers. Apply them through the
-harness's own provider and MCP configuration.
+The manifest supplies base URLs, credential sources, the optional MCP command,
+and supported metadata-header names.
 
 ## Commands
 
 ```bash
-mimir setup [--quick]               # provision and deploy the memory plane
-mimir login                         # register this machine
-mimir deploy                        # ship Worker and dashboard changes
-mimir access                        # create or fix dashboard Access
-mimir dashboard                     # open the dashboard
-mimir list [--repo name]            # recent sessions
-mimir session status <id>           # verified capture receipt
-mimir session end <id>              # end a session, optionally with outcome
-mimir search <query>                # search session memory
-mimir doctor                        # validate connection and harness wiring
-mimir update [--check]              # update the CLI
-mimir uninstall [--keep-binary]     # remove verified managed files
-mimir --version                     # binary build only; reads no install state
-mimir version [--json]              # build and managed-install summary
+mimir install [--bin-dir DIR]        # reconcile managed local artifacts
+mimir setup [--quick]                # provision and deploy the memory plane
+mimir login                          # connect another machine
+mimir deploy [--worker-dir DIR]      # deploy packaged Worker/dashboard changes
+mimir access [--email ADDRESS]       # create or repair dashboard Access
+mimir dashboard                      # open the dashboard
+mimir list [--repo NAME] [--json]    # list recent sessions
+mimir search <query> [--json]        # search session memory
+mimir session get <id> [--json]      # read one session
+mimir session status <id> [--json]   # verify durable capture
+mimir session end <id> [--json]      # finalize the active generation
+mimir session outcome <id> <value>   # record an evidenced outcome
+mimir tools --json                   # print the agent command/tool schemas
+mimir reconcile                      # check bounded D1/R2 consistency
+mimir doctor [--json]                # validate connection and integrations
+mimir update [--check]               # update CLI and managed integrations
+mimir uninstall [--keep-binary]      # remove verified managed artifacts
+mimir version [--json]               # build and managed-install summary
 ```
 
-Installation itself is
-`go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install`. Uninstall keeps
-`~/.mimir/config`, the machine token, materialized Worker files,
-`install-log.jsonl`, and the Cloudflare deployment. It does not disconnect or
-delete the remote memory plane.
+CLI commands are the primary agent surface. `mimir serve` exposes equivalent
+MCP tools for harnesses that prefer MCP. Existing `mimir session <id>` and MCP
+tool names remain compatibility aliases. Run `mimir help advanced` for local
+index, recall, connection, config, and diagnostic commands.
 
-More (`mimir help advanced`): `connection`, `whoami`, `session <id>`,
-`session outcome`, `reconcile`, `config`, `index`, `recall`, `serve` (MCP).
+Deploy only with `mimir deploy`; the checked-in Wrangler configuration contains
+a placeholder D1 ID by design.
 
-Deploys go through `mimir deploy` only — the checked-in `wrangler.jsonc`
-keeps a placeholder database ID by design; never `wrangler deploy` from a
-source checkout.
+## Dashboard, Data, And Authentication
 
-## Dashboard
+`mimir dashboard` opens `/dashboard`. Sessions are primary; requests are
+supporting evidence. Browser APIs and R2 reads require verified Cloudflare
+Access JWTs. Machine APIs use per-machine bearer tokens and remain outside
+Access. Browser code never stores a machine token.
 
-```bash
-mimir dashboard
-```
-
-Reads session metadata from D1 and redacted payloads from R2. Cloudflare
-Access protects browser data without storing machine tokens in the browser;
-`mimir access` automates the application (it must cover exactly `/dashboard`
-and `/dashboard/*`). Machine API routes stay outside Access on bearer tokens.
+- Redaction runs before R2 persistence and excerpt generation.
+- Full proxy exchanges live in R2; searchable metadata lives in D1.
+- Transcript manifests live at `sessions/<id>/transcript.json`.
+- Local code recall stays in `<repo>/.mimir/index.json` and is never uploaded.
+- Redaction reduces accidental retention; it cannot guarantee removal of every secret.
 
 ## Documentation
 
-- [`docs/Spec.md`](docs/Spec.md): architecture, APIs, storage, security
-- [`docs/session-lifecycle.md`](docs/session-lifecycle.md): session objects, reporters, end-of-session guarantees
-- [`docs/opencode-capture-setup.md`](docs/opencode-capture-setup.md) / [`docs/hermes-capture-setup.md`](docs/hermes-capture-setup.md): harness capture
-- [`docs/PRODUCT.md`](docs/PRODUCT.md): product direction
-- [`docs/DESIGN.md`](docs/DESIGN.md): dashboard design system
-- [`docs/next-steps.md`](docs/next-steps.md): incomplete implementation work
-- [`AGENTS.md`](AGENTS.md): repository structure and development commands
+- [Implementation, APIs, storage, and security](docs/Spec.md)
+- [Installation](docs/installation.md), [CLI contract](docs/cli.md), [operations](docs/operations.md), and [troubleshooting](docs/troubleshooting.md)
+- [Session lifecycle contract](docs/session-lifecycle.md)
+- [OpenCode](docs/opencode-capture-setup.md) and [Hermes](docs/hermes-capture-setup.md) integrations
+- [Product direction](docs/PRODUCT.md) and [dashboard design](docs/DESIGN.md)

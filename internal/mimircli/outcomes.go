@@ -2,82 +2,45 @@ package mimircli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/cloudboy-jh/mimir/internal/sessions"
 )
 
-type remoteSession struct {
-	Session struct {
-		ID        string `json:"id"`
-		StartedAt string `json:"started_at"`
-		SourceRef string `json:"source_ref"`
-	} `json:"session"`
-	Files []string `json:"files"`
+func runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			return "", err
+		}
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), text, err)
+	}
+	return text, nil
 }
 
-// markGitOutcome only applies evidence visible in the current checkout. The
-// Worker remains the source of truth; this adapter sends its conclusion there.
-func markGitOutcome(ctx context.Context, id string) ([]byte, error) {
-	data, err := remoteRequest(ctx, "GET", "/sessions/"+id, nil)
-	if err != nil {
-		return nil, err
-	}
-	var remote remoteSession
-	if err := json.Unmarshal(data, &remote); err != nil {
-		return nil, err
-	}
-	if remote.Session.ID == "" {
-		return nil, fmt.Errorf("session not found: %s", id)
-	}
-	started, err := time.Parse(time.RFC3339, remote.Session.StartedAt)
-	if err != nil {
-		return nil, fmt.Errorf("invalid session start time: %w", err)
-	}
-	commits, err := runGit(ctx, ".", "log", "--all", "--format=%H", "--since="+started.Format(time.RFC3339))
-	if err != nil {
-		return nil, err
-	}
-	outcome := "unresolved"
-	reason := "no durable Git evidence found for files captured in the session"
-	evidence := "session started at " + started.Format(time.RFC3339)
-	for _, commit := range strings.Fields(commits) {
-		changed, err := runGit(ctx, ".", "show", "--format=", "--name-only", commit)
-		if err != nil || !overlaps(remote.Files, strings.Fields(changed)) {
-			continue
-		}
-		branches, err := runGit(ctx, ".", "branch", "-r", "--contains", commit)
-		if err == nil && durableBranch(strings.Fields(branches)) {
-			outcome = "landed"
-			reason = "a commit touching captured session files is reachable from a durable remote branch"
-			evidence = "commit " + commit
-			break
-		}
-	}
-	return remoteRequest(ctx, "POST", "/sessions/"+id+"/outcome", map[string]string{"outcome": outcome, "source": "agent", "reason": reason, "evidence": evidence})
+type checkoutGitEvidence struct {
+	Dir string
 }
 
-func overlaps(expected, changed []string) bool {
-	if len(expected) == 0 {
-		return false
-	}
-	for _, left := range expected {
-		for _, right := range changed {
-			if left == right || strings.HasSuffix(left, "/"+right) || strings.HasSuffix(right, "/"+left) {
-				return true
-			}
-		}
-	}
-	return false
+func (g checkoutGitEvidence) CommitsSince(ctx context.Context, started time.Time) ([]string, error) {
+	output, err := runGit(ctx, g.Dir, "log", "--all", "--format=%H", "--since="+started.Format(time.RFC3339))
+	return strings.Fields(output), err
 }
 
-func durableBranch(branches []string) bool {
-	for _, branch := range branches {
-		branch = strings.TrimSpace(branch)
-		if strings.HasSuffix(branch, "/main") || strings.HasSuffix(branch, "/master") || strings.HasSuffix(branch, "/HEAD") {
-			return true
-		}
-	}
-	return false
+func (g checkoutGitEvidence) FilesChanged(ctx context.Context, commit string) ([]string, error) {
+	output, err := runGit(ctx, g.Dir, "show", "--format=", "--name-only", commit)
+	return strings.Fields(output), err
 }
+
+func (g checkoutGitEvidence) RemoteBranchesContaining(ctx context.Context, commit string) ([]string, error) {
+	output, err := runGit(ctx, g.Dir, "branch", "-r", "--contains", commit)
+	return strings.Fields(output), err
+}
+
+var _ sessions.GitEvidence = checkoutGitEvidence{}

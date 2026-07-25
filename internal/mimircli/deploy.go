@@ -3,8 +3,9 @@ package mimircli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
+
+	"github.com/cloudboy-jh/mimir/internal/deployment"
 )
 
 // deploy is the single supported way to ship Worker code and dashboard assets.
@@ -32,53 +33,25 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		}
 		i++
 	}
-	dir, err := workerDir(opts.WorkerDir)
+	domainOpts := deployment.DefaultOptions()
+	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName = opts.WorkerDir, opts.WorkerName, opts.DatabaseName
+	domainOpts.Noninteractive = opts.JSON
+	fallback := ""
+	if pointer, err := loadPointer(); err == nil {
+		fallback = pointer.URL
+	}
+	domainResult, err := deployment.NewService(httpClient).Deploy(ctx, domainOpts, deployment.Hooks{
+		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
+		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
+		Login: func(ctx context.Context, dir string) error {
+			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+		},
+	}, fallback)
 	if err != nil {
 		return err
 	}
-	dir, err = materializeWorker(dir)
-	if err != nil {
-		return err
-	}
-	if err := ensureWorkerDependencies(ctx, dir); err != nil {
-		return fmt.Errorf("installing Worker dependencies: %w", err)
-	}
-	if err := buildDashboard(ctx, dir); err != nil {
-		return fmt.Errorf("building dashboard: %w", err)
-	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
-	if err := ensureCloudflareAuth(ctx, dir, ioctx, opts.JSON, opts.Progress); err != nil {
-		return err
-	}
-	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
-	if err != nil {
-		return err
-	}
-	opts.DatabaseID = listedDatabaseID(output, opts.DatabaseName)
-	if opts.DatabaseID == "" {
-		return setupStateError{State: "deployment_missing", Message: "no Mimir D1 database found; run mimir setup first"}
-	}
-	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
-		return err
-	}
-	if _, err := runWrangler(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
-		return fmt.Errorf("applying database migrations: %w", err)
-	}
-	deployOutput, err := runWrangler(ctx, dir, nil, "deploy")
-	if err != nil {
-		return err
-	}
-	url := workerURL(deployOutput)
-	if url == "" {
-		if pointer, err := loadPointer(); err == nil {
-			url = pointer.URL
-		}
-	}
-	if url != "" {
-		if err := storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
-			return err
-		}
-	}
+	url := domainResult.URL
 	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
 	human := fmt.Sprintf("Mimir deployed\n\n  Worker %s", strings.TrimRight(url, "/"))
 	return writeSetupResult(ioctx.Out, opts.JSON, result, human)

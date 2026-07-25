@@ -38,10 +38,10 @@ the session Durable Object (see [`session-lifecycle.md`](session-lifecycle.md)):
   latency), deduplicated by message ID.
 - **Heartbeat** — every 60 seconds while the harness is active, plus on
   session create/update. This drives the dashboard liveness projection.
-- **End** — best-effort on harness exit (SIGINT/SIGTERM) and on session
-  deletion. If the process dies before delivery, the server-side silence
-  timer finalizes the session within ~10 minutes regardless. Explicit end via
-  `mimir session end` or the MCP `session_end` tool always works.
+- **End** — on session deletion when OpenCode exposes that event. If the
+  process exits or dies first, the server-side silence timer finalizes the
+  session within ~10 minutes. Explicit end via `mimir session end <id>` or the
+  MCP `session_end` tool always works.
 
 The plugin never throws into OpenCode: delivery failures are swallowed and
 capture never interrupts the harness.

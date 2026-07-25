@@ -7,12 +7,12 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 - Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` assembles middleware and routes; `routes/`, `auth.ts`, `proxy.ts`, `capture.ts`, `sessions.ts`, and `config.ts` own backend behavior.
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
-- CLI/MCP: `cmd/mimir/` is the Go entrypoint. Focused implementation files live in `internal/mimircli/`, including `mcp.go`, `client.go`, `connection.go`, `index.go`, `recall.go`, and deployment helpers. Keep the Go CLI standard-library-only.
+- CLI/MCP: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, `internal/doctor/`, and `internal/mcp/`. Keep the Go CLI standard-library-only.
 - OpenCode plugin: `plugins/opencode/mimir.ts` reports turns, heartbeats, and session ends to `/sessions/:id/events`. Single dependency-free file; tests run with `bun test plugins/opencode/`.
 - Hermes plugin: `plugins/hermes/` (Python, stdlib-only) reports the same events via Hermes' plugin hooks, covering Nous portal and direct providers; liveness-only when the managed OpenRouter redirect is active. Tests run with `python -m unittest discover -s plugins/hermes -p "test_*.py"`.
 - Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
 - Shared PNG assets: `assets/images/`. Worker materialization must preserve assets imported by the dashboard.
-- Production binaries embed Worker/dashboard inputs, plugins, and skills. Packaged setup and deploy materialize that bundle by default; `--worker-dir` and verified checkout discovery are development overrides, never an implicit Go module-cache version.
+- Production binaries embed Worker/dashboard inputs, plugins, and skills. Setup and deploy always materialize that bundle by default. Arbitrary or checkout Worker source is a development override available only through explicit `--worker-dir`; never discover a checkout or Go module-cache version implicitly.
 - Managed harness artifacts use `$MIMIR_HOME/install-receipt.json` ownership and `$MIMIR_HOME/install-log.jsonl`. Update only exact owned, unmodified files; preserve conflicts and never rewrite general OpenCode configuration.
 - `AGENTS.md` and `skills/**` Markdown remain at their structural paths for automatic discovery.
 - Local code memory remains `<repo>/.mimir/index.json`.

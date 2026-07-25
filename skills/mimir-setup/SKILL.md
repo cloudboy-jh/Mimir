@@ -20,7 +20,7 @@ Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in
 9. For OpenCode, allow the installer to manage only its exact receipt-owned plugin and skill files. The managed plugin injects the receipt-owned `mcp_command` at startup without rewriting general OpenCode JSON/JSONC. Restart OpenCode after installation.
 10. For harnesses without a bundled integration, register the returned `mcp_command` through the harness's supported configuration flow. Supply authentication using `credential_file`, `credential_command`, or secure secret input. Never directly rewrite general harness configuration, providers, credentials, commands, or MCP entries.
 11. If the harness supports dynamic request headers, derive and add any names listed in `optional_headers`. Never use header names or placeholder text as literal values. These improve grouping but are not required.
-12. Install `mimir-use` in the harness's skill directory and validate the harness configuration using its native validation command or schema.
+12. Verify that the installer enrolled `mimir-use`. Install it manually only for unsupported harnesses, then validate the harness configuration using its native validation command or schema.
 
 Mimir may update or uninstall exact opted-in files only when ownership is recorded in `$MIMIR_HOME/install-receipt.json`; preserve conflicts and locally modified files. `mimir uninstall` keeps connection, token, Worker, install-log, and Cloudflare deployment state. Manual plugin copying is recovery-only. The connection manifest remains the contract for provider and MCP configuration; do not invent additional harness-specific Worker behavior.
 

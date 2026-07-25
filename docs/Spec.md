@@ -42,13 +42,17 @@ D1 or R2.
 
 ```mermaid
 flowchart LR
-    H[Agent harness] -->|Model request| W[Cloudflare Worker]
+    H[Agent harness] -->|Redirected model request| W[Cloudflare Worker]
     W --> O[OpenRouter]
     O -->|Response stream| W
     W -->|Response stream| H
-    W -.-> D[(D1)]
-    W -.-> R[(R2)]
-    H <-->|stdio MCP| C[Go client]
+    W -->|Redacted exchanges| R[(R2)]
+    W -->|Searchable metadata| D[(D1)]
+    H -.->|Turns, heartbeats, ends| S[Session Durable Object]
+    W -.->|Saved exchange events| S
+    S -->|Transcript manifest| R
+    S -->|Lifecycle state| D
+    H <-->|CLI or optional stdio MCP| C[Go client]
     C <-->|Canonical HTTP API| W
     C -.-> I[(Local code index)]
 ```
@@ -90,8 +94,9 @@ verified `Cf-Access-Jwt-Assertion`. Verification uses:
 Localhost dashboard API requests may bypass Access for development. Static SPA
 assets are served separately from dashboard API authentication.
 
-Setup does not currently create a Cloudflare Access application or configure
-these variables.
+Setup can configure the Cloudflare Access application when supplied an API
+token. `mimir access` can create, repair, or attach an existing application
+later.
 
 ## 4. HTTP API
 
@@ -152,9 +157,9 @@ Session-list filters include repository, model, outcome, and date range.
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
 
-The Vue client remains mock-backed except for an exact unknown session deep
-link, which consumes only `/dashboard/api/sessions/:id/status` to show its
-capture receipt and outcome.
+The Vue client reads live Access-protected dashboard APIs for Sessions,
+Requests, Overview, details, R2 payload retrieval, capture status, and outcome
+mutation.
 
 ## 5. Capture Lifecycle
 
@@ -239,13 +244,15 @@ kept, while `saved` says an exchange is durably represented in both R2 and D1.
 Each session is owned live by a Session Durable Object named by the session
 ID. Reporters append versioned events (`turn`, `heartbeat`, `end`); capture
 reports a `turn` after every saved exchange, and `/sessions/:id/end` reports
-`end`. The object tracks liveness and performs the final write. It is a
-buffer and coordinator: R2 and D1 remain canonical.
+`end`. The object tracks liveness and performs the final write. R2 and D1 are
+canonical for saved proxy exchanges, searchable metadata, and finalized
+lifecycle state. Plugin turn payloads remain in a bounded Durable Object live
+buffer and are not copied into the R2 transcript manifest or D1 search data.
 
 A session finalizes when any of three triggers fires: an `end` event, a
-10-minute silence alarm (re-armed by every event, so clean exits finalize
-immediately and hard deaths finalize within ~10 minutes), or the explicit
-end route. Finalization writes a session transcript manifest to
+10-minute silence alarm (re-armed by every accepted non-duplicate event), or
+the explicit end route. Supported finalize hooks end immediately; ordinary
+process exits and hard deaths finalize within ~10 minutes. Finalization writes a session transcript manifest to
 `sessions/<id>/transcript.json` in R2 and marks the D1 session inactive using
 the same generation semantics as the explicit end route. It is idempotent per
 active period and retries on failure.
@@ -426,6 +433,18 @@ Supported MCP methods are:
 - `tools/list`
 - `tools/call`
 
+Malformed or structurally invalid `tools/call` parameters return JSON-RPC
+`-32602` (`Invalid params`). Once a valid tool call is dispatched, tool and
+upstream execution failures are successful JSON-RPC responses containing an MCP
+`CallToolResult` with `isError: true`; framing, parsing, unsupported-method, and
+other transport or protocol failures remain JSON-RPC errors. The legacy
+`-32000` tool-failure behavior is not supported.
+
+Every request must be a JSON-RPC 2.0 request object with a string method,
+structured parameters when present, and a string or numeric ID when present.
+Structurally invalid requests return `-32600` and do not terminate the input
+stream.
+
 Tools:
 
 | Tool | Arguments | Worker operation |
@@ -461,9 +480,10 @@ and dashboard copy emit canonical values.
 `mimir setup`:
 
 1. Materializes the Worker embedded in the running binary under
-   `~/.mimir/worker` or `$MIMIR_HOME/worker`. An explicit `--worker-dir` or a
-   verified current Mimir checkout is a development override; the Go module
-   cache is never searched for an implicit version.
+   `~/.mimir/worker` or `$MIMIR_HOME/worker`. Arbitrary source, including a
+   development checkout, is available only through explicit `--worker-dir`.
+   The current directory, parent directories, and Go module cache are never
+   searched for an implicit Worker source.
 2. Installs Worker and dashboard dependencies.
 3. Builds dashboard assets.
 4. Authenticates Wrangler.
@@ -498,7 +518,9 @@ created. Registered OpenRouter credentials are accepted only on `/v1/hermes/*`, 
 Hermes features that still call OpenRouter directly never leak a Mimir machine
 credential. Hermes requests are forwarded with the same OpenRouter credential
 they presented rather than charging the Worker's default key. Direct Hermes
-providers remain outside Mimir because their requests do not reach the Worker.
+providers remain outside the Worker proxy because their requests do not reach
+it; the bundled Hermes plugin captures their completed-turn summaries and
+lifecycle events from inside the harness.
 
 Explicit `mimir update` enrolls safe absent or byte-identical bundled harness
 files and refreshes the Hermes integration. `mimir doctor` validates its route,

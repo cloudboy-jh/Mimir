@@ -2,23 +2,14 @@ package mimircli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
-)
 
-type cloudflareIdentity struct {
-	LoggedIn bool   `json:"loggedIn"`
-	AuthType string `json:"authType"`
-	Email    string `json:"email"`
-	Accounts []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"accounts"`
-}
+	"github.com/cloudboy-jh/mimir/internal/deployment"
+	"github.com/cloudboy-jh/mimir/internal/mimirapi"
+)
 
 func login(ctx context.Context, args []string, ioctx IO) error {
 	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
@@ -54,81 +45,43 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !forceDiscovery {
 		pointer, pointerErr := loadPointer()
-		identity, identityErr := loadCloudflareIdentity()
+		identity, identityErr := deployment.LoadIdentity()
 		if pointerErr == nil && identityErr == nil {
 			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
 				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
 			}
 		}
 	}
-	dir, err := workerDir(opts.WorkerDir)
-	if err != nil {
-		return err
-	}
-	dir, err = materializeWorker(dir)
-	if err != nil {
-		return err
-	}
-	if err := ensureWorkerDependencies(ctx, dir); err != nil {
-		return err
-	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Worker prepared")
-	identity, err := ensureCloudflareIdentity(ctx, dir, ioctx, opts.JSON)
-	if err != nil {
-		return err
-	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Cloudflare authenticated")
-	if pointer, err := loadPointer(); err == nil {
-		if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
-			return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
-		}
-	}
-	output, err := runWrangler(ctx, dir, nil, "d1", "list", "--json")
-	if err != nil {
-		return err
-	}
-	opts.DatabaseID = listedDatabaseID(output, opts.DatabaseName)
-	if opts.DatabaseID == "" {
-		return setupStateError{State: "deployment_missing", Message: "no Mimir deployment found in this Cloudflare account"}
-	}
-	if err := updateWranglerConfig(filepath.Join(dir, "wrangler.jsonc"), opts); err != nil {
-		return err
-	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Deployment found")
-	url := strings.TrimRight(opts.URL, "/")
-	if url == "" {
-		url, err = deploymentURL(ctx, dir, opts.DatabaseName)
-		if err != nil {
+	if opts.URL != "" {
+		if err := mimirapi.ValidateDeploymentURL(opts.URL); err != nil {
 			return err
 		}
 	}
-	if url == "" {
-		return setupStateError{State: "deployment_url_missing", Message: "run mimir login --url <worker-url>"}
-	}
-	if err := validateDeploymentURL(url); err != nil {
-		return err
-	}
-	token, err := randomToken()
+	domainOpts := deployment.DefaultOptions()
+	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName, domainOpts.Noninteractive = opts.WorkerDir, opts.WorkerName, opts.DatabaseName, opts.JSON
+	result, err := deployment.NewService(httpClient).Login(ctx, domainOpts, deployment.Hooks{
+		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
+		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
+		Login: func(ctx context.Context, dir string) error {
+			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+		},
+		Verify: func(ctx context.Context, url, token string) error {
+			return (mimirapi.Client{HTTPClient: httpClient, Pointer: mimirapi.Pointer{URL: url, Token: token}}).Verify(ctx)
+		},
+	}, opts.URL)
 	if err != nil {
 		return err
 	}
-	if err := registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
-		return err
-	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Machine registered")
-	pointer := Pointer{URL: url, Token: token}
-	if err := verifyPointer(ctx, pointer); err != nil {
-		return err
-	}
+	pointer := mimirapi.Pointer{URL: result.URL, Token: result.Token}
 	if err := savePointer(pointer); err != nil {
 		return err
 	}
-	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
-	return writeLoginResult(ctx, ioctx, opts.JSON, identity, url)
+	return writeLoginResult(ctx, ioctx, opts.JSON, result.Identity, result.URL)
 }
 
-func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity cloudflareIdentity, url string) error {
-	if err := saveCloudflareIdentity(identity); err != nil {
+func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity deployment.Identity, url string) error {
+	if err := deployment.SaveIdentity(identity); err != nil {
 		return err
 	}
 	lifecycle := refreshConnectedLifecycleIntegrations(ctx, "login")
@@ -144,83 +97,7 @@ func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity c
 	return writeSetupResult(ioctx.Out, jsonOutput, result, human)
 }
 
-func cloudflareIdentityPath() (string, error) {
-	pointer, err := pointerPath()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(filepath.Dir(pointer), "cloudflare-user.json"), nil
-}
-
-func loadCloudflareIdentity() (cloudflareIdentity, error) {
-	path, err := cloudflareIdentityPath()
-	if err != nil {
-		return cloudflareIdentity{}, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cloudflareIdentity{}, err
-	}
-	var identity cloudflareIdentity
-	if err := json.Unmarshal(data, &identity); err != nil {
-		return cloudflareIdentity{}, err
-	}
-	if !identity.LoggedIn {
-		return cloudflareIdentity{}, fmt.Errorf("cached Cloudflare user is not logged in")
-	}
-	return identity, nil
-}
-
-func saveCloudflareIdentity(identity cloudflareIdentity) error {
-	path, err := cloudflareIdentityPath()
-	if err != nil {
-		return err
-	}
-	data, err := json.Marshal(identity)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
-}
-
-func readCloudflareIdentity(ctx context.Context, dir string) (cloudflareIdentity, error) {
-	output, err := runWrangler(ctx, dir, nil, "whoami", "--json")
-	if err != nil {
-		return cloudflareIdentity{}, fmt.Errorf("reading Cloudflare user: %w", err)
-	}
-	var identity cloudflareIdentity
-	if err := json.Unmarshal([]byte(output), &identity); err != nil {
-		return cloudflareIdentity{}, fmt.Errorf("reading Cloudflare user: %w", err)
-	}
-	if !identity.LoggedIn {
-		return cloudflareIdentity{}, fmt.Errorf("Cloudflare user is not logged in")
-	}
-	return identity, nil
-}
-
-func ensureCloudflareIdentity(ctx context.Context, dir string, ioctx IO, noninteractive bool) (cloudflareIdentity, error) {
-	identity, err := readCloudflareIdentity(ctx, dir)
-	if err == nil {
-		return identity, nil
-	}
-	if noninteractive {
-		return cloudflareIdentity{}, setupStateError{State: "cloudflare_auth_required", Message: "run wrangler login in an interactive terminal"}
-	}
-	fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
-	if err := runWranglerInteractive(ctx, dir, ioctx, "login"); err != nil {
-		return cloudflareIdentity{}, fmt.Errorf("Cloudflare login failed: %w", err)
-	}
-	identity, err = readCloudflareIdentity(ctx, dir)
-	if err != nil {
-		return cloudflareIdentity{}, fmt.Errorf("Cloudflare login could not be verified: %w", err)
-	}
-	return identity, nil
-}
-
-func loginSummary(identity cloudflareIdentity, url string, color bool) string {
+func loginSummary(identity deployment.Identity, url string, color bool) string {
 	accountNames := make([]string, 0, len(identity.Accounts))
 	for _, account := range identity.Accounts {
 		if account.Name != "" {
@@ -255,27 +132,4 @@ func writeSummaryRow(out io.Writer, color bool, label, value string) {
 		value = "unavailable"
 	}
 	fmt.Fprintf(out, "  %s %s\n", cliColor(color, fmt.Sprintf("%-9s", label+":"), mimirMutedGreen, false), value)
-}
-
-func deploymentURL(ctx context.Context, dir, database string) (string, error) {
-	output, err := runWrangler(ctx, dir, nil, "d1", "execute", database, "--remote", "--command", "SELECT value FROM config WHERE key = 'deployment.url'", "--json")
-	if err != nil {
-		return "", err
-	}
-	return parseDeploymentURL(output)
-}
-
-func parseDeploymentURL(output string) (string, error) {
-	var result []struct {
-		Results []struct {
-			Value string `json:"value"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		return "", err
-	}
-	if len(result) == 0 || len(result[0].Results) == 0 {
-		return "", nil
-	}
-	return strings.TrimRight(result[0].Results[0].Value, "/"), nil
 }

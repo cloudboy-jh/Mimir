@@ -5,146 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	mimirassets "github.com/cloudboy-jh/mimir"
+	"github.com/cloudboy-jh/mimir/internal/deployment"
+	"github.com/cloudboy-jh/mimir/internal/harness"
+	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 )
-
-func TestDatabaseID(t *testing.T) {
-	got := databaseID("database_id = \"123e4567-e89b-12d3-a456-426614174000\"")
-	if got != "123e4567-e89b-12d3-a456-426614174000" {
-		t.Fatalf("database ID %q", got)
-	}
-}
-
-func TestListedDatabaseID(t *testing.T) {
-	got := listedDatabaseID(`[{"uuid":"123e4567-e89b-12d3-a456-426614174000","name":"mimir"}]`, "mimir")
-	if got != "123e4567-e89b-12d3-a456-426614174000" {
-		t.Fatalf("database ID %q", got)
-	}
-}
-
-func TestListedSecret(t *testing.T) {
-	if !listedSecret(`[{"name":"OPENROUTER_API_KEY","type":"secret_text"}]`, "OPENROUTER_API_KEY") {
-		t.Fatal("secret not found")
-	}
-	if listedSecret(`[]`, "OPENROUTER_API_KEY") {
-		t.Fatal("missing secret found")
-	}
-}
-
-func TestWorkerURL(t *testing.T) {
-	got := workerURL("Published mimir (https://mimir.example.workers.dev)")
-	if got != "https://mimir.example.workers.dev" {
-		t.Fatalf("worker URL %q", got)
-	}
-}
-
-func TestMaterializeWorker(t *testing.T) {
-	root := t.TempDir()
-	source := filepath.Join(root, "worker")
-	if err := os.MkdirAll(filepath.Join(source, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "wrangler.jsonc"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "src", "index.ts"), []byte("export default {}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "assets", "images"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
-		if err := os.WriteFile(filepath.Join(root, "assets", "images", name), []byte(name), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv(envMimirHome, t.TempDir())
-	target, err := materializeWorker(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !pathExists(filepath.Join(target, "src", "index.ts")) {
-		t.Fatal("worker source was not materialized")
-	}
-	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
-		if !pathExists(filepath.Join(filepath.Dir(target), "assets", "images", name)) {
-			t.Fatalf("shared dashboard image %s was not materialized", name)
-		}
-	}
-	if err := updateWranglerVars(filepath.Join(target, "wrangler.jsonc"), map[string]string{"DASHBOARD_ACCESS_AUD": "aud-1", "DASHBOARD_ACCESS_TEAM_DOMAIN": "https://team.cloudflareaccess.com"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := materializeWorker(source); err != nil {
-		t.Fatal(err)
-	}
-	vars := preservedWranglerVars(filepath.Join(target, "wrangler.jsonc"))
-	if vars["DASHBOARD_ACCESS_AUD"] != "aud-1" || vars["DASHBOARD_ACCESS_TEAM_DOMAIN"] != "https://team.cloudflareaccess.com" {
-		t.Fatalf("access vars were not preserved across materialization: %v", vars)
-	}
-}
-
-func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
-	dir := t.TempDir()
-	lock := filepath.Join(dir, "package-lock.json")
-	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "web", "bun.lock"), []byte("lockfile"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	first, err := workerDependencyHash(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3,"packages":{}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	second, err := workerDependencyHash(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == second {
-		t.Fatal("dependency hash did not change with package lock")
-	}
-}
-
-func TestBuildDashboard(t *testing.T) {
-	dir := t.TempDir()
-	web := filepath.Join(dir, "web")
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(web, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	bun, script := filepath.Join(bin, "bun"), "#!/bin/sh\n[ \"$1 $2\" = \"run build\" ] || exit 2\nmkdir -p dist\ntouch dist/index.html\n"
-	if runtime.GOOS == "windows" {
-		bun += ".cmd"
-		script = "@echo off\r\nif not \"%1 %2\"==\"run build\" exit /b 2\r\nif not exist dist mkdir dist\r\ntype nul > dist\\index.html\r\n"
-	}
-	if err := os.WriteFile(bun, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := buildDashboard(context.Background(), dir); err != nil {
-		t.Fatal(err)
-	}
-	if !pathExists(filepath.Join(web, "dist", "index.html")) {
-		t.Fatal("dashboard was not built")
-	}
-}
 
 func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
@@ -154,7 +27,7 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv("HERMES_HOME", t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "machine-token")
 	t.Setenv("OPENROUTER_API_KEY", "hermes-openrouter-key")
-	recordCurrentExecutableInReceipt(t)
+	useStableTestExecutable(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer machine-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -175,11 +48,11 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result struct {
-		State        string                   `json:"state"`
-		URL          string                   `json:"url"`
-		Connection   connectionManifest       `json:"connection"`
-		Artifacts    managedArtifactReport    `json:"artifacts"`
-		Integrations harnessIntegrationReport `json:"integrations"`
+		State        string                     `json:"state"`
+		URL          string                     `json:"url"`
+		Connection   harness.ConnectionManifest `json:"connection"`
+		Artifacts    installpkg.ArtifactReport  `json:"artifacts"`
+		Integrations harness.IntegrationReport  `json:"integrations"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
@@ -196,14 +69,14 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	if result.Artifacts.Operation != "setup" || len(result.Artifacts.Artifacts) == 0 {
 		t.Fatalf("artifact refresh %#v", result.Artifacts)
 	}
-	receipt, err := loadInstallReceipt()
+	receipt, err := installpkg.LoadReceipt()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(receipt.Artifacts) != 0 {
 		t.Fatalf("setup enrolled unmanaged artifacts: %#v", receipt.Artifacts)
 	}
-	paths, err := managedInstallationPaths()
+	paths, err := installpkg.Paths()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,54 +106,91 @@ func TestConnectExistingEndpointJSONNeedsToken(t *testing.T) {
 	t.Setenv(envMimirHome, t.TempDir())
 	t.Setenv("MIMIR_TOKEN", "")
 	err := setup(context.Background(), []string{"--url", "https://mimir.example.workers.dev", "--json"}, IO{In: bytes.NewBuffer(nil), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
-	state, ok := err.(setupStateError)
+	state, ok := err.(deployment.StateError)
 	if !ok || state.State != "mimir_token_required" {
 		t.Fatalf("error %#v", err)
 	}
 }
 
-func TestParseDeploymentURL(t *testing.T) {
-	got, err := parseDeploymentURL(`[{"results":[{"value":"https://mimir.example.workers.dev"}]}]`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "https://mimir.example.workers.dev" {
-		t.Fatalf("URL %q", got)
+type setupInstaller struct{}
+
+func (setupInstaller) WorkerDir(dir string) (string, error)                   { return dir, nil }
+func (setupInstaller) MaterializeWorker(dir string) (string, error)           { return dir, nil }
+func (setupInstaller) EnsureWorkerDependencies(context.Context, string) error { return nil }
+func (setupInstaller) BuildDashboard(context.Context, string) error           { return nil }
+
+type setupWrangler struct{}
+
+func (setupWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...string) (string, error) {
+	switch strings.Join(args, " ") {
+	case "whoami":
+		return "authenticated", nil
+	case "secret list --format json":
+		return `[{"name":"OPENROUTER_API_KEY"}]`, nil
+	case "deploy":
+		return "https://mimir.example.workers.dev", nil
+	default:
+		return "", nil
 	}
 }
+func (setupWrangler) Interactive(context.Context, string, deployment.Streams, ...string) error {
+	return nil
+}
+func (setupWrangler) UpdateConfig(string, deployment.Config) error { return nil }
+func (setupWrangler) UpdateVars(string, map[string]string) error   { return nil }
 
-func TestSQLQuote(t *testing.T) {
-	if got := sqlQuote("jack's machine"); got != "jack''s machine" {
-		t.Fatalf("SQL quote %q", got)
-	}
+type setupRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f setupRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
-func TestReadCloudflareIdentity(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "node_modules", ".bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
+func TestProvisionJSONSuccessHasNoProgressPanic(t *testing.T) {
+	isolatedInstallation(t, false)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/whoami" {
+			http.NotFound(w, request)
+			return
+		}
+		fmt.Fprint(w, `{"sessions":0}`)
+	}))
+	defer server.Close()
+	serverURL := server.URL
+	oldHTTPClient := httpClient
+	httpClient = &http.Client{Transport: setupRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		request = request.Clone(request.Context())
+		request.URL.Scheme = "http"
+		request.URL.Host = strings.TrimPrefix(serverURL, "http://")
+		return http.DefaultTransport.RoundTrip(request)
+	})}
+	t.Cleanup(func() { httpClient = oldHTTPClient })
+	oldFactory := newDeploymentService
+	newDeploymentService = func(deployment.HTTPDoer) *deployment.Service {
+		service := deployment.NewService(nil)
+		service.Installer = setupInstaller{}
+		service.Wrangler = setupWrangler{}
+		service.Hostname = func() (string, error) { return "test-machine", nil }
+		return service
+	}
+	t.Cleanup(func() { newDeploymentService = oldFactory })
+	var output bytes.Buffer
+	opts := setupOptions{JSON: true, WorkerDir: t.TempDir(), WorkerName: "mimir", DatabaseName: "mimir", DatabaseID: "database-uuid", BucketName: "mimir-logs"}
+	if err := provision(context.Background(), opts, IO{Out: &output, Err: &output}); err != nil {
 		t.Fatal(err)
 	}
-	wrangler := filepath.Join(bin, "wrangler")
-	script := "#!/bin/sh\nprintf '%s' '{\"loggedIn\":true,\"authType\":\"OAuth Token\",\"email\":\"user@example.com\",\"accounts\":[{\"id\":\"abc\",\"name\":\"Example Account\"}]}'\n"
-	if runtime.GOOS == "windows" {
-		wrangler += ".cmd"
-		script = "@echo off\r\necho {\"loggedIn\":true,\"authType\":\"OAuth Token\",\"email\":\"user@example.com\",\"accounts\":[{\"id\":\"abc\",\"name\":\"Example Account\"}]}\r\n"
+	var result struct {
+		State string `json:"state"`
 	}
-	if err := os.WriteFile(wrangler, []byte(script), 0o755); err != nil {
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	identity, err := readCloudflareIdentity(context.Background(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if identity.Email != "user@example.com" || len(identity.Accounts) != 1 || identity.Accounts[0].Name != "Example Account" {
-		t.Fatalf("identity %#v", identity)
+	if result.State != "ready" {
+		t.Fatalf("result = %s", output.String())
 	}
 }
 
 func TestLoginSummaryShowsUserAndConnection(t *testing.T) {
-	var identity cloudflareIdentity
+	var identity deployment.Identity
 	identity.LoggedIn = true
 	identity.AuthType = "OAuth Token"
 	identity.Email = "user@example.com"
@@ -304,7 +214,7 @@ func TestLoginSummaryShowsUserAndConnection(t *testing.T) {
 }
 
 func TestLoginSummaryUsesMimirPalette(t *testing.T) {
-	identity := cloudflareIdentity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
+	identity := deployment.Identity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
 	summary := loginSummary(identity, "https://mimir.example.workers.dev", true)
 	for _, color := range []string{mimirMint, mimirGreen, mimirMutedGreen} {
 		if !strings.Contains(summary, "38;2;"+color+"m") {
@@ -313,25 +223,10 @@ func TestLoginSummaryUsesMimirPalette(t *testing.T) {
 	}
 }
 
-func TestCloudflareIdentityCacheRoundTrip(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	identity := cloudflareIdentity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
-	if err := saveCloudflareIdentity(identity); err != nil {
-		t.Fatal(err)
-	}
-	got, err := loadCloudflareIdentity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.LoggedIn != identity.LoggedIn || got.AuthType != identity.AuthType || got.Email != identity.Email {
-		t.Fatalf("identity %#v", got)
-	}
-}
-
 func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(envMimirHome, home)
-	recordCurrentExecutableInReceipt(t)
+	useStableTestExecutable(t)
 	manifest, err := currentConnectionManifest("https://mimir.example.workers.dev")
 	if err != nil {
 		t.Fatal(err)
@@ -347,41 +242,30 @@ func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	}
 }
 
-func recordCurrentExecutableInReceipt(t *testing.T) {
+func useStableTestExecutable(t *testing.T) {
 	t.Helper()
-	path, err := executablePath()
+	original := executablePath
+	source, err := original()
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := loadInstallReceipt()
-	if err != nil {
+	path := filepath.Join(t.TempDir(), "mimir-test")
+	if err := os.WriteFile(path, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	receipt.CLI = installReceiptCLI{Path: path, Version: version, Hash: hashBytes(data)}
-	if paths, err := managedInstallationPaths(); err != nil {
-		t.Fatal(err)
-	} else if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+	runtimeTemp := filepath.Join(filepath.Dir(path), "runtime-temp")
+	if err := os.MkdirAll(runtimeTemp, 0o700); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestPointerRoundTrip(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	want := Pointer{URL: "https://mimir.example.workers.dev", Token: "secret"}
-	if err := savePointer(want); err != nil {
-		t.Fatal(err)
-	}
-	got, err := loadPointer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("got %+v, want %+v", got, want)
-	}
+	t.Setenv("TMP", runtimeTemp)
+	t.Setenv("TEMP", runtimeTemp)
+	t.Setenv("TMPDIR", runtimeTemp)
+	executablePath = func() (string, error) { return path, nil }
+	t.Cleanup(func() { executablePath = original })
 }
 
 func TestSetupProgressStopIsIdempotent(t *testing.T) {
@@ -394,6 +278,14 @@ func TestSetupProgressStopIsIdempotent(t *testing.T) {
 	if output.String() != first {
 		t.Fatal("second stop wrote additional output")
 	}
+}
+
+func TestNilSetupProgressLifecycleIsSafe(t *testing.T) {
+	var progress *setupProgress
+	progress.Pause()
+	progress.Resume()
+	progress.Complete("complete")
+	progress.Stop()
 }
 
 func TestWriteITermImage(t *testing.T) {
