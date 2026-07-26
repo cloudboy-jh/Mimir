@@ -217,6 +217,12 @@ const server: Plugin = async ({ directory, worktree }) => {
   (timer as { unref?: () => void }).unref?.();
 
   return {
+    "chat.headers": async (input: { sessionID: string; model?: { providerID?: string } }, output: { headers: Record<string, string> }) => {
+      if (input.model?.providerID !== "openrouter") return;
+      output.headers["x-mimir-session"] = input.sessionID;
+      output.headers["x-mimir-harness"] = "opencode";
+      if (repo) output.headers["x-mimir-repo"] = repo;
+    },
     config: async (config: OpenCodeConfig) => {
       const command = resolveMCPCommand(process.env, (path) => {
         try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }

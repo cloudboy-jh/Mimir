@@ -11,6 +11,26 @@ describe("plugin exports", () => {
   });
 });
 
+describe("chat.headers hook", () => {
+  it("binds OpenRouter requests to the exact session", async () => {
+    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok";
+    try {
+      const hooks = await plugin.server({ directory: "C:\\repo\\mimir" } as never);
+      const headers = { headers: {} as Record<string, string> };
+      await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "openrouter" } } as never, headers);
+      expect(headers.headers).toEqual({ "x-mimir-session": "ses_test", "x-mimir-harness": "opencode", "x-mimir-repo": "mimir" });
+      const other = { headers: {} as Record<string, string> };
+      await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "anthropic" } } as never, other);
+      expect(other.headers).toEqual({});
+    } finally {
+      process.env.MIMIR_URL = original.MIMIR_URL;
+      process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+});
+
 describe("parseMimirConfig", () => {
   it("extracts and normalizes the url", () => {
     expect(parseMimirConfig('url = "https://mimir.example.workers.dev"\n')).toEqual({ url: "https://mimir.example.workers.dev" });
