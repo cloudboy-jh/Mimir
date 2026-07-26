@@ -16,6 +16,7 @@
 // Session deletion is reported immediately. Process loss is covered by the
 // server-side silence timer (~10 minutes without a heartbeat).
 
+import type { Plugin } from "@opencode-ai/plugin";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -202,7 +203,7 @@ async function postEvent(conn: Connection, event: SessionEvent): Promise<boolean
   }
 }
 
-const createPlugin = async ({ directory, worktree }: { directory?: string; worktree?: string }) => {
+const createPlugin: Plugin = async ({ directory, worktree }) => {
   const conn = loadConnection();
   if (!conn) return {};
   const repo = repoName(worktree ?? directory);
