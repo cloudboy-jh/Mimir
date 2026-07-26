@@ -255,7 +255,7 @@ const server: Plugin = async ({ directory, worktree }) => {
 };
 
 export const MimirPlugin = server;
-export default { server };
+export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.

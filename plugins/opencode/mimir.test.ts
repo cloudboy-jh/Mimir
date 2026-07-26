@@ -4,7 +4,8 @@ import plugin, { MimirPlugin, __testing } from "./mimir";
 const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent } = __testing;
 
 describe("plugin exports", () => {
-  it("exposes the OpenCode server plugin function through the default module object", () => {
+  it("exposes an identified OpenCode server plugin module", () => {
+    expect(plugin.id).toBe("mimir");
     expect(typeof plugin.server).toBe("function");
     expect(plugin.server).toBe(MimirPlugin);
   });
