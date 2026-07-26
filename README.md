@@ -33,6 +33,8 @@ landed, was discarded, was abandoned, or remains unresolved.
 
 ## How It Works
 
+`x-mimir-session` is the authoritative session boundary.
+
 ```mermaid
 flowchart LR
     H[Agent harness] -->|redirected OpenRouter traffic| W[Worker proxy]
@@ -47,47 +49,55 @@ flowchart LR
     C <--> W
 ```
 
-1. **Worker proxy:** streams redirected OpenRouter traffic and writes full
-   redacted exchanges to R2 with searchable metadata in D1.
-2. **Harness plugins:** report completed-turn summaries and lifecycle events
-   across harness providers. Hermes suppresses turns known to have traversed
-   the proxy. Plugin summaries are not full request/response archives.
-3. **Session Durable Object:** owns live lifecycle, liveness, the bounded plugin
-   turn feed, reopening, and transcript finalization. R2 and D1 remain
-   canonical for saved proxy exchanges, searchable metadata, and finalized
-   lifecycle state.
+- **Worker proxy:** streams redirected OpenRouter traffic and writes full
+  redacted exchanges to R2 with searchable metadata in D1.
+- **Harness plugins:** report completed-turn summaries and lifecycle events
+  across harness providers. Hermes suppresses turns known to have traversed
+  the proxy. Plugin summaries are not full request/response archives.
+- **Session Durable Object:** owns live lifecycle, liveness, the bounded plugin
+  turn feed, reopening, and transcript finalization.
+
+R2 and D1 remain canonical for saved proxy exchanges, searchable metadata, and
+finalized lifecycle state. Plugin turn payloads stay in the bounded Durable
+Object live buffer; they are not promoted into transcript manifests or search
+metadata.
 
 ## Session Lifecycle
 
-Sessions start lazily. There is no separate start command.
+Sessions are lazy and activity-based. Installing Mimir, launching an idle
+harness, or starting `mimir serve` does not create one.
 
 A session starts from the first activity carrying its session ID:
 
 1. Harness start hook sends a heartbeat.
 2. First completed turn arrives if the start hook was missed.
-3. First capture-eligible proxied request carrying `x-mimir-session` is saved.
+3. First capture-eligible proxied request carrying `x-mimir-session` is saved
+   and reported to the session object.
 
 Sessions finalize three ways:
 
 1. A supported harness finalize hook sends an end event. OpenCode sends this
    for `session.deleted`; ordinary process exit falls back to silence timeout.
-2. Approximately ten minutes of silence triggers the Durable Object alarm.
+2. Approximately ten minutes without an accepted non-duplicate event triggers
+   the Durable Object alarm.
 3. The user or agent explicitly ends it through CLI or MCP.
 
-Reopening is intentional:
+Liveness is independent from durable capture and work outcome:
 
-- Finalization is not a tombstone.
-- New activity with the same session ID reopens the same session.
-- Existing history remains attached.
-- A genuinely new harness session receives a new ID.
-- Repeated end requests remain safe.
-- Finalization failures schedule retries.
-- Liveness is derived independently as `active`, `disconnected`, or `finalized`.
+- **`active`** — an event arrived within about 90 seconds.
+- **`disconnected`** — the session has been silent longer than about 90 seconds,
+  but finalization has not completed.
+- **`finalized`** — the transcript manifest and D1 lifecycle write completed.
 
-`active` means activity arrived within about 90 seconds. `disconnected` means
-the session is silent but its finalization alarm has not fired. `finalized`
-means the final transcript and lifecycle write completed. The ten-minute
-silence timer is a durability backstop, not a liveness promise.
+Reopening is intentional. Finalization is not a tombstone; later activity with
+the same session ID wakes the same object, preserves history, and starts
+another active generation. A genuinely new harness conversation receives a new
+ID. Repeated end requests are safe, retried turns are deduplicated, and stale
+heartbeats cannot reopen finalized history.
+
+The ten-minute silence timer is a durability backstop, not a liveness promise.
+Plugin events contain summaries and excerpts; only proxied traffic produces
+full redacted exchange objects.
 
 ```text
 Saved to Mimir · 14 exchanges in this session · View session
