@@ -202,7 +202,7 @@ async function postEvent(conn: Connection, event: SessionEvent): Promise<boolean
   }
 }
 
-export const MimirPlugin = async ({ directory, worktree }: { directory?: string; worktree?: string }) => {
+const createPlugin = async ({ directory, worktree }: { directory?: string; worktree?: string }) => {
   const conn = loadConnection();
   if (!conn) return {};
   const repo = repoName(worktree ?? directory);
@@ -252,6 +252,9 @@ export const MimirPlugin = async ({ directory, worktree }: { directory?: string;
     },
   };
 };
+
+export const MimirPlugin = createPlugin;
+export default createPlugin;
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
