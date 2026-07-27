@@ -491,6 +491,15 @@ describe("Worker integration", () => {
     expect(invalid.status).toBe(400);
   });
 
+  it("searches queries beyond D1's LIKE pattern limit", async () => {
+    const query = "a".repeat(49);
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary, intent) VALUES ('long-query-session', '2026-01-01T00:00:00Z', 'inactive', '2026-01-01T00:00:00Z', 'header', ?)").bind(`prefix ${query} suffix`).run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('long-query-exchange', 'long-query-session', '2026-01-01T00:00:00Z', 'chat', 1, 'log/long-query.json', 'saved', '2026-01-01T00:00:01Z')").run();
+    const response = await request("/search", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ query, types: ["intent"] }) });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { matches: Array<{ session_id: string }> }).matches.map((match) => match.session_id)).toContain("long-query-session");
+  });
+
   it("verifies Cloudflare Access JWTs for dashboard APIs", async () => {
     const teamDomain = "https://team.cloudflareaccess.com";
     const { publicKey, privateKey } = await generateKeyPair("RS256");

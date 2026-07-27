@@ -166,13 +166,13 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const filters = body.filters ?? {};
     const clauses: string[] = [];
     const values: string[] = [];
-    const needle = `%${query}%`;
+    const needle = query;
     for (const type of searchTypes(body.types)) {
       if (!type) return c.json({ error: "invalid search type" }, 400);
-      if (type === "intent") clauses.push("s.intent LIKE ?");
-      if (type === "excerpts") clauses.push("(e.request_excerpt LIKE ? OR e.response_excerpt LIKE ?)");
-      if (type === "files") clauses.push("EXISTS (SELECT 1 FROM session_files sf WHERE sf.session_id = s.id AND sf.file LIKE ?)");
-      if (type === "errors") clauses.push("EXISTS (SELECT 1 FROM session_errors se WHERE se.session_id = s.id AND se.signature LIKE ?)");
+      if (type === "intent") clauses.push("instr(lower(s.intent), lower(?)) > 0");
+      if (type === "excerpts") clauses.push("(instr(lower(e.request_excerpt), lower(?)) > 0 OR instr(lower(e.response_excerpt), lower(?)) > 0)");
+      if (type === "files") clauses.push("EXISTS (SELECT 1 FROM session_files sf WHERE sf.session_id = s.id AND instr(lower(sf.file), lower(?)) > 0)");
+      if (type === "errors") clauses.push("EXISTS (SELECT 1 FROM session_errors se WHERE se.session_id = s.id AND instr(lower(se.signature), lower(?)) > 0)");
       values.push(...Array(clauseNeedles(type)).fill(needle));
     }
     const where = [`(${clauses.join(" OR ")})`];
