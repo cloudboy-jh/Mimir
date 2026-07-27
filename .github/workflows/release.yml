@@ -25,6 +25,8 @@ jobs:
           cache-dependency-path: worker/package-lock.json
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - run: bun run typecheck:plugins
+      - run: bun install --frozen-lockfile
         working-directory: worker/web
       - run: npm ci
         working-directory: worker

@@ -19,7 +19,7 @@ var LogoPNG []byte
 //
 //go:embed plugins/opencode/mimir.ts plugins/hermes/__init__.py plugins/hermes/plugin.yaml
 //go:embed skills/mimir-setup skills/mimir-use
-//go:embed worker/src/app.ts worker/src/auth.ts worker/src/capture.ts worker/src/config.ts worker/src/index.ts worker/src/proxy.ts worker/src/session-events.ts worker/src/session-object.ts worker/src/sessions.ts worker/src/storage.ts worker/src/types.ts worker/src/routes/dashboard.ts worker/src/routes/machine.ts
+//go:embed worker/src/app.ts worker/src/auth.ts worker/src/capture.ts worker/src/config.ts worker/src/index.ts worker/src/proxy.ts worker/src/reported-exchanges.ts worker/src/session-events.ts worker/src/session-object.ts worker/src/sessions.ts worker/src/storage.ts worker/src/types.ts worker/src/routes/dashboard.ts worker/src/routes/machine.ts
 //go:embed worker/migrations
 //go:embed worker/package.json worker/package-lock.json worker/tsconfig.json worker/worker-configuration.d.ts worker/wrangler.jsonc
 //go:embed worker/web/src worker/web/public worker/web/bun.lock worker/web/index.html worker/web/package.json worker/web/tsconfig.json worker/web/vite.config.ts

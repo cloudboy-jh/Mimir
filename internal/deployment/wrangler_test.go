@@ -283,7 +283,7 @@ func TestConfigureAccessWithoutEmailReturnsActionRequiredWithoutDeploy(t *testin
 	if err != nil || outcome.State != "action-required" {
 		t.Fatalf("outcome=%#v error=%v", outcome, err)
 	}
-	if slices.Contains(wrangler.calls, "vars") || slices.Contains(wrangler.calls, "deploy") {
+	if slices.Contains(wrangler.calls, "deploy") {
 		t.Fatalf("action-required Access was deployed: %v", wrangler.calls)
 	}
 }

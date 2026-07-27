@@ -2,13 +2,38 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"path/filepath"
 	"strings"
+
+	mimirassets "github.com/cloudboy-jh/mimir"
 )
 
 type ArtifactStatus = managedArtifactStatus
 type ArtifactResult = managedArtifactResult
 type ArtifactReport = managedArtifactReport
+
+type BundleIdentity struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+func EmbeddedWorkerIdentity() (BundleIdentity, error) {
+	metadata, err := mimirassets.BundleMetadata()
+	if err != nil {
+		return BundleIdentity{}, err
+	}
+	hash := sha256.New()
+	for _, file := range metadata {
+		if !strings.HasPrefix(file.Path, "worker/") && !strings.HasPrefix(file.Path, "assets/images/") {
+			continue
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\n", file.Path, file.SHA256)
+	}
+	return BundleIdentity{Version: version, SHA256: fmt.Sprintf("%x", hash.Sum(nil))}, nil
+}
+
 type InstallationPaths = installationPaths
 type Receipt = installReceipt
 type UninstallBinaryResult = uninstallBinaryResult

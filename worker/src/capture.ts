@@ -307,7 +307,7 @@ function messageText(content: unknown): string {
   }).join(" ");
 }
 
-function extractProvider(response: unknown) {
+export function extractProvider(response: unknown) {
   const records = typeof response === "object" && response ? response as Record<string, unknown> : {};
   const events = Array.isArray(records.events) ? records.events : [response];
   for (const event of events) {
@@ -319,7 +319,7 @@ function extractProvider(response: unknown) {
   return null;
 }
 
-function extractFinishReason(response: unknown) {
+export function extractFinishReason(response: unknown) {
   const records = typeof response === "object" && response ? response as Record<string, unknown> : {};
   const events = Array.isArray(records.events) ? records.events : [response];
   for (const event of [...events].reverse()) {
@@ -331,7 +331,7 @@ function extractFinishReason(response: unknown) {
   return null;
 }
 
-function excerpt(value: string) {
+export function excerpt(value: string) {
   return value.slice(0, 8_000);
 }
 

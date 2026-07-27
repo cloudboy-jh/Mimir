@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent } = __testing;
+const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -16,6 +16,8 @@ describe("chat.headers hook", () => {
     const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
     process.env.MIMIR_URL = "https://mimir.example";
     process.env.MIMIR_TOKEN = "tok";
+    const fetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("{}", { status: 200 });
     try {
       const hooks = await plugin.server({ directory: "C:\\repo\\mimir" } as never);
       const headers = { headers: {} as Record<string, string> };
@@ -25,8 +27,72 @@ describe("chat.headers hook", () => {
       await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "anthropic" } } as never, other);
       expect(other.headers).toEqual({});
     } finally {
+      globalThis.fetch = fetch;
       process.env.MIMIR_URL = original.MIMIR_URL;
       process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+});
+
+describe("startup build identity", () => {
+  it("posts only source identity and safe receipt provenance to the authenticated integration path", async () => {
+    const load = buildHarnessLoad("loaded plugin source", JSON.stringify({
+      bundle_version: "v2.3.4",
+      installation_id: "install-1",
+      cli: { version: "2.3.4", commit: "abc123", path: "/secret/mimir", sha256: "cli-hash" },
+      source: "/private/checkout",
+      token: "do-not-send",
+    }));
+    let request: Request | undefined;
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        request = new Request(input, init);
+        return new Response("{}", { status: 204 });
+      };
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok-secret" }, load)).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(request?.url).toBe("https://mimir.example/integrations/harness-loads");
+    expect(request?.method).toBe("POST");
+    expect(request?.headers.get("authorization")).toBe("Bearer tok-secret");
+    expect(await request?.json()).toEqual({
+      version: 1,
+      harness: "opencode",
+      source_sha256: "1f276ede474cf6948a22d1f3dc41be29d345f91672da261558f922e1826aed59",
+      bundle_version: "v2.3.4",
+      cli_version: "2.3.4",
+      cli_commit: "abc123",
+      installation_id: "install-1",
+    });
+  });
+
+  it("reports source identity when the install receipt is missing", () => {
+    const files: Record<string, string> = { "/plugin/mimir.ts": "source" };
+    expect(loadHarnessLoad({ MIMIR_HOME: "/mimir" }, (path) => files[path] ?? null, undefined, "/plugin/mimir.ts"))
+      .toEqual({ version: 1, harness: "opencode", source_sha256: "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d" });
+  });
+
+  it("contains network and non-2xx failures and retries asynchronously", async () => {
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => new Response("nope", { status: 503 });
+      const load = buildHarnessLoad("source", null);
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok" }, load)).toBe(false);
+      globalThis.fetch = async () => { throw new Error("offline"); };
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok" }, load)).toBe(false);
+
+      let attempts = 0;
+      const scheduled: Array<() => void> = [];
+      reportHarnessLoad({ url: "https://mimir.example", token: "tok" }, load, async () => ++attempts >= 2, (callback) => scheduled.push(callback));
+      await Bun.sleep(0);
+      expect(attempts).toBe(1);
+      scheduled.shift()?.();
+      await Bun.sleep(0);
+      expect(attempts).toBe(2);
+    } finally {
+      globalThis.fetch = original;
     }
   });
 });
@@ -90,6 +156,120 @@ describe("buildTurnEvent", () => {
     expect(buildTurnEvent({ ...info, role: "user" }, "mimir")).toBeNull();
     expect(buildTurnEvent(null, "mimir")).toBeNull();
     expect(buildTurnEvent({ ...info, sessionID: "" }, "mimir")).toBeNull();
+  });
+});
+
+describe("direct-provider exchanges", () => {
+  const assistant = {
+    id: "msg-assistant", sessionID: "ses-direct", parentID: "msg-user", role: "assistant",
+    modelID: "claude-sonnet-4-6", providerID: "anthropic",
+    time: { created: 2_000, completed: 3_250 },
+    tokens: { input: 10, output: 7, reasoning: 2, cache: { read: 4, write: 3 } },
+  };
+  const messages = { data: [
+    {
+      info: { id: "msg-user", sessionID: "ses-direct", role: "user", time: { created: 1_500 } },
+      parts: [
+        { type: "text", text: "fix the bug", metadata: { ignored: true } },
+        { type: "file", mime: "text/plain", filename: "bug.txt", url: "file:///bug.txt", source: { type: "file", path: "bug.txt", text: { value: "bug", start: 0, end: 3 } } },
+      ],
+    },
+    {
+      info: assistant,
+      parts: [
+        { type: "reasoning", text: "trace it" },
+        { type: "text", text: "fixed" },
+        { type: "tool", callID: "call-1", tool: "bash", state: { status: "completed", input: { command: "bun test", invalid: 1n }, output: "pass", title: "Test", metadata: { ignored: true } } },
+        { type: "tool", callID: "call-2", tool: "read", state: { status: "error", input: { path: "missing" }, error: "not found" } },
+      ],
+    },
+  ] };
+
+  it("fetches and saves a normalized authenticated direct-provider payload", async () => {
+    const env = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    const originalFetch = globalThis.fetch;
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok-secret";
+    const calls: Array<{ url: string; authorization: string | null; harness: string | null; repo: string | null; body: unknown }> = [];
+    const messageCalls: unknown[] = [];
+    try {
+      globalThis.fetch = async (input, init) => {
+        const request = new Request(input, init);
+        if (request.url.endsWith("/exchanges")) calls.push({ url: request.url, authorization: request.headers.get("authorization"), harness: request.headers.get("x-mimir-harness"), repo: request.headers.get("x-mimir-repo"), body: await request.json() });
+        return new Response("{}", { status: 200 });
+      };
+      const client = { session: { messages: async (input: unknown) => { messageCalls.push(input); return messages; } } };
+      const hooks = await plugin.server({ client, directory: "/repo/mimir" } as never);
+      await hooks.event!({ event: { type: "message.updated", properties: { info: assistant } } } as never);
+      await Bun.sleep(10);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.env.MIMIR_URL = env.MIMIR_URL;
+      process.env.MIMIR_TOKEN = env.MIMIR_TOKEN;
+    }
+    expect(messageCalls).toEqual([{ path: { id: "ses-direct" } }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://mimir.example/sessions/ses-direct/exchanges");
+    expect(calls[0]?.authorization).toBe("Bearer tok-secret");
+    expect(calls[0]?.harness).toBe("opencode");
+    expect(calls[0]?.repo).toBe("mimir");
+    expect(calls[0]?.body).toEqual(buildDirectExchange(assistant, messages));
+    expect(calls[0]?.body).toMatchObject({
+      exchange_id: "msg-assistant", ts: new Date(3_250).toISOString(), provider: "anthropic", model: "claude-sonnet-4-6",
+      request: { message_id: "msg-user", messages: [{ role: "user", content: [{ type: "text", text: "fix the bug" }, { type: "file", mime: "text/plain", filename: "bug.txt" }] }] },
+      response: { message_id: "msg-assistant", parent_message_id: "msg-user", parts: [{ type: "reasoning", text: "trace it" }, { type: "text", text: "fixed" }, { type: "tool", input: { command: "bun test", invalid: "1" }, output: "pass" }, { type: "tool", error: "not found" }] },
+      usage: { input_tokens: 14, output_tokens: 7 }, latency_ms: 1_250,
+    });
+  });
+
+  it("does not fetch or post a full exchange for OpenRouter", async () => {
+    let fetched = 0;
+    let posted = 0;
+    const reporter = createDirectExchangeReporter(async () => { fetched += 1; return messages; }, async () => { posted += 1; return true; });
+    reporter.deliver({ ...assistant, providerID: "openrouter" });
+    await Bun.sleep(0);
+    expect(fetched).toBe(0);
+    expect(posted).toBe(0);
+    expect(reporter.pending()).toBe(0);
+  });
+
+  it("contains fetch and post failures and retries without duplicate in-flight delivery", async () => {
+    let fetches = 0;
+    let posts = 0;
+    const scheduled: Array<() => void> = [];
+    const reporter = createDirectExchangeReporter(
+      async () => { if (++fetches === 1) throw new Error("session unavailable"); return messages; },
+      async () => ++posts >= 2,
+      (callback) => scheduled.push(callback),
+    );
+    expect(() => reporter.deliver(assistant)).not.toThrow();
+    reporter.deliver(assistant);
+    await Bun.sleep(0);
+    expect(fetches).toBe(1);
+    expect(posts).toBe(0);
+    scheduled.shift()?.();
+    await Bun.sleep(0);
+    expect(fetches).toBe(2);
+    expect(posts).toBe(1);
+    scheduled.shift()?.();
+    await Bun.sleep(0);
+    expect(fetches).toBe(2);
+    expect(posts).toBe(2);
+    expect(reporter.pending()).toBe(0);
+  });
+
+  it("bounds strings, part counts, and cyclic tool values", () => {
+    const cyclic: Record<string, unknown> = { keep: true };
+    cyclic.self = cyclic;
+    const huge = "x".repeat(100_000);
+    const bounded = buildDirectExchange(assistant, { data: [
+      { info: messages.data[0]!.info, parts: Array.from({ length: 300 }, () => ({ type: "text", text: huge })) },
+      { info: assistant, parts: [{ type: "tool", tool: "test", state: { status: "completed", input: cyclic, output: "ok" } }] },
+    ] });
+    expect(bounded).not.toBeNull();
+    expect(bounded!.request.messages[0].content.length).toBeLessThanOrEqual(256);
+    expect(JSON.stringify(bounded)).not.toContain('"self"');
+    expect(new TextEncoder().encode(JSON.stringify(bounded)).byteLength).toBeLessThanOrEqual(512 * 1024);
   });
 });
 
@@ -165,6 +345,27 @@ describe("postEvent", () => {
       expect(await postEvent({ url: "https://mimir.example", token: "tok" }, event)).toBe(false);
       globalThis.fetch = async () => new Response("{}", { status: 200 });
       expect(await postEvent({ url: "https://mimir.example", token: "tok" }, event)).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe("postDirectExchange", () => {
+  it("contains non-2xx and transport failures", async () => {
+    const exchange = buildDirectExchange({
+      id: "a", sessionID: "s", parentID: "u", role: "assistant", providerID: "anthropic", modelID: "m",
+      time: { created: 1, completed: 2 }, tokens: {},
+    }, { data: [
+      { info: { id: "u", role: "user", time: { created: 1 } }, parts: [] },
+      { info: { id: "a", role: "assistant" }, parts: [] },
+    ] })!;
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => new Response("nope", { status: 503 });
+      expect(await postDirectExchange({ url: "https://mimir.example", token: "tok" }, "s", exchange, null)).toBe(false);
+      globalThis.fetch = async () => { throw new Error("offline"); };
+      expect(await postDirectExchange({ url: "https://mimir.example", token: "tok" }, "s", exchange, null)).toBe(false);
     } finally {
       globalThis.fetch = original;
     }

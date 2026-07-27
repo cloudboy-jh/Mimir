@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cloudboy-jh/mimir/internal/install"
@@ -27,11 +28,98 @@ func TestRunReportsArtifactsBeforeMissingConnection(t *testing.T) {
 	}
 }
 
+func TestStructuredReportGroupsOperationalState(t *testing.T) {
+	report := Report{OK: false, Checks: []Check{
+		{Name: "managed-artifact plugins/opencode/mimir.ts", Status: "failed", Detail: "outdated", Repair: "mimir update"},
+		{Name: "opencode.plugin-load", Status: "failed", Detail: "restart required", Repair: "restart OpenCode"},
+		{Name: "worker.bundle", Status: "ok", Detail: "current"},
+		{Name: "connection", Status: "ok", Detail: "connected"},
+	}}
+	structured := report.Structured()
+	if structured.OK || len(structured.Installed["plugins/opencode/mimir.ts"]) != 1 || structured.Installed["plugins/opencode/mimir.ts"][0].Detail != "outdated" {
+		t.Fatalf("installed = %#v", structured.Installed)
+	}
+	if structured.Active["opencode.plugin-load"].Repair != "restart OpenCode" {
+		t.Fatalf("active = %#v", structured.Active)
+	}
+	if structured.Deployed["worker.bundle"].Status != "ok" || structured.Connection["connection"].Status != "ok" {
+		t.Fatalf("structured = %#v", structured)
+	}
+	if len(structured.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %#v", structured.Diagnostics)
+	}
+}
+
 func TestValidateWorkerIdentityRejectsStaleWorker(t *testing.T) {
 	if err := ValidateWorkerIdentity([]byte(`{"sessions":0,"log":0}`)); err == nil {
 		t.Fatal("legacy Worker was accepted")
 	}
 	if err := ValidateWorkerIdentity([]byte(`{"service":"mimir","api_version":1,"capabilities":["session_events"]}`)); err == nil {
 		t.Fatal("Worker missing required capabilities was accepted")
+	}
+}
+
+func TestHarnessLoadChecksCompareActivePluginHashes(t *testing.T) {
+	service := New(requesterFunc(func(_ context.Context, method, path string, _ any) ([]byte, error) {
+		if method != "GET" || path != "/integrations/harness-loads" {
+			t.Fatalf("request %s %s", method, path)
+		}
+		return []byte(`{"loads":[
+			{"harness":"opencode","artifact_sha256":"opencode-current","installation_id":"install-1","reported_at":"2026-07-26T10:00:00Z"},
+			{"harness":"hermes","artifact_sha256":"hermes-old","installation_id":"install-1","reported_at":"2026-07-26T10:00:00Z"},
+			{"harness":"hermes","artifact_sha256":"other-install","installation_id":"install-2","reported_at":"2026-07-26T11:00:00Z"}
+		]}`), nil
+	}))
+	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{InstallationID: "install-1"}, nil }
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
+		{Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent, BundleHash: "opencode-current"},
+		{Source: "plugins/hermes/__init__.py", Status: install.ArtifactCurrent, BundleHash: "hermes-current"},
+	}}
+	var checks []Check
+	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
+		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
+	})
+	if len(checks) != 2 {
+		t.Fatalf("checks %#v", checks)
+	}
+	if checks[0].Name != "opencode.plugin-load" || checks[0].Status != "ok" || !strings.Contains(checks[0].Detail, "installed, active, and current") {
+		t.Fatalf("OpenCode check %#v", checks[0])
+	}
+	if checks[1].Name != "hermes.plugin-load" || checks[1].Status != "failed" || checks[1].Repair != "restart Hermes" || !strings.Contains(checks[1].Detail, "restart required") {
+		t.Fatalf("Hermes check %#v", checks[1])
+	}
+}
+
+func TestHarnessLoadChecksTreatLegacyEndpointAsUnknown(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) {
+		return nil, &mimirapi.Error{StatusCode: 404, Status: "404 Not Found"}
+	}))
+	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{InstallationID: "install-1"}, nil }
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{
+		Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent, BundleHash: "current",
+	}}}
+	var checks []Check
+	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
+		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
+	})
+	if len(checks) != 1 || checks[0].Status != "skipped" || !strings.Contains(checks[0].Detail, "active version unknown") {
+		t.Fatalf("checks %#v", checks)
+	}
+}
+
+func TestHarnessLoadChecksRequireRestartWhenNoLoadReported(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) {
+		return []byte(`{"loads":[]}`), nil
+	}))
+	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{InstallationID: "install-1"}, nil }
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{
+		Source: "plugins/hermes/__init__.py", Status: install.ArtifactCurrent, BundleHash: "current",
+	}}}
+	var checks []Check
+	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
+		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
+	})
+	if len(checks) != 1 || checks[0].Status != "failed" || checks[0].Repair != "restart Hermes" {
+		t.Fatalf("checks %#v", checks)
 	}
 }

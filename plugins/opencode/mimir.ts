@@ -1,9 +1,8 @@
 // Mimir capture plugin for OpenCode.
 //
 // Reports completed turns, heartbeats, and session ends to the Mimir session
-// object. Capture happens above provider transport, so every OpenCode
-// provider (OpenRouter, Zen subscription, Claude key, Codex/ChatGPT OAuth) is
-// covered identically.
+// object. Direct-provider exchanges come from OpenCode's session store;
+// OpenRouter exchanges remain canonical at the Mimir proxy.
 //
 // Install: copy this file to ~/.config/opencode/plugins/ (global) or
 // .opencode/plugins/ (project). Uninstall: delete the file.
@@ -17,15 +16,33 @@
 // server-side silence timer (~10 minutes without a heartbeat).
 
 import type { Plugin } from "@opencode-ai/plugin";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const HEARTBEAT_MS = 60_000;
 const ACTIVITY_WINDOW_MS = 5 * 60_000;
+const MAX_PARTS = 256;
+const MAX_STRING_BYTES = 64 * 1024;
+const MAX_EXCHANGE_BYTES = 512 * 1024;
+const MAX_JSON_DEPTH = 8;
+const MAX_JSON_ENTRIES = 256;
+const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 type Connection = { url: string; token: string };
 type OpenCodeConfig = { mcp?: Record<string, unknown> };
+
+type HarnessLoad = {
+  version: 1;
+  harness: "opencode";
+  source_sha256: string;
+  bundle_version?: string;
+  cli_version?: string;
+  cli_commit?: string;
+  installation_id?: string;
+};
 
 type SessionEvent = {
   version: 1;
@@ -37,6 +54,21 @@ type SessionEvent = {
   turn?: Record<string, unknown>;
   reason?: string;
 };
+
+type DirectExchange = {
+  exchange_id: string;
+  ts: string;
+  provider: string;
+  model: string;
+  request_kind: "primary";
+  request: { message_id: string; created_at: string; messages: Array<{ role: "user"; content: Record<string, unknown>[] }> };
+  response: { message_id: string; parent_message_id: string; role: "assistant"; created_at: string; completed_at: string; parts: Record<string, unknown>[]; stop_reason?: string; error?: unknown };
+  usage: { input_tokens: number; output_tokens: number };
+  latency_ms: number;
+};
+
+type MessageRecord = { info: Record<string, unknown>; parts: unknown[] };
+type OpenCodeClient = { session: { messages(input: { path: { id: string } }): Promise<unknown> } };
 
 function parseMimirConfig(text: string): { url?: string } {
   const out: { url?: string } = {};
@@ -83,6 +115,66 @@ function loadConnection(): Connection | null {
   );
 }
 
+function buildHarnessLoad(source: string, receiptText: string | null): HarnessLoad {
+  const load: HarnessLoad = {
+    version: 1,
+    harness: "opencode",
+    source_sha256: createHash("sha256").update(source).digest("hex"),
+  };
+  if (!receiptText) return load;
+  try {
+    const receipt = JSON.parse(receiptText) as Record<string, unknown>;
+    const cli = typeof receipt.cli === "object" && receipt.cli ? receipt.cli as Record<string, unknown> : {};
+    if (typeof receipt.bundle_version === "string" && receipt.bundle_version) load.bundle_version = receipt.bundle_version;
+    if (typeof cli.version === "string" && cli.version) load.cli_version = cli.version;
+    if (typeof cli.commit === "string" && cli.commit) load.cli_commit = cli.commit;
+    if (typeof receipt.installation_id === "string" && receipt.installation_id) load.installation_id = receipt.installation_id;
+  } catch {
+    // A missing or malformed receipt must not suppress source identity.
+  }
+  return load;
+}
+
+function loadHarnessLoad(
+  env: Record<string, string | undefined>,
+  readFile: (path: string) => string | null,
+  home: string | undefined,
+  sourcePath = fileURLToPath(import.meta.url),
+): HarnessLoad | null {
+  const source = readFile(sourcePath);
+  if (source === null) return null;
+  const dir = env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
+  const receipt = dir ? readFile(join(dir, "install-receipt.json")) : null;
+  return buildHarnessLoad(source, receipt);
+}
+
+async function postHarnessLoad(conn: Connection, load: HarnessLoad): Promise<boolean> {
+  try {
+    const response = await fetch(`${conn.url}/integrations/harness-loads`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${conn.token}`, "content-type": "application/json" },
+      body: JSON.stringify(load),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function reportHarnessLoad(
+  conn: Connection,
+  load: HarnessLoad,
+  post: (conn: Connection, load: HarnessLoad) => Promise<boolean> = postHarnessLoad,
+  schedule: (callback: () => void, delay: number) => unknown = setTimeout,
+): void {
+  const attempt = async (number: number) => {
+    if (await post(conn, load) || number >= 4) return;
+    const timer = schedule(() => { void attempt(number + 1); }, 250 * (2 ** (number - 1)));
+    (timer as { unref?: () => void }).unref?.();
+  };
+  void attempt(1);
+}
+
 // buildTurnEvent converts a completed OpenCode assistant message into a Mimir
 // turn event. In-progress and non-assistant messages return null.
 function buildTurnEvent(info: unknown, repo: string | null): SessionEvent | null {
@@ -106,7 +198,7 @@ function buildTurnEvent(info: unknown, repo: string | null): SessionEvent | null
     repo,
     ts: new Date(completed).toISOString(),
     turn: {
-		exchange_id: typeof message.id === "string" ? message.id : undefined,
+      exchange_id: typeof message.id === "string" ? message.id : undefined,
       model: typeof message.modelID === "string" ? message.modelID : undefined,
       provider: typeof message.providerID === "string" ? message.providerID : undefined,
       request_kind: "primary",
@@ -114,6 +206,157 @@ function buildTurnEvent(info: unknown, repo: string | null): SessionEvent | null
       latency_ms: created ? Math.max(0, completed - created) : undefined,
     },
   };
+}
+
+function boundedString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= MAX_STRING_BYTES) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (encoder.encode(value.slice(0, middle)).byteLength <= MAX_STRING_BYTES) low = middle;
+    else high = middle - 1;
+  }
+  return value.slice(0, low);
+}
+
+function jsonSafe(value: unknown, depth = 0, seen = new WeakSet<object>(), budget = { remaining: MAX_JSON_ENTRIES }): unknown {
+  if (budget.remaining-- <= 0) return undefined;
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return boundedString(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object" || depth >= MAX_JSON_DEPTH || seen.has(value)) return undefined;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const result: unknown[] = [];
+    for (const item of value.slice(0, MAX_JSON_ENTRIES)) {
+      const safe = jsonSafe(item, depth + 1, seen, budget);
+      if (safe !== undefined) result.push(safe);
+      if (budget.remaining <= 0) break;
+    }
+    seen.delete(value);
+    return result;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value).slice(0, MAX_JSON_ENTRIES)) {
+    const safe = jsonSafe(item, depth + 1, seen, budget);
+    if (safe !== undefined) result[boundedString(key) ?? ""] = safe;
+    if (budget.remaining <= 0) break;
+  }
+  seen.delete(value);
+  return result;
+}
+
+function normalizeParts(parts: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(parts)) return [];
+  const normalized: Record<string, unknown>[] = [];
+  for (const raw of parts.slice(0, MAX_PARTS)) {
+    if (!raw || typeof raw !== "object") continue;
+    const part = raw as Record<string, unknown>;
+    if (part.type === "text" || part.type === "reasoning") {
+      const text = boundedString(part.text);
+      if (text !== undefined) normalized.push({ type: part.type, text });
+      continue;
+    }
+    if (part.type === "file") {
+      const file: Record<string, unknown> = { type: "file" };
+      for (const key of ["mime", "filename", "url"] as const) {
+        const value = boundedString(part[key]);
+        if (value !== undefined) file[key] = value;
+      }
+      const source = jsonSafe(part.source);
+      if (source !== undefined) file.source = source;
+      normalized.push(file);
+      continue;
+    }
+    if (part.type === "tool") {
+      const state = part.state && typeof part.state === "object" ? part.state as Record<string, unknown> : {};
+      const tool: Record<string, unknown> = { type: "tool" };
+      const callID = boundedString(part.callID);
+      const toolName = boundedString(part.tool);
+      const status = boundedString(state.status);
+      if (callID !== undefined) tool.call_id = callID;
+      if (toolName !== undefined) tool.tool = toolName;
+      if (status !== undefined) tool.status = status;
+      const input = jsonSafe(state.input);
+      if (input !== undefined) tool.input = input;
+      for (const key of ["output", "error", "raw", "title"] as const) {
+        const value = jsonSafe(state[key]);
+        if (value !== undefined) tool[key] = value;
+      }
+      const attachments = normalizeParts(state.attachments);
+      if (attachments.length) tool.attachments = attachments;
+      normalized.push(tool);
+    }
+  }
+  return normalized;
+}
+
+function messageRecords(result: unknown): MessageRecord[] {
+  const value = result && typeof result === "object" && "data" in result ? (result as { data?: unknown }).data : result;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (!record.info || typeof record.info !== "object") return [];
+    return [{ info: record.info as Record<string, unknown>, parts: Array.isArray(record.parts) ? record.parts : [] }];
+  });
+}
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function buildDirectExchange(info: unknown, result: unknown): DirectExchange | null {
+  if (!info || typeof info !== "object") return null;
+  const completedInfo = info as Record<string, unknown>;
+  if (completedInfo.role !== "assistant" || completedInfo.providerID === "openrouter") return null;
+  const id = boundedString(completedInfo.id);
+  const sessionID = boundedString(completedInfo.sessionID);
+  const parentID = boundedString(completedInfo.parentID);
+  const provider = boundedString(completedInfo.providerID)?.slice(0, 256);
+  const model = boundedString(completedInfo.modelID)?.slice(0, 256);
+  const time = completedInfo.time && typeof completedInfo.time === "object" ? completedInfo.time as Record<string, unknown> : {};
+  const created = typeof time.created === "number" && Number.isFinite(time.created) ? time.created : null;
+  const completed = typeof time.completed === "number" && Number.isFinite(time.completed) ? time.completed : null;
+  if (!id || !EXCHANGE_ID.test(id) || !sessionID || !parentID || !provider || !model || created === null || completed === null) return null;
+
+  const records = messageRecords(result);
+  const assistant = records.find((message) => message.info.id === id);
+  const user = records.find((message) => message.info.id === parentID && message.info.role === "user");
+  if (!assistant || !user) return null;
+  const userTime = user.info.time && typeof user.info.time === "object" ? user.info.time as Record<string, unknown> : {};
+  const userCreated = typeof userTime.created === "number" && Number.isFinite(userTime.created) ? userTime.created : created;
+  const tokens = completedInfo.tokens && typeof completedInfo.tokens === "object" ? completedInfo.tokens as Record<string, unknown> : {};
+  const cache = tokens.cache && typeof tokens.cache === "object" ? tokens.cache as Record<string, unknown> : {};
+  const payload: DirectExchange = {
+    exchange_id: id,
+    ts: new Date(completed).toISOString(),
+    provider,
+    model,
+    request_kind: "primary",
+    request: { message_id: parentID, created_at: new Date(userCreated).toISOString(), messages: [{ role: "user", content: normalizeParts(user.parts) }] },
+    response: { message_id: id, parent_message_id: parentID, role: "assistant", created_at: new Date(created).toISOString(), completed_at: new Date(completed).toISOString(), parts: normalizeParts(assistant.parts) },
+    usage: {
+      input_tokens: tokenCount(tokens.input) + tokenCount(cache.read),
+      output_tokens: tokenCount(tokens.output),
+    },
+    latency_ms: Math.max(0, Math.floor(completed - created)),
+  };
+  const finish = boundedString(completedInfo.finish)?.slice(0, 256);
+  if (finish) payload.response.stop_reason = finish;
+  const error = jsonSafe(completedInfo.error);
+  if (error !== undefined) payload.response.error = error;
+  while (new TextEncoder().encode(JSON.stringify(payload)).byteLength > MAX_EXCHANGE_BYTES) {
+    const requestParts = payload.request.messages[0].content;
+    if (payload.response.parts.length >= requestParts.length && payload.response.parts.length) payload.response.parts.pop();
+    else if (requestParts.length) requestParts.pop();
+    else return null;
+  }
+  return payload;
 }
 
 function repoName(directory: string | undefined): string | null {
@@ -203,11 +446,78 @@ async function postEvent(conn: Connection, event: SessionEvent): Promise<boolean
   }
 }
 
-const server: Plugin = async ({ directory, worktree }) => {
+async function postDirectExchange(conn: Connection, sessionID: string, exchange: DirectExchange, repo: string | null): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = { authorization: `Bearer ${conn.token}`, "content-type": "application/json", "x-mimir-harness": "opencode" };
+    if (repo) headers["x-mimir-repo"] = repo;
+    const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(sessionID)}/exchanges`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(exchange),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function createDirectExchangeReporter(
+  load: (sessionID: string) => Promise<unknown>,
+  send: (sessionID: string, exchange: DirectExchange) => Promise<boolean>,
+  schedule: (callback: () => void, delay: number) => unknown = setTimeout,
+  maxAttempts = 4,
+) {
+  const pending = new Map<string, { info: Record<string, unknown>; payload?: DirectExchange; attempts: number }>();
+  const attempt = async (id: string) => {
+    const item = pending.get(id);
+    if (!item) return;
+    item.attempts += 1;
+    try {
+      const sessionID = String(item.info.sessionID);
+      if (!item.payload) item.payload = buildDirectExchange(item.info, await load(sessionID)) ?? undefined;
+      if (item.payload && await send(sessionID, item.payload)) {
+        pending.delete(id);
+        return;
+      }
+    } catch {
+      // OpenCode message reads and Mimir delivery are both strictly best-effort.
+    }
+    if (item.attempts >= maxAttempts) {
+      pending.delete(id);
+      return;
+    }
+    schedule(() => { void attempt(id); }, 250 * (2 ** (item.attempts - 1)));
+  };
+  return {
+    deliver(info: unknown): void {
+      if (!info || typeof info !== "object") return;
+      const message = info as Record<string, unknown>;
+      const time = message.time as Record<string, unknown> | undefined;
+      if (message.role !== "assistant" || message.providerID === "openrouter" || typeof time?.completed !== "number") return;
+      const id = typeof message.id === "string" ? message.id : "";
+      if (!id || pending.has(id)) return;
+      pending.set(id, { info: message, attempts: 0 });
+      void attempt(id);
+    },
+    pending: () => pending.size,
+  };
+}
+
+const server: Plugin = async ({ client, directory, worktree }) => {
   const conn = loadConnection();
   if (!conn) return {};
+  const readLocalFile = (path: string) => {
+    try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
+  };
+  const home = (() => { try { return homedir(); } catch { return undefined; } })();
+  const load = loadHarnessLoad(process.env, readLocalFile, home);
+  if (load) reportHarnessLoad(conn, load);
   const repo = repoName(worktree ?? directory);
   const delivery = createDeliveryQueue((event) => postEvent(conn, event));
+  const exchangeReporter = createDirectExchangeReporter(
+    (sessionID) => (client as unknown as OpenCodeClient).session.messages({ path: { id: sessionID } }),
+    (sessionID, exchange) => postDirectExchange(conn, sessionID, exchange, repo),
+  );
   const activity = createActivityTracker();
 
   const timer = setInterval(() => {
@@ -224,9 +534,7 @@ const server: Plugin = async ({ directory, worktree }) => {
       if (repo) output.headers["x-mimir-repo"] = repo;
     },
     config: async (config: OpenCodeConfig) => {
-      const command = resolveMCPCommand(process.env, (path) => {
-        try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
-      }, (() => { try { return homedir(); } catch { return undefined; } })());
+      const command = resolveMCPCommand(process.env, readLocalFile, home);
       if (!command) return;
       injectMCP(config, command);
     },
@@ -238,6 +546,7 @@ const server: Plugin = async ({ directory, worktree }) => {
         if (typeof info?.sessionID === "string") activity.touch(info.sessionID);
         if (turn && typeof info?.id === "string") {
           delivery.deliver(turn);
+          exchangeReporter.deliver(info);
         }
         return;
       }
@@ -265,4 +574,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent };
+export const __testing = { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

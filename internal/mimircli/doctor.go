@@ -23,7 +23,7 @@ func doctor(ctx context.Context, args []string, out io.Writer) error {
 	service.FindOpenCode = func() (string, error) { return findOpenCode() }
 	report := service.Run(ctx)
 	if jsonOutput {
-		data, err := json.Marshal(report)
+		data, err := json.Marshal(report.Structured())
 		if err != nil {
 			return err
 		}

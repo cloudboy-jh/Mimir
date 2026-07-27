@@ -79,6 +79,12 @@ export class SessionObject implements DurableObject {
 			if (event.kind === "heartbeat" && Date.parse(event.ts) <= Date.parse(meta.finalizedAt)) return;
 			await this.reopen();
 		}
+    if (event.kind !== "end") {
+      await this.env.DB.batch([
+        this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, 'header', ?, ?)").bind(meta.sessionId, meta.startedAt, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null),
+        this.env.DB.prepare("UPDATE sessions SET state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ?").bind(event.ts, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null, meta.sessionId),
+      ]);
+    }
     meta.lastEventAt = event.ts;
     if (event.harness) meta.harness = meta.harness ?? event.harness;
     if (event.repo) meta.repo = meta.repo ?? event.repo;
@@ -146,7 +152,7 @@ export class SessionObject implements DurableObject {
     await this.env.LOGS.put(`sessions/${meta.sessionId}/transcript.json`, JSON.stringify(transcript), { httpMetadata: { contentType: "application/json" } });
     await this.env.DB.batch([
       this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo) VALUES (?, ?, ?, ?, 'header', ?)").bind(meta.sessionId, meta.startedAt, meta.lastEventAt, meta.harness, meta.repo),
-      this.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE ended_at END, inactive_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?").bind(now, now, meta.lastEventAt, meta.lastEventAt, meta.harness, meta.repo, meta.sessionId),
+      this.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN state = 'active' THEN ? ELSE ended_at END, inactive_at = CASE WHEN state = 'active' THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?").bind(now, now, meta.lastEventAt, meta.lastEventAt, meta.harness, meta.repo, meta.sessionId),
     ]);
     meta.finalizedAt = now;
     meta.endReason = reason;

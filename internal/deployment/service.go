@@ -143,7 +143,23 @@ func (s *Service) configure(ctx context.Context, dir string, opts Options) (Opti
 		WorkerName: opts.WorkerName, DatabaseName: opts.DatabaseName,
 		DatabaseID: opts.DatabaseID, BucketName: opts.BucketName,
 	})
-	return opts, err
+	if err != nil {
+		return opts, err
+	}
+	identity, err := install.EmbeddedWorkerIdentity()
+	if err != nil {
+		return opts, fmt.Errorf("reading embedded Worker identity: %w", err)
+	}
+	if opts.WorkerDir != "" {
+		identity.Version, identity.SHA256 = "development", ""
+	}
+	if err := s.Wrangler.UpdateVars(filepath.Join(dir, "wrangler.jsonc"), map[string]string{
+		"MIMIR_BUNDLE_VERSION": identity.Version,
+		"MIMIR_BUNDLE_SHA256":  identity.SHA256,
+	}); err != nil {
+		return opts, fmt.Errorf("writing Worker identity: %w", err)
+	}
+	return opts, nil
 }
 
 func (s *Service) registerMachineToken(ctx context.Context, dir, databaseName, token string) error {
