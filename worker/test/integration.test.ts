@@ -209,6 +209,111 @@ describe("Worker integration", () => {
     expect(envelope).toMatchObject({ schema_version: 1, exchange_id: exchange?.id, session_id: "session-1", declared_session_id: "session-1", response: { format: "reconstructed_sse", content: "src/auth.ts failed: boom" }, usage: { input_tokens: 5, output_tokens: 3 }, redaction: { version: 1 } });
   });
 
+  it("persists canonical harness exchanges to redacted R2 and indexed D1", async () => {
+    await env.DB.prepare("INSERT INTO config(key, value) VALUES('redact.patterns', '[\"customer-[0-9]+\"]')").run();
+    const response = await request("/sessions/reported-session/exchanges", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-harness": "opencode", "x-mimir-repo": "mimir", "x-mimir-git-ref": "feature/reported" },
+      body: JSON.stringify({
+        exchange_id: "reported-exchange-1",
+        ts: "2026-07-26T12:00:00Z",
+        model: "openai/gpt-5",
+        provider: "OpenAI",
+        request: { messages: [{ role: "user", content: "Fix src/reported.ts with token: private-value for customer-123" }] },
+        response: { choices: [{ message: { content: "src/reported.ts failed: compile error" }, finish_reason: "stop" }] },
+        usage: { input_tokens: 12, output_tokens: 4 },
+        latency_ms: 321,
+        request_kind: "primary",
+      }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ exchange_id: "reported-exchange-1", session_id: "reported-session", capture_status: "saved", duplicate: false });
+
+    const exchange = await env.DB.prepare("SELECT session_id, model, provider, finish_reason, input_tokens, output_tokens, latency_ms, request_kind, capture_status, capture_reason, r2_key, r2_bytes FROM exchanges WHERE id = 'reported-exchange-1'").first<{ r2_key: string; r2_bytes: number } & Record<string, unknown>>();
+    expect(exchange).toMatchObject({ session_id: "reported-session", model: "openai/gpt-5", provider: "OpenAI", finish_reason: "stop", input_tokens: 12, output_tokens: 4, latency_ms: 321, request_kind: "primary", capture_status: "saved", capture_reason: "enabled" });
+    expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out, model_primary, intent FROM sessions WHERE id = 'reported-session'").first()).toEqual({ request_count: 1, tokens_in: 12, tokens_out: 4, model_primary: "openai/gpt-5", intent: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]" });
+    expect(await env.DB.prepare("SELECT file FROM session_files WHERE session_id = 'reported-session'").first()).toEqual({ file: "src/reported.ts" });
+    expect(await env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = 'reported-session'").first()).toEqual({ signature: "failed: compile error" });
+
+    const objectText = await (await env.LOGS.get(exchange!.r2_key))!.text();
+    expect(objectText).not.toContain("private-value");
+    expect(objectText).not.toContain("customer-123");
+    expect(exchange!.r2_bytes).toBe(new TextEncoder().encode(objectText).byteLength);
+    expect(JSON.parse(objectText)).toMatchObject({
+      schema_version: 1,
+      exchange_id: "reported-exchange-1",
+      session_id: "reported-session",
+      endpoint: "harness",
+      request: { messages: [{ content: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]" }] },
+      response: { format: "json", body: { choices: [{ finish_reason: "stop" }] } },
+      usage: { input_tokens: 12, output_tokens: 4 },
+      redaction: { version: 1 },
+    });
+    const state = await (await request("/sessions/reported-session/object-state", { headers: { authorization: "Bearer machine-token" } })).json() as Record<string, unknown>;
+    expect(state).toMatchObject({ turn_count: 1, tokens_in: 12, tokens_out: 4 });
+  });
+
+  it("deduplicates canonical harness exchange retries without changing aggregates or DO turns", async () => {
+    const payload = {
+      exchange_id: "reported-duplicate-1",
+      ts: "2026-07-26T12:01:00Z",
+      model: "openai/gpt-5",
+      request: { messages: [{ role: "user", content: "Retry once" }] },
+      response: { output: "done" },
+      usage: { input_tokens: 5, output_tokens: 2 },
+      latency_ms: 100,
+      request_kind: "primary",
+    };
+    const init = { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-harness": "hermes" }, body: JSON.stringify(payload) };
+    expect((await request("/sessions/reported-duplicate/exchanges", init)).status).toBe(201);
+    const duplicate = await request("/sessions/reported-duplicate/exchanges", init);
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ capture_status: "saved", duplicate: true });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges WHERE id = 'reported-duplicate-1'").first()).toEqual({ count: 1 });
+    expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'reported-duplicate'").first()).toEqual({ request_count: 1, tokens_in: 5, tokens_out: 2 });
+    const state = await (await request("/sessions/reported-duplicate/object-state", { headers: { authorization: "Bearer machine-token" } })).json() as Record<string, unknown>;
+    expect(state).toMatchObject({ turn_count: 1, tokens_in: 5, tokens_out: 2 });
+  });
+
+  it("retries reported exchanges after a failed R2 write", async () => {
+    vi.spyOn(env.LOGS, "put").mockRejectedValueOnce(new Error("injected R2 failure"));
+    const payload = {
+      exchange_id: "reported-retry-after-failure",
+      ts: "2026-07-26T12:02:00Z",
+      model: "openai/gpt-5",
+      request: { messages: [{ role: "user", content: "Persist this retry" }] },
+      response: { output: "saved" },
+      usage: { input_tokens: 3, output_tokens: 1 },
+      latency_ms: 50,
+      request_kind: "primary",
+    };
+    const init = { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-harness": "opencode" }, body: JSON.stringify(payload) };
+    expect((await request("/sessions/reported-retry/exchanges", init)).status).toBe(500);
+    expect((await env.DB.prepare("SELECT capture_status FROM exchanges WHERE id = 'reported-retry-after-failure'").first())?.capture_status).toBe("failed");
+    expect((await request("/sessions/reported-retry/exchanges", init)).status).toBe(201);
+    expect(await env.DB.prepare("SELECT capture_status FROM exchanges WHERE id = 'reported-retry-after-failure'").first()).toEqual({ capture_status: "saved" });
+    expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'reported-retry'").first()).toEqual({ request_count: 1, tokens_in: 3, tokens_out: 1 });
+  });
+
+  it("requires machine authentication for canonical harness exchanges", async () => {
+    const response = await request("/sessions/reported-auth/exchanges", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(response.status).toBe(401);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first()).toEqual({ count: 0 });
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    ["an invalid session ID", JSON.stringify({}), "bad!session"],
+    ["unknown fields", JSON.stringify({ exchange_id: "bad-1", ts: "2026-07-26T12:00:00Z", model: "test", request: {}, response: {}, usage: { input_tokens: 1, output_tokens: 1 }, latency_ms: 1, request_kind: "primary", extra: true })],
+    ["missing response", JSON.stringify({ exchange_id: "bad-2", ts: "2026-07-26T12:00:00Z", model: "test", request: {}, usage: { input_tokens: 1, output_tokens: 1 }, latency_ms: 1, request_kind: "primary" })],
+    ["invalid usage", JSON.stringify({ exchange_id: "bad-3", ts: "2026-07-26T12:00:00Z", model: "test", request: {}, response: {}, usage: { input_tokens: -1, output_tokens: 1 }, latency_ms: 1, request_kind: "primary" })],
+    ["non-finite JSON numbers", "{\"exchange_id\":\"bad-4\",\"ts\":\"2026-07-26T12:00:00Z\",\"model\":\"test\",\"request\":{\"value\":1e400},\"response\":{},\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"latency_ms\":1,\"request_kind\":\"primary\"}"],
+  ])("rejects %s for canonical harness exchanges", async (_case, body, session = "reported-validation") => {
+    const response = await request(`/sessions/${session}/exchanges`, { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body });
+    expect(response.status).toBe(400);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first()).toEqual({ count: 0 });
+  });
+
   it("uses only primary requests to establish session intent", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
     const headers = { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "intent-session", "x-mimir-harness": "opencode" };

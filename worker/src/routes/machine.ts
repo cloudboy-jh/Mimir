@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
+import { ingestReportedExchange } from "../reported-exchanges";
 import { parseSessionEvent, SESSION_ID } from "../session-events";
 import { canonicalOutcome, endSession, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
 import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
@@ -8,7 +9,7 @@ import type { AppEnv } from "../types";
 
 const SEARCH_TYPES = ["intent", "excerpts", "files", "errors"] as const;
 const MACHINE_API_VERSION = 1;
-const MACHINE_CAPABILITIES = ["harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search"] as const;
+const MACHINE_CAPABILITIES = ["canonical_exchanges", "harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search"] as const;
 const HARNESS_LOAD_NAMES = ["opencode", "hermes"] as const;
 const HARNESS_LOAD_KEYS = ["version", "harness", "source_sha256", "bundle_version", "cli_version", "cli_commit", "installation_id"] as const;
 type SearchType = (typeof SEARCH_TYPES)[number];
@@ -110,6 +111,8 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   });
 
   app.post("/sessions/:id/end", (c) => endSession(c, "agent"));
+
+  app.post("/sessions/:id/exchanges", ingestReportedExchange);
 
   // Session object surface. Reporters (harness plugins, native harness
   // reporting) append events here; the session ID in the path is
