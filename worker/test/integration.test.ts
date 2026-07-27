@@ -553,6 +553,9 @@ describe("Session object", () => {
     expect(accepted.status).toBe(200);
     const { body } = await objectState("object-live");
     expect(body).toMatchObject({ session_id: "object-live", liveness: "active", turn_count: 1, tokens_in: 5, tokens_out: 3, finalized_at: null });
+    expect(await env.DB.prepare("SELECT state, harness, model_primary FROM sessions WHERE id = 'object-live'").first()).toEqual({ state: "active", harness: null, model_primary: "openai/test" });
+    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string }> };
+    expect(listed.sessions.map((session) => session.id)).toContain("object-live");
   });
 
   it("reports the machine API version and capabilities", async () => {
@@ -673,9 +676,9 @@ describe("Session object", () => {
     expect(await env.LOGS.get("sessions/object-explicit-end/transcript.json")).not.toBeNull();
   });
 
-  it("ends sessions known only to the session object", async () => {
+  it("ends sessions materialized by live events", async () => {
     await postEvent("object-only-end", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test" } });
-    expect(await env.DB.prepare("SELECT 1 FROM sessions WHERE id = 'object-only-end'").first()).toBeNull();
+    expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'object-only-end'").first<{ state: string }>())?.state).toBe("active");
     const ended = await request("/sessions/object-only-end/end", { method: "POST", headers: { authorization: "Bearer machine-token" } });
     expect(ended.status).toBe(200);
     expect((await env.DB.prepare("SELECT state FROM sessions WHERE id = 'object-only-end'").first<{ state: string }>())?.state).toBe("inactive");
