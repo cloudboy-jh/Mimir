@@ -7,15 +7,24 @@ turns known to have traversed the proxy. One Session Durable Object coordinates
 each exact session ID.
 
 ```mermaid
-flowchart LR
-    H[Harness] -->|redirected traffic| W[Worker proxy]
-    W -->|redacted exchange| R[(R2)]
-    W -->|search metadata| D[(D1)]
-    H -.->|turns, heartbeats, ends| S[Session Durable Object]
-    W -.->|saved exchange event| S
-    S -->|transcript manifest| R
-    S -->|lifecycle state| D
-    C[CLI / optional MCP] -->|status, outcome, end| W
+stateDiagram-v2
+    state first_event <<choice>>
+    [*] --> first_event
+    first_event --> Active: heartbeat, turn, or saved exchange
+    first_event --> Finalizing: end
+    Active --> Disconnected: about 90 seconds silent
+    Active --> Finalizing: end event or explicit end
+    Disconnected --> Active: accepted activity
+    Disconnected --> Finalizing: end, explicit end, or about 10 minutes total silence
+    Finalizing --> Finalizing: durable write retry
+    Finalizing --> Finalized: manifest and lifecycle state saved
+    Finalized --> Active: accepted new activity with same ID
+
+    note right of Disconnected
+      Liveness projection only.
+      Durable capture and work
+      outcome remain independent.
+    end note
 ```
 
 `x-mimir-session` is the authoritative boundary. R2 and D1 are canonical for

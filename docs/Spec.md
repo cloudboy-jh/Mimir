@@ -42,19 +42,35 @@ D1 or R2.
 
 ```mermaid
 flowchart LR
-    H[Agent harness] -->|Redirected model request| W[Cloudflare Worker]
-    W --> O[OpenRouter]
-    O -->|Response stream| W
-    W -->|Response stream| H
-    W -->|Redacted exchanges| R[(R2)]
-    W -->|Searchable metadata| D[(D1)]
-    H -.->|Turns, heartbeats, ends| S[Session Durable Object]
-    W -.->|Saved exchange events| S
-    S -->|Transcript manifest| R
-    S -->|Lifecycle state| D
-    H <-->|CLI or optional stdio MCP| C[Go client]
-    C <-->|Canonical HTTP API| W
-    C -.-> I[(Local code index)]
+    subgraph LOCAL[Developer machines]
+        H[Agent harness]
+        C[Go CLI / optional MCP]
+        B[Dashboard browser]
+        I[(Local code index)]
+        H <--> C
+        C --- I
+    end
+
+    subgraph CF[Developer's Cloudflare account]
+        W[Worker proxy and canonical API]
+        S[Session Durable Object]
+        R[(R2 redacted objects)]
+        D[(D1 metadata and state)]
+
+        W -->|redacted exchanges| R
+        W -->|search metadata and references| D
+        W -.->|events and saved exchanges| S
+        S -->|transcript manifest| R
+        S -->|lifecycle state| D
+    end
+
+    O[OpenRouter]
+
+    H <-->|redirected model stream| W
+    H -.->|turns, heartbeats, ends| W
+    C <-->|machine-token HTTP API| W
+    B <-->|Access-protected dashboard API| W
+    W <-->|upstream stream| O
 ```
 
 ## 3. Authentication
