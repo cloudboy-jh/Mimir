@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -57,10 +56,8 @@ type Service struct {
 	Paths                    func() (install.InstallationPaths, error)
 	LoadPointer              func() (mimirapi.Pointer, error)
 	LoadReceipt              func() (install.Receipt, error)
-	ExecutablePath           func() (string, error)
 	InstallFiles             func(string, func() (string, error)) (install.InstallReport, error)
 	UninstallFiles           func(bool) (install.UninstallReport, error)
-	OpenCode                 openintegration.Service
 	Hermes                   hermesintegration.Service
 }
 
@@ -72,10 +69,8 @@ func New() Service {
 		Paths:                    install.Paths,
 		LoadPointer:              mimirapi.LoadPointer,
 		LoadReceipt:              install.LoadReceipt,
-		ExecutablePath:           os.Executable,
 		InstallFiles:             install.Install,
 		UninstallFiles:           install.Uninstall,
-		OpenCode:                 openintegration.New(),
 		Hermes:                   hermesintegration.New(),
 	}
 }
@@ -92,12 +87,9 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	report := InstallReport{Binary: mechanical.Binary, Artifacts: mechanical.Artifacts, HermesReady: true}
 	pointer, pointerErr := s.LoadPointer()
 	if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
-		report.OpenCode, err = s.ConfigureOpenCode()
-		if err != nil {
-			return InstallReport{}, err
-		}
+		report.OpenCode = harness.IntegrationState{State: "installed", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin installed"}
 	} else {
-		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "mcp", Detail: "conflicting or modified OpenCode files were preserved"}
+		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 	}
 	report.OpenCodeReady = report.OpenCode.State != "failed"
 	if paths.HermesDetected {
@@ -172,10 +164,11 @@ func (s Service) Uninstall(ctx context.Context, keepBinary bool) (UninstallRepor
 	}, nil
 }
 
-func (s Service) Update(ctx context.Context, check bool) (UpdateReport, error) {
+func (s Service) Update(ctx context.Context, check, force bool) (UpdateReport, error) {
 	var lifecycle Report
 	mechanical, err := install.Update(ctx, install.UpdateOptions{
 		Check: check,
+		Force: force,
 		Refresh: func(ctx context.Context, operation string) (install.ArtifactReport, error) {
 			lifecycle = s.Refresh(ctx, operation)
 			if !lifecycle.OK {
@@ -212,35 +205,14 @@ func (s Service) Manifest(url string) (harness.ConnectionManifest, error) {
 	if err != nil {
 		return harness.ConnectionManifest{}, err
 	}
-	executable, err := s.manifestExecutable()
-	if err != nil {
-		return harness.ConnectionManifest{}, err
-	}
 	base := strings.TrimRight(url, "/")
 	return harness.ConnectionManifest{
 		OpenAIBaseURL:     base + "/v1",
 		AnthropicBaseURL:  base,
 		CredentialFile:    credential,
 		CredentialCommand: []string{"cat", credential},
-		MCPCommand:        []string{executable, "serve"},
 		OptionalHeaders:   []string{"x-mimir-session", "x-mimir-repo", "x-mimir-harness", "x-mimir-git-ref", "x-mimir-request-kind"},
 	}, nil
-}
-
-func (s Service) ConfigureOpenCode() (harness.IntegrationState, error) {
-	executable, err := s.manifestExecutable()
-	if err != nil {
-		return harness.IntegrationState{State: "failed", Scope: "mcp", Detail: err.Error()}, err
-	}
-	return s.OpenCode.Configure([]string{executable, "serve"})
-}
-
-func (s Service) manifestExecutable() (string, error) {
-	receipt, err := s.LoadReceipt()
-	if err != nil {
-		return "", err
-	}
-	return install.ResolveExecutable(receipt, s.ExecutablePath)
 }
 
 func (s Service) Refresh(ctx context.Context, operation string) Report {
@@ -312,13 +284,9 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		return report, err
 	}
 	if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
-		state, configureErr := s.OpenCode.Configure(manifest.MCPCommand)
-		report.OpenCode = state
-		if configureErr != nil {
-			failures = append(failures, configureErr.Error())
-		}
+		report.OpenCode = harness.IntegrationState{State: "installed", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin installed"}
 	} else {
-		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "mcp", Detail: "conflicting or modified OpenCode files were preserved"}
+		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 		failures = append(failures, report.OpenCode.Detail)
 	}
 	if _, found, discoverErr := s.Hermes.Discover(); discoverErr != nil {

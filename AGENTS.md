@@ -7,7 +7,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 - Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` assembles middleware and routes; `routes/`, `auth.ts`, `proxy.ts`, `capture.ts`, `sessions.ts`, and `config.ts` own backend behavior.
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
-- CLI/MCP: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, `internal/doctor/`, and `internal/mcp/`. Keep the Go CLI standard-library-only.
+- CLI: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, and `internal/doctor/`. Keep the Go CLI standard-library-only.
 - OpenCode plugin: `plugins/opencode/mimir.ts` reports turns, heartbeats, and session ends to `/sessions/:id/events`. Single dependency-free file; tests run with `bun test plugins/opencode/`.
 - Hermes plugin: `plugins/hermes/` (Python, stdlib-only) reports the same events via Hermes' plugin hooks, covering Nous portal and direct providers; liveness-only when the managed OpenRouter redirect is active. Tests run with `python -m unittest discover -s plugins/hermes -p "test_*.py"`.
 - Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
@@ -34,7 +34,7 @@ npm --prefix worker test
 npm --prefix worker run typecheck
 cd worker && npx wrangler deploy --dry-run
 
-# CLI/MCP
+# CLI
 go test ./...
 go build -o /tmp/mimir ./cmd/mimir
 bun test plugins/opencode/
@@ -61,7 +61,7 @@ for session lifecycle checks.
 
 ## Authentication
 
-- Machine proxy, CLI, and MCP requests use per-machine bearer tokens.
+- Machine proxy and CLI requests use per-machine bearer tokens.
 - Deployed dashboard API and redacted-log routes use verified Cloudflare Access JWTs through `Cf-Access-Jwt-Assertion`.
 - Cloudflare Access configuration uses `DASHBOARD_ACCESS_AUD` and `DASHBOARD_ACCESS_TEAM_DOMAIN`.
 - Localhost dashboard API access may bypass Access for development.
@@ -69,7 +69,7 @@ for session lifecycle checks.
 
 ## Constraints
 
-- The Worker HTTP API is canonical; CLI and MCP delegate to it.
+- The Worker HTTP API is canonical; the CLI and harness plugins delegate to it.
 - `x-mimir-session` is the authoritative session boundary.
 - Redact before writing to R2.
 - Preserve upstream streaming and persist with `waitUntil`.

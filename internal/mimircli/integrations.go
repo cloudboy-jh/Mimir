@@ -2,7 +2,6 @@ package mimircli
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/harness"
@@ -10,12 +9,8 @@ import (
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 )
 
-var findOpenCode = func() (string, error) { return exec.LookPath("opencode") }
-
 func lifecycleService() lifecyclepkg.Service {
 	service := lifecyclepkg.New()
-	service.ExecutablePath = executablePath
-	service.OpenCode.LookPath = func(string) (string, error) { return findOpenCode() }
 	service.Hermes = hermesintegration.New()
 	service.Hermes.RunPluginCommand = runHermesPluginCommand
 	service.Hermes.ListPlugins = listHermesPlugins

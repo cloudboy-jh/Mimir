@@ -23,21 +23,28 @@ mimir doctor --json
 ```
 
 Doctor validates managed artifacts, the receipt-owned executable, Worker API
-version/capabilities, OpenCode injection, Hermes plugin enablement, Hermes
-credentials, and compatibility routes. A Worker missing required capabilities
-requires `mimir deploy`; invalid machine credentials require `mimir login`.
+version/capabilities, OpenCode plugin load, Hermes plugin enablement, Hermes
+credentials, and compatibility routes. It also reports stale files next to the
+owned executable (swap leftovers and foreign junk) without deleting them. A
+Worker missing required capabilities requires `mimir deploy`; invalid machine
+credentials require `mimir login`.
 
 ## Update
 
 ```bash
 mimir update --check
 mimir update
+mimir update --force
 ```
 
 Release archives are verified against published checksums before replacement.
 The updater requires the receipt-owned executable, records the verified new
 hash, refreshes integrations, and guards rollback against concurrent binary
-replacement.
+replacement. On Windows, when the executable is locked by another Mimir
+process or an antivirus filter, the update is deferred: the verified binary is
+staged, `pending-update.json` is recorded, and a detached helper completes the
+swap once the lock clears. `--force` stops sibling Mimir processes and applies
+the update immediately.
 
 ## Access
 

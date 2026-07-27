@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
-	openintegration "github.com/cloudboy-jh/mimir/internal/harness/opencode"
 	"github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
@@ -81,13 +82,12 @@ type Service struct {
 	LoadReceipt    func() (install.Receipt, error)
 	LoadPointer    func() (mimirapi.Pointer, error)
 	Lifecycle      lifecycle.Service
-	FindOpenCode   func() (string, error)
 }
 
 func New(api Requester) Service {
 	return Service{
 		API: api, CheckArtifacts: install.CheckArtifacts, LoadReceipt: install.LoadReceipt, LoadPointer: mimirapi.LoadPointer,
-		Lifecycle: lifecycle.New(), FindOpenCode: func() (string, error) { return exec.LookPath("opencode") },
+		Lifecycle: lifecycle.New(),
 	}
 }
 
@@ -154,17 +154,44 @@ func (s Service) Run(ctx context.Context) Report {
 		add("connection.manifest", "failed", err.Error(), "mimir login")
 		return report
 	}
-	if _, err := s.FindOpenCode(); err != nil {
-		add("opencode.mcp", "skipped", "OpenCode is not installed", "")
-	} else if err := openintegration.ValidateCommand(manifest.MCPCommand); err != nil {
-		add("opencode.mcp", "failed", err.Error(), "mimir install")
-	} else {
-		add("opencode.mcp", "ok", "managed plugin injects "+strings.Join(manifest.MCPCommand, " ")+" at startup", "")
-	}
+	s.addBinaryJunkCheck(add)
 	for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest) {
 		add(check.Name, check.Status, check.Detail, check.Repair)
 	}
 	return report
+}
+
+// addBinaryJunkCheck reports stale files sitting next to the receipt-owned
+// executable: Mimir swap leftovers (.old, .rollback, orphaned staged temps)
+// and foreign junk (.bak, linker ~ files). Mimir-owned leftovers are removed
+// automatically once no Mimir process holds them; the rest is the user's call.
+func (s Service) addBinaryJunkCheck(add func(string, string, string, string)) {
+	receipt, err := s.LoadReceipt()
+	if err != nil || receipt.CLI.Path == "" {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Dir(receipt.CLI.Path))
+	if err != nil {
+		return
+	}
+	base := filepath.Base(receipt.CLI.Path)
+	stale := []string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		switch {
+		case name == base+".old", name == base+".rollback", name == base+".new", name == base+".bak", name == base+"~":
+			stale = append(stale, name)
+		case strings.HasPrefix(name, ".mimir-update-"), strings.HasPrefix(name, ".mimir-install-"):
+			stale = append(stale, name)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	sort.Strings(stale)
+	add("binary-junk", "warning",
+		"stale files next to "+receipt.CLI.Path+": "+strings.Join(stale, ", "),
+		"Mimir-owned swap leftovers are removed by a later CLI run once no Mimir process holds them; delete foreign files manually")
 }
 
 type harnessLoad struct {

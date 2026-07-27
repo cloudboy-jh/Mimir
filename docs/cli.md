@@ -1,8 +1,7 @@
 # CLI Contract
 
 The Worker HTTP API is canonical. The Mimir CLI is the primary agent-facing
-client; `mimir serve` exposes the same memory operations through MCP for
-harnesses that prefer it.
+client for searching, inspecting, and controlling memory.
 
 ## Machine-Readable Commands
 
@@ -16,7 +15,6 @@ mimir session outcome <id> <landed|discarded|abandoned|unresolved> --reason <tex
 mimir session end <id> --outcome <value> --reason <text> --evidence <json> --json
 mimir config get --json
 mimir config set <key> <json-value> --json
-mimir tools --json
 mimir access --json
 ```
 
@@ -49,32 +47,19 @@ decode JSON stored inside `error`:
 | `5` | Local conflict or repair required |
 | `6` | Incompatible deployed Worker |
 
-## Tool Discovery
+## Command Discovery
 
-`mimir tools --json` returns the schema version and the same tool descriptors
-advertised by MCP `tools/list`. Existing MCP names remain stable:
-
-- `whoami`
-- `sessions_list`
-- `sessions_get`
-- `session_status`
-- `session_end`
-- `session_set_outcome`
-- `search`
-- `config_get`
-- `config_set`
-- deprecated `mark`
-
-The CLI spelling is intentionally conventional while MCP keeps compatibility
-names. `mimir session <id>` remains an alias for `mimir session get <id>`.
+`mimir --help` lists normal commands and `mimir help advanced` lists diagnostic
+and harness-facing commands. `mimir session <id>` remains an alias for
+`mimir session get <id>`.
 
 ## Capture And Control
 
-CLI and MCP commands inspect and control memory; they do not capture unrelated
-model traffic. Capture comes from redirected proxy traffic and harness plugins.
+CLI commands inspect and control memory; they do not capture unrelated model
+traffic. Capture comes from redirected proxy traffic and harness plugins.
 An explicit end can finalize a session, but later activity carrying the same
 session ID intentionally reopens it.
 
-Use `mimir session status <id> --json` or MCP `session_status` as the persistence
-authority. Proxy responses, scheduled capture headers, and plugin delivery
-attempts are not proof that an exchange was saved.
+Use `mimir session status <id> --json` as the persistence authority. Proxy
+responses, scheduled capture headers, and plugin delivery attempts are not
+proof that an exchange was saved.

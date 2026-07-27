@@ -7,11 +7,11 @@ file. Remove it only if it is disposable, or restore the exact Mimir-owned
 version, then run `mimir install` again. Mimir will not overwrite it to make the
 warning disappear.
 
-## OpenCode does not show Mimir tools
+## OpenCode capture is missing
 
-Run `mimir doctor --json`, repair any managed-artifact issue, and restart
-OpenCode. The managed plugin injects the receipt-owned `mimir serve` command at
-startup; OpenCode does not hot-reload plugins or configuration.
+Run `mimir doctor --json`, repair any managed-artifact issue it reports, and
+restart OpenCode. The managed plugin reports turns and lifecycle events to the
+Worker over HTTP; OpenCode does not hot-reload plugin changes.
 
 ## Hermes capture is missing
 

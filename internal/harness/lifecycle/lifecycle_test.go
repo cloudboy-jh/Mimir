@@ -50,20 +50,10 @@ func TestRefreshUsesNonEnrollingArtifactSync(t *testing.T) {
 	}
 }
 
-func TestInstallCurrentConfiguresOpenCodeThroughSupportedCLI(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "mimir")
-	data := []byte("binary")
-	if err := os.WriteFile(binary, data, 0o755); err != nil {
-		t.Fatal(err)
-	}
+func TestInstallCurrentReportsManagedOpenCodeCapturePlugin(t *testing.T) {
 	root := t.TempDir()
 	service := New()
 	service.Paths = func() (install.InstallationPaths, error) { return install.InstallationPaths{OpenCodeHome: root}, nil }
-	service.LoadReceipt = func() (install.Receipt, error) {
-		hash := sha256.Sum256(data)
-		return testReceipt(t, binary, hex.EncodeToString(hash[:]), nil), nil
-	}
-	service.OpenCode.LookPath = func(string) (string, error) { return "opencode-test", nil }
 	service.Hermes = hermes.New()
 	service.Hermes.Discover = func() (string, bool, error) { return "", false, nil }
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{
@@ -73,7 +63,7 @@ func TestInstallCurrentConfiguresOpenCodeThroughSupportedCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OpenCode.State != "installed" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, binary+" serve") {
+	if report.OpenCode.State != "installed" || report.OpenCode.Scope != "capture" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, "capture plugin") {
 		t.Fatalf("OpenCode state %#v", report.OpenCode)
 	}
 }
@@ -112,10 +102,6 @@ func TestInstallMaterializesBeforeReadinessAndProviderConfiguration(t *testing.T
 	service.LoadReceipt = func() (install.Receipt, error) {
 		return testReceipt(t, binary, hex.EncodeToString(hash[:]), nil), nil
 	}
-	service.OpenCode.LookPath = func(string) (string, error) {
-		events = append(events, "opencode")
-		return "opencode", nil
-	}
 	service.Hermes.RunPluginCommand = func(context.Context, string, ...string) error {
 		events = append(events, "hermes")
 		return nil
@@ -124,7 +110,7 @@ func TestInstallMaterializesBeforeReadinessAndProviderConfiguration(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(events, ","); got != "files,opencode,hermes" {
+	if got := strings.Join(events, ","); got != "files,hermes" {
 		t.Fatalf("ordering = %s", got)
 	}
 	if !report.OpenCodeReady || !report.HermesReady || report.ActionRequired {
@@ -159,7 +145,6 @@ func TestConnectedInstallRepairsHermesThroughLifecycle(t *testing.T) {
 	service.LoadReceipt = func() (install.Receipt, error) {
 		return testReceipt(t, binary, hex.EncodeToString(hash[:]), nil), nil
 	}
-	service.OpenCode.LookPath = func(string) (string, error) { return "", errors.New("not installed") }
 	service.Hermes.Discover = func() (string, bool, error) { return hermesHome, true, nil }
 	enabled, authorized := false, false
 	service.Hermes.RunPluginCommand = func(context.Context, string, ...string) error {
@@ -198,7 +183,6 @@ func TestDisconnectedInstallOnlyEnablesSafeHermesPlugin(t *testing.T) {
 		return install.InstallationPaths{HermesHome: hermesHome, HermesDetected: true}, nil
 	}
 	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
-	service.OpenCode.LookPath = func(string) (string, error) { return "", errors.New("not installed") }
 	enables := 0
 	service.Hermes.RunPluginCommand = func(context.Context, string, ...string) error { enables++; return nil }
 	service.Hermes.Request = func(context.Context, mimirapi.Pointer, string, string, any) ([]byte, error) {
@@ -230,7 +214,6 @@ func TestInstallDoesNotConfigureProviderUntilArtifactsAreReady(t *testing.T) {
 	service.Paths = func() (install.InstallationPaths, error) {
 		return install.InstallationPaths{OpenCodeHome: root, HermesHome: hermesHome, HermesDetected: true}, nil
 	}
-	service.OpenCode.LookPath = func(string) (string, error) { providerCalls++; return "opencode", nil }
 	service.Hermes.RunPluginCommand = func(context.Context, string, ...string) error { providerCalls++; return nil }
 	report, err := service.Install(context.Background(), "", func() (string, error) { return "", nil })
 	if err != nil {

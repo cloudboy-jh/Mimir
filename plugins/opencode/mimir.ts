@@ -32,7 +32,6 @@ const MAX_JSON_ENTRIES = 256;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 type Connection = { url: string; token: string };
-type OpenCodeConfig = { mcp?: Record<string, unknown> };
 
 type HarnessLoad = {
   version: 1;
@@ -409,29 +408,6 @@ function createActivityTracker(now: () => number = Date.now) {
   };
 }
 
-function resolveMCPCommand(
-  env: Record<string, string | undefined>,
-  readFile: (path: string) => string | null,
-  home: string | undefined,
-): string[] | null {
-  const dir = env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
-  if (!dir) return null;
-  const raw = readFile(join(dir, "install-receipt.json"));
-  if (!raw) return null;
-  try {
-    const receipt = JSON.parse(raw) as { cli?: { path?: unknown } };
-    const path = receipt.cli?.path;
-    return typeof path === "string" && path ? [path, "serve"] : null;
-  } catch {
-    return null;
-  }
-}
-
-function injectMCP(config: OpenCodeConfig, command: string[]): void {
-  config.mcp ??= {};
-  config.mcp.mimir = { type: "local", command, enabled: true };
-}
-
 async function postEvent(conn: Connection, event: SessionEvent): Promise<boolean> {
   try {
     const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(event.session_id)}/events`, {
@@ -533,11 +509,6 @@ const server: Plugin = async ({ client, directory, worktree }) => {
       output.headers["x-mimir-harness"] = "opencode";
       if (repo) output.headers["x-mimir-repo"] = repo;
     },
-    config: async (config: OpenCodeConfig) => {
-      const command = resolveMCPCommand(process.env, readLocalFile, home);
-      if (!command) return;
-      injectMCP(config, command);
-    },
     event: async ({ event }: { event: { type: string; properties?: Record<string, unknown> } }) => {
       const properties = event.properties ?? {};
       if (event.type === "message.updated") {
@@ -574,4 +545,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

@@ -54,10 +54,10 @@ Invoking installation through another executable cannot silently transfer it.
 
 ## Harnesses
 
-OpenCode receives the managed plugin and skills. The plugin injects the
-receipt-owned optional MCP command at startup. Hermes receives its plugin,
-skills, and bounded managed OpenRouter route; the plugin is enabled through the
-Hermes CLI only after every managed plugin file is safe.
+OpenCode receives the managed capture plugin and skills. The plugin reports
+turns and lifecycle events directly to the Worker over HTTP. Hermes receives
+its plugin, skills, and bounded managed OpenRouter route; the plugin is enabled
+through the Hermes CLI only after every managed plugin file is safe.
 
 When Mimir is already connected, `mimir install` also repairs Hermes through the
 normal lifecycle: it enables the safe plugin, authorizes Hermes' existing
@@ -79,7 +79,10 @@ mimir uninstall --keep-binary
 Uninstall preserves the connection, machine token, materialized Worker,
 install log, and Cloudflare deployment. It disables Hermes only when the
 receipt proves Mimir owns the Hermes plugin. On Windows, removal of the running
-verified binary is deferred until the process exits. Independently of plugin
+verified binary is deferred until the process exits; updates use the same
+deferred mechanism when the binary is locked by running Mimir processes,
+recording `$MIMIR_HOME/pending-update.json` and completing the swap after
+they exit (or immediately with `mimir update --force`). Independently of plugin
 ownership, uninstall removes an exact Mimir-managed Hermes `.env` route block
 without touching `OPENROUTER_API_KEY`; malformed, modified, symlinked, or
 non-regular `.env` state is preserved.

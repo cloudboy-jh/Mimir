@@ -84,7 +84,7 @@ available.
 ## Supported boundary
 
 Capture applies whenever Hermes' effective provider is `openrouter`, including
-mid-session switches between OpenRouter models. MCP does not perform capture.
+mid-session switches between OpenRouter models.
 
 Direct Nous, Anthropic OAuth, Codex, Gemini, and other provider transports bypass
 the Worker and are not captured **by the proxy** — install the Hermes plugin

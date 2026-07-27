@@ -8,7 +8,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
-// httpClient bounds every Worker request so CLI and MCP calls cannot hang
+// httpClient bounds every Worker request so CLI calls cannot hang
 // indefinitely on a stalled connection.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 

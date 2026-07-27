@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func buildReleaseArchive(t *testing.T, goos string, binary []byte) []byte {
@@ -337,5 +338,268 @@ func TestManagedByPackageManager(t *testing.T) {
 		if got := managedByPackageManager(path); got != want {
 			t.Fatalf("managedByPackageManager(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+func ownExecutable(t *testing.T, target string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(target, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncInstallArtifacts(installReceiptUpdate{Source: "test", Method: "bootstrap-copy", CLI: installReceiptCLI{Path: target, Version: "1.0.0", Hash: hashBytes(data)}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stubSiblings(t *testing.T, pids []int) {
+	t.Helper()
+	old := siblingMimirProcesses
+	siblingMimirProcesses = func(int, string) ([]int, error) { return pids, nil }
+	t.Cleanup(func() { siblingMimirProcesses = old })
+}
+
+func writePending(t *testing.T, pending pendingUpdate) {
+	t.Helper()
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := savePendingUpdate(paths, pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pending.Staged, []byte("new-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinalizePendingUpdateAppliesStagedSwap(t *testing.T) {
+	isolatedInstallation(t, false)
+	target := filepath.Join(t.TempDir(), "mimir")
+	ownExecutable(t, target, []byte("old-binary"))
+	writePending(t, pendingUpdate{
+		Schema: 1, Target: target, Staged: filepath.Join(filepath.Dir(target), ".mimir-update-pending-test"),
+		PreviousHash: hashBytes([]byte("old-binary")), NewHash: hashBytes([]byte("new-binary")), Version: "9.9.9",
+	})
+
+	applied, pendingVersion, err := finalizePendingUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied || pendingVersion != "9.9.9" {
+		t.Fatalf("applied=%v version=%q", applied, pendingVersion)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new-binary" {
+		t.Fatalf("binary %q", data)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CLI.Hash != hashBytes([]byte("new-binary")) || receipt.CLI.Version != "9.9.9" {
+		t.Fatalf("receipt %#v", receipt.CLI)
+	}
+	paths, _ := managedInstallationPaths()
+	if _, found, err := loadPendingUpdate(paths); err != nil || found {
+		t.Fatalf("pending marker survived finalize: found=%v err=%v", found, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(target), ".mimir-update-pending-test")); !os.IsNotExist(err) {
+		t.Fatalf("staged binary survived finalize: %v", err)
+	}
+}
+
+func TestFinalizePendingUpdateCompletesHelperSwap(t *testing.T) {
+	isolatedInstallation(t, false)
+	target := filepath.Join(t.TempDir(), "mimir")
+	// The detached helper already swapped the binary; the receipt still
+	// points at the previous hash and only the marker is left to reconcile.
+	if err := os.WriteFile(target, []byte("new-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncInstallArtifacts(installReceiptUpdate{Source: "test", Method: "bootstrap-copy", CLI: installReceiptCLI{Path: target, Version: "1.0.0", Hash: hashBytes([]byte("old-binary"))}}); err != nil {
+		t.Fatal(err)
+	}
+	writePending(t, pendingUpdate{
+		Schema: 1, Target: target, Staged: filepath.Join(filepath.Dir(target), ".mimir-update-pending-test"),
+		PreviousHash: hashBytes([]byte("old-binary")), NewHash: hashBytes([]byte("new-binary")), Version: "9.9.9",
+	})
+
+	applied, _, err := finalizePendingUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("helper-completed swap was not finalized")
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.CLI.Hash != hashBytes([]byte("new-binary")) || receipt.CLI.Version != "9.9.9" {
+		t.Fatalf("receipt %#v", receipt.CLI)
+	}
+}
+
+func TestFinalizePendingUpdateRejectsExternallyChangedBinary(t *testing.T) {
+	isolatedInstallation(t, false)
+	target := filepath.Join(t.TempDir(), "mimir")
+	ownExecutable(t, target, []byte("external-replacement"))
+	writePending(t, pendingUpdate{
+		Schema: 1, Target: target, Staged: filepath.Join(filepath.Dir(target), ".mimir-update-pending-test"),
+		PreviousHash: hashBytes([]byte("old-binary")), NewHash: hashBytes([]byte("new-binary")), Version: "9.9.9",
+	})
+
+	applied, _, err := finalizePendingUpdate()
+	if err == nil || applied {
+		t.Fatal("externally changed binary was treated as updated")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "external-replacement" {
+		t.Fatalf("external binary changed: %q", data)
+	}
+	paths, _ := managedInstallationPaths()
+	if _, found, _ := loadPendingUpdate(paths); !found {
+		t.Fatal("diagnostic marker was removed for an externally changed binary")
+	}
+}
+
+func TestFinalizePendingUpdateRejectsForgedTarget(t *testing.T) {
+	isolatedInstallation(t, false)
+	owned := filepath.Join(t.TempDir(), "mimir")
+	ownExecutable(t, owned, []byte("old-binary"))
+	otherDir := t.TempDir()
+	target := filepath.Join(otherDir, "mimir")
+	if err := os.WriteFile(target, []byte("old-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writePending(t, pendingUpdate{
+		Schema: 1, Target: target, Staged: filepath.Join(otherDir, ".mimir-update-pending-forged"),
+		PreviousHash: hashBytes([]byte("old-binary")), NewHash: hashBytes([]byte("new-binary")), Version: "9.9.9",
+	})
+	if applied, _, err := finalizePendingUpdate(); err == nil || applied {
+		t.Fatalf("forged target applied=%v err=%v", applied, err)
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "old-binary" {
+		t.Fatalf("forged target changed: %q", data)
+	}
+}
+
+func TestFinalizePendingUpdateRejectsTamperedStagedBinary(t *testing.T) {
+	isolatedInstallation(t, false)
+	target := filepath.Join(t.TempDir(), "mimir")
+	ownExecutable(t, target, []byte("old-binary"))
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(filepath.Dir(target), ".mimir-update-pending-tampered")
+	pending := pendingUpdate{
+		Schema: 1, Target: target, Staged: staged,
+		PreviousHash: hashBytes([]byte("old-binary")), NewHash: hashBytes([]byte("new-binary")), Version: "9.9.9",
+	}
+	if err := savePendingUpdate(paths, pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("tampered"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if applied, _, err := finalizePendingUpdate(); err == nil || applied {
+		t.Fatalf("tampered staged binary applied=%v err=%v", applied, err)
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "old-binary" {
+		t.Fatalf("target changed after staged tampering: %q", data)
+	}
+}
+
+func TestFinalizePendingUpdateReportsMalformedMarker(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if err := os.MkdirAll(paths.MimirHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pendingUpdatePath(paths), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if applied, _, err := finalizePendingUpdate(); err == nil || applied {
+		t.Fatalf("malformed marker applied=%v err=%v", applied, err)
+	}
+}
+
+func TestUpdateSurfacesMalformedPendingMarker(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if err := os.MkdirAll(paths.MimirHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pendingUpdatePath(paths), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(context.Background(), UpdateOptions{}); err == nil || !strings.Contains(err.Error(), "finalizing pending update") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCleanupStaleSwapArtifacts(t *testing.T) {
+	isolatedInstallation(t, false)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "mimir")
+	ownExecutable(t, target, []byte("binary"))
+	removed := []string{target + ".old", target + ".rollback"}
+	for _, path := range removed {
+		if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldStaged := filepath.Join(dir, ".mimir-update-123")
+	if err := os.WriteFile(oldStaged, []byte("staged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(oldStaged, past, past); err != nil {
+		t.Fatal(err)
+	}
+	freshStaged := filepath.Join(dir, ".mimir-update-fresh")
+	if err := os.WriteFile(freshStaged, []byte("staged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	foreign := filepath.Join(dir, "mimir.bak")
+	if err := os.WriteFile(foreign, []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	foreignNew := target + ".new"
+	if err := os.WriteFile(foreignNew, []byte("foreign"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupStaleSwapArtifacts(target)
+
+	for _, path := range append(removed, oldStaged) {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale artifact %s survived cleanup", filepath.Base(path))
+		}
+	}
+	for _, path := range []string{freshStaged, foreign, foreignNew} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s was removed: %v", filepath.Base(path), err)
+		}
+	}
+}
+
+func TestCleanupStaleSwapArtifactsRequiresReceiptOwnership(t *testing.T) {
+	isolatedInstallation(t, false)
+	target := filepath.Join(t.TempDir(), "mimir")
+	if err := os.WriteFile(target, []byte("unowned"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := target + ".old"
+	if err := os.WriteFile(old, []byte("preserve"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanupStaleSwapArtifacts(target)
+	if data, err := os.ReadFile(old); err != nil || string(data) != "preserve" {
+		t.Fatalf("unowned artifact changed: %q %v", data, err)
 	}
 }

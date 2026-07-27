@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +17,6 @@ import (
 
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	"github.com/cloudboy-jh/mimir/internal/mcp"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
@@ -34,6 +32,23 @@ func TestExecuteVersion(t *testing.T) {
 	}
 	if got, want := output.String(), "1.2.3 (abc123)\n"; got != want {
 		t.Fatalf("version output %q, want %q", got, want)
+	}
+}
+
+func TestExecuteWarnsAboutMalformedPendingUpdateWithoutBlockingCommands(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	if err := os.MkdirAll(paths.MimirHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.MimirHome, "pending-update.json"), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output, stderr bytes.Buffer
+	if err := ExecuteIO(context.Background(), []string{"--version"}, IO{Out: &output, Err: &stderr}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(output.String()) == "" || !strings.Contains(stderr.String(), "pending update") {
+		t.Fatalf("stdout=%q stderr=%q", output.String(), stderr.String())
 	}
 }
 
@@ -81,9 +96,6 @@ func TestExecuteVersionJSONIncludesInstallState(t *testing.T) {
 
 func TestExecuteInstallJSONEnrollsArtifacts(t *testing.T) {
 	paths := isolatedInstallation(t, false)
-	oldFindOpenCode := findOpenCode
-	findOpenCode = func() (string, error) { return "", errors.New("not installed") }
-	t.Cleanup(func() { findOpenCode = oldFindOpenCode })
 	binDir := t.TempDir()
 	var output bytes.Buffer
 	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", binDir, "--json"}, IO{Out: &output}); err != nil {
@@ -117,13 +129,10 @@ func TestExecuteInstallPreservesConflictingHermesPluginWithoutEnablingIt(t *test
 	if err := os.WriteFile(conflict, []byte("name: user-plugin\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	oldFindOpenCode := findOpenCode
-	findOpenCode = func() (string, error) { return "", errors.New("not installed") }
 	oldRunHermesPluginCommand := runHermesPluginCommand
 	commands := 0
 	runHermesPluginCommand = func(context.Context, string, ...string) error { commands++; return nil }
 	t.Cleanup(func() {
-		findOpenCode = oldFindOpenCode
 		runHermesPluginCommand = oldRunHermesPluginCommand
 	})
 	var output bytes.Buffer
@@ -447,23 +456,6 @@ func TestExecuteSessionEnd(t *testing.T) {
 	}
 }
 
-func TestExecuteToolsJSONPublishesMCPRegistry(t *testing.T) {
-	var output bytes.Buffer
-	if err := ExecuteIO(context.Background(), []string{"tools", "--json"}, IO{Out: &output}); err != nil {
-		t.Fatal(err)
-	}
-	var result struct {
-		SchemaVersion int              `json:"schema_version"`
-		Tools         []map[string]any `json:"tools"`
-	}
-	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.SchemaVersion != 1 || mustJSON(t, result.Tools) != mustJSON(t, mcp.Tools()) {
-		t.Fatalf("tools output %s", output.String())
-	}
-}
-
 func TestExecuteSearchJSONDoesNotIncludeFlagInQuery(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -486,6 +478,22 @@ func TestExecuteSearchJSONDoesNotIncludeFlagInQuery(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `"query": "failed migration"`) {
 		t.Fatalf("search output %s", output.String())
+	}
+}
+
+func TestExecuteRejectsRemovedLocalServerCommands(t *testing.T) {
+	for _, command := range []string{"serve", "tools"} {
+		err := ExecuteIO(context.Background(), []string{command}, IO{Out: &bytes.Buffer{}})
+		if err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("%s error = %v", command, err)
+		}
+	}
+}
+
+func TestExecuteRejectsManualUpdateHelperInvocation(t *testing.T) {
+	err := ExecuteIO(context.Background(), []string{"_apply-update"}, IO{Out: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "non-helper executable") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

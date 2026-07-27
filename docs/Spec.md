@@ -9,7 +9,7 @@ in [`PRODUCT.md`](PRODUCT.md), dashboard visual direction in
 
 Mimir is a self-hosted memory plane for one developer working across coding
 agents, repositories, and machines. It captures model traffic as sessions and
-makes that history available through HTTP, CLI, and MCP.
+makes that history available through HTTP, the CLI, and the private dashboard.
 
 The deployment runs in the developer's Cloudflare account. Mimir has no hosted
 backend, account system, multi-user tenancy, or shared memory service.
@@ -34,8 +34,8 @@ The Worker uses:
 - **Cloudflare Access** for deployed dashboard API authentication
 
 The Go binary provides setup, login, diagnostics, local code indexing, and the
-stdio MCP server. Worker HTTP APIs remain canonical; CLI and MCP are clients of
-those APIs.
+primary command-line memory client. Worker HTTP APIs remain canonical; the CLI
+and harness plugins are clients of those APIs.
 
 Local code memory remains `<repo>/.mimir/index.json`. It is never uploaded to
 D1 or R2.
@@ -44,7 +44,7 @@ D1 or R2.
 flowchart LR
     subgraph LOCAL[Developer machines]
         H[Agent harness]
-        C[Go CLI / optional MCP]
+        C[Go CLI]
         B[Dashboard browser]
         I[(Local code index)]
         H <--> C
@@ -77,7 +77,7 @@ flowchart LR
 
 ### 3.1 Machine Requests
 
-Proxy, canonical API, CLI, and MCP requests use a per-machine token supplied as
+Proxy, canonical API, and CLI requests use a per-machine token supplied as
 either:
 
 ```http
@@ -327,8 +327,8 @@ outcome filters, orders results by recency, and applies an approximate response
 budget. It is not semantic or vector search and does not read complete R2
 objects.
 
-CLI/MCP search federates remote results with local code recall when a usable
-`.mimir/index.json` exists in the MCP process's working repository.
+CLI search federates remote results with local code recall when a usable
+`.mimir/index.json` exists in the current repository.
 
 Supported configuration keys are:
 
@@ -434,60 +434,26 @@ text ranking within an approximate character budget.
 
 The local index is optional and independent from remote session storage.
 
-## 10. MCP
+## 10. Client And Harness Access
 
-`mimir serve` starts a local stdio MCP server using JSON-RPC 2.0 and MCP protocol
-version `2024-11-05`.
+The CLI is the primary agent-facing memory client. It delegates search,
+session inspection, outcome updates, explicit ending, configuration, and
+diagnostics to the canonical Worker HTTP API. `mimir session status` performs a
+bounded settle/poll while capture is pending and returns the authoritative
+receipt without upgrading a still-pending final read optimistically.
 
-It accepts newline-delimited JSON and legacy `Content-Length`-framed input. It
-emits newline-delimited JSON and does not respond to notifications.
-
-Supported MCP methods are:
-
-- `initialize`
-- `ping`
-- `tools/list`
-- `tools/call`
-
-Malformed or structurally invalid `tools/call` parameters return JSON-RPC
-`-32602` (`Invalid params`). Once a valid tool call is dispatched, tool and
-upstream execution failures are successful JSON-RPC responses containing an MCP
-`CallToolResult` with `isError: true`; framing, parsing, unsupported-method, and
-other transport or protocol failures remain JSON-RPC errors. The legacy
-`-32000` tool-failure behavior is not supported.
-
-Every request must be a JSON-RPC 2.0 request object with a string method,
-structured parameters when present, and a string or numeric ID when present.
-Structurally invalid requests return `-32600` and do not terminate the input
-stream.
-
-Tools:
-
-| Tool | Arguments | Worker operation |
-| --- | --- | --- |
-| `whoami` | none | `GET /whoami` |
-| `sessions_list` | none | `GET /sessions` |
-| `sessions_get` | `id` | `GET /sessions/:id` |
-| `search` | `query` | Remote search plus optional local recall |
-| `session_status` | `id` | Bounded verification of `GET /sessions/:id/status` with a compact receipt and an optional Access-backed link |
-| `session_end` | `id`, optional `outcome`, `reason`, and `evidence` | Idempotent `POST /sessions/:id/end` followed by a verified capture receipt |
-| `session_set_outcome` | `id`, `outcome`, optional `reason` and `evidence` | `POST /sessions/:id/outcome` |
-| `mark` | `id`, `outcome` | Deprecated legacy alias for `POST /sessions/:id/mark` |
-| `config_get` | none | `GET /config` |
-| `config_set` | `values` | `PUT /config` |
-
-`session_status` performs an immediate read followed by a bounded settle/poll
-while capture is pending or the latest exchange has not appeared yet. It
-returns the compact receipt as text for harness presentation. A still-pending
-final read remains pending; the tool never upgrades it optimistically. MCP does
-not expose complete log retrieval or local indexing as standalone tools.
+OpenCode and Hermes plugins are capture and lifecycle adapters, not alternate
+memory servers. They report turns, heartbeats, ends, and direct exchanges over
+HTTP. Future harness-native search or control access must call the canonical
+Worker API through the harness's supported extension surface; Mimir does not
+spawn a local protocol server.
 
 Ending a session sets it inactive and records the explicit end timestamp for
 the current active generation. It does not alter capture state. A genuinely
 later exchange carrying the same exact session header may reactivate it and
 begin another generation, while repeated end calls remain idempotent.
 
-During migration, the deprecated API and MCP aliases accept `promoted` for
+During migration, deprecated API aliases accept `promoted` for
 `landed` and `unknown` for `unresolved`. Canonical APIs, projections, filters,
 and dashboard copy emit canonical values.
 
@@ -520,9 +486,9 @@ and dashboard copy emit canonical values.
 discovering the deployment, registering a new machine token, and returning the
 same connection manifest. Managed installation and update may touch exact
 opted-in plugin and skill files recorded in `install-receipt.json`; they do not
-modify general OpenCode JSON/JSONC, providers, credentials, commands, or MCP
-configuration. OpenCode integration otherwise uses the harness-neutral
-connection manifest and OpenCode's supported configuration flow.
+modify general OpenCode JSON/JSONC, providers, credentials, or commands.
+OpenCode integration uses the managed plugin and OpenCode's supported plugin
+loading flow.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
 Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in
@@ -553,6 +519,18 @@ detached standard-user cleanup process that deletes that exact path after the
 uninstall process exits. A launch failure preserves the renamed binary and its
 receipt ownership and makes the uninstall result partial.
 
+Updates on Windows use the same deference when the receipt-owned executable is
+locked by running Mimir processes or an antivirus filter: the updater retries
+the rename, and on a persistent lock stages the verified binary next to the
+target, records `$MIMIR_HOME/pending-update.json`, and launches a detached
+standard-user helper that retries the receipt/path/hash-validated swap once the
+executable lock clears. Any later CLI start is a second finalization path, and
+the report status is `scheduled` rather than a failure. `mimir update --force`
+stops sibling processes using the exact managed executable and swaps
+immediately. Swap leftovers (`.old`, rollback files, orphaned staged temps) are
+removed once no process holds them; foreign junk next to the executable is only
+reported by doctor, never deleted.
+
 `mimir deploy` is the only supported path for shipping Worker or dashboard
 changes after setup. It materializes the packaged Worker, builds the
 dashboard, writes the discovered D1 database ID into the materialized config,
@@ -560,16 +538,16 @@ and runs `wrangler deploy`. The checked-in `wrangler.jsonc` intentionally keeps
 a placeholder database ID; never deploy from a source checkout.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
-path and command, an absolute MCP command, and optional session metadata header names.
-For harnesses without a bundled integration, the setup skill or user applies that manifest using
-the harness's own secure configuration system.
+path and command, and optional session metadata header names. For harnesses
+without a bundled integration, the setup skill or user applies that manifest
+using the harness's own secure configuration system.
 
 Cloudflare Access protects the dashboard with one self-hosted application
 covering exactly `/dashboard` and `/dashboard/*`. Access paths are exact
 matches, so both destinations are required; a `/dashboard`-only application
 authenticates the page but not its API fetches, and a bare-hostname
-application blocks the machine API (`/v1`, `/sessions`, ...) that the proxy,
-CLI, and MCP use. Machine routes stay outside Access and are authenticated by
+application blocks the machine API (`/v1`, `/sessions`, ...) that the proxy and
+CLI use. Machine routes stay outside Access and are authenticated by
 the Worker with bearer tokens. Setup prompts for an optional Cloudflare API
 token and automates the application when provided; `mimir access` runs the
 same automation later (correcting wrong destinations in place), or applies a
@@ -611,5 +589,5 @@ developer's Cloudflare account.
 ## 15. Known Incomplete Work
 
 The implementation priorities are tracked in [`next-steps.md`](next-steps.md).
-The largest current gaps are release operations, broader MCP conformance
-testing, and capture/search lifecycle hardening.
+The largest current gaps are release operations and capture/search lifecycle
+hardening.

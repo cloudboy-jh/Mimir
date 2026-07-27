@@ -43,8 +43,7 @@ A session starts from the first activity carrying its session ID:
 3. The first capture-eligible proxied request carrying `x-mimir-session` is
    successfully saved and reported to the session object.
 
-Installing Mimir, launching an idle harness, or starting `mimir serve` does not
-create a session.
+Installing Mimir or launching an idle harness does not create a session.
 
 ## Finalizing
 
@@ -56,8 +55,8 @@ A session finalizes through any of three triggers:
 2. **Silence timer.** Every accepted non-duplicate event re-arms a server-side
    alarm. About ten minutes without an event finalizes sessions left by a
    crash, killed terminal, laptop sleep, or network loss.
-3. **Explicit request.** MCP `session_end` or CLI
-   `mimir session end <id>` finalizes the active generation.
+3. **Explicit request.** CLI `mimir session end <id>` finalizes the active
+   generation.
 
 All three write or rewrite `sessions/<id>/transcript.json` in R2, update the D1
 lifecycle row, broadcast the final state, and let the Durable Object sleep.
@@ -102,7 +101,6 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 | Hermes plugin | Report direct-provider turns and lifecycle events; suppress duplicate turns for known proxied traffic |
 | Session Durable Object | Coordinate liveness, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
 | CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |
-| MCP | Optional adapter over the same memory operations |
 | Dashboard | Access-protected session and request views backed by Worker APIs |
 
 Plugin events contain summaries and excerpts, not full transport archives.
@@ -117,6 +115,5 @@ Transport success is not proof that an exchange was saved. Use:
 mimir session status <id>
 ```
 
-or MCP `session_status`. The authoritative receipt distinguishes saved,
-pending, partial, failed, and uncaptured sessions. Capture state and work
-outcome remain independent.
+The authoritative receipt distinguishes saved, pending, partial, failed, and
+uncaptured sessions. Capture state and work outcome remain independent.

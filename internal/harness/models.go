@@ -5,7 +5,6 @@ type ConnectionManifest struct {
 	AnthropicBaseURL  string   `json:"anthropic_base_url"`
 	CredentialFile    string   `json:"credential_file"`
 	CredentialCommand []string `json:"credential_command"`
-	MCPCommand        []string `json:"mcp_command"`
 	OptionalHeaders   []string `json:"optional_headers"`
 }
 

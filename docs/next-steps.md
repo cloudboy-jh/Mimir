@@ -6,16 +6,6 @@ specification rather than an expanding completion log.
 
 ## Active Implementation Work
 
-### MCP conformance
-
-- Validate the JSON-RPC version, request IDs, method parameters, and tool
-  arguments.
-- Return tool execution failures as MCP tool results with `isError: true` where
-  required by the protocol.
-- Add compatibility tests using current opencode and at least one additional
-  MCP client while retaining newline-delimited and legacy `Content-Length`
-  input coverage.
-
 ### Lifecycle configuration
 
 - Remove `session.abandon_days` from the public configuration contract or
@@ -86,7 +76,7 @@ the Hermes plugin. Remaining build order:
 - Windows setup-test portability and installed-version reporting.
 - Human-readable Worker logs for successful exchange capture.
 - Automatic refresh for live Sessions, Requests, and Overview dashboard data.
-- Explicit idempotent session ending through the machine API, CLI, MCP, and
+- Explicit idempotent session ending through the machine API, CLI, and
   `/mimir-end-session <session-id>`, including safe handling of late capture
   finalization and concurrent retries.
 - Release CI now verifies migrations, the dashboard production build, the

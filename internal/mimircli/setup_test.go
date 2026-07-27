@@ -237,8 +237,12 @@ func TestConnectionManifestContainsNoCredential(t *testing.T) {
 	if manifest.CredentialFile != filepath.Join(home, "token") {
 		t.Fatalf("credential file %q", manifest.CredentialFile)
 	}
-	if len(manifest.MCPCommand) != 2 || !filepath.IsAbs(manifest.MCPCommand[0]) || manifest.MCPCommand[1] != "serve" {
-		t.Fatalf("MCP command %#v", manifest.MCPCommand)
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(bytes.ToLower(data), []byte("mcp")) {
+		t.Fatalf("connection manifest retained removed local-server fields: %s", data)
 	}
 }
 

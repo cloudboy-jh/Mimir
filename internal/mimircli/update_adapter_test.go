@@ -16,7 +16,7 @@ func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	called := false
-	runLifecycleUpdate = func(_ context.Context, check bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(_ context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
 		called = true
 		if !check {
 			t.Fatal("--check was not forwarded to the lifecycle service")
@@ -47,7 +47,7 @@ func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
 func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
 		t.Fatal("lifecycle update called for invalid arguments")
 		return lifecyclepkg.UpdateReport{}, nil
 	}
@@ -59,7 +59,7 @@ func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
 		return lifecyclepkg.UpdateReport{
 			Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"},
 			Artifacts: installpkg.ArtifactReport{ReceiptPath: "/receipt.json", Artifacts: []installpkg.ArtifactResult{
@@ -80,6 +80,59 @@ func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 		"current  skills/mimir-use/SKILL.md · /skills/SKILL.md",
 		"Activation required:\n  OpenCode · restart OpenCode to load the updated managed plugin",
 		"Deployment:\n  Worker bundle may be behind this CLI version\n  Run: mimir deploy",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestCmdUpdateForwardsForce(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(_ context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
+		if check || !force {
+			t.Fatalf("check=%v force=%v, want check=false force=true", check, force)
+		}
+		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0", Detail: "stopped Mimir process(es) 12, 34"}}, nil
+	}
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), []string{"--force"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "stopped Mimir process(es) 12, 34") {
+		t.Fatalf("output missing stop detail:\n%s", output.String())
+	}
+}
+
+func TestCmdUpdateRejectsCheckWithForce(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+		t.Fatal("lifecycle update called for --check --force")
+		return lifecyclepkg.UpdateReport{}, nil
+	}
+	if err := cmdUpdate(context.Background(), []string{"--check", "--force"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("--check --force was accepted")
+	}
+}
+
+func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{
+			Binary: installpkg.UpdateBinaryReport{Status: "scheduled", Current: "1.0.0", Latest: "1.1.0", Detail: "blocked by Mimir process(es) 42; the update will apply after they exit"},
+		}, nil
+	}
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"update to mimir 1.1.0 scheduled (current 1.0.0)",
+		"blocked by Mimir process(es) 42; the update will apply after they exit",
+		"Run: mimir update --force to stop running Mimir processes and apply now",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, output.String())

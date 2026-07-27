@@ -120,10 +120,13 @@ class StartupBuildIdentityTest(unittest.TestCase):
         })
 
     def test_missing_receipt_reports_loaded_source_hash(self):
-        with tempfile.NamedTemporaryFile() as source:
-            source.write(b"source")
-            source.flush()
-            load = load_harness_load({"MIMIR_HOME": "/missing"}, lambda _path: None, None, source.name)
+        # NamedTemporaryFile keeps an exclusive handle on Windows, so write
+        # and close the source before the plugin reopens it by path.
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = os.path.join(directory, "mimir_plugin.py")
+            with open(source_path, "wb") as source:
+                source.write(b"source")
+            load = load_harness_load({"MIMIR_HOME": "/missing"}, lambda _path: None, None, source_path)
         self.assertEqual(load, {
             "version": 1,
             "harness": "hermes",

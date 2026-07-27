@@ -18,7 +18,7 @@ func connectionSummary(url string) string {
 	}
 	credential, _ := tokenPath()
 	manifest, _ := currentConnectionManifest(url)
-	return fmt.Sprintf("Mimir connected\n\n  Worker      %s\n  Machine     %s\n  Credential  %s\n  OpenAI      %s\n  Anthropic   %s\n  MCP         mimir serve\n  Memory      enabled\n  Status      ready for harness connection", strings.TrimRight(url, "/"), machine, credential, manifest.OpenAIBaseURL, manifest.AnthropicBaseURL)
+	return fmt.Sprintf("Mimir connected\n\n  Worker      %s\n  Machine     %s\n  Credential  %s\n  OpenAI      %s\n  Anthropic   %s\n  Memory      enabled\n  Status      ready for harness connection", strings.TrimRight(url, "/"), machine, credential, manifest.OpenAIBaseURL, manifest.AnthropicBaseURL)
 }
 
 func currentConnectionManifest(url string) (harness.ConnectionManifest, error) {

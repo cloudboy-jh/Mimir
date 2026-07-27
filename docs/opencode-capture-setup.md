@@ -40,8 +40,8 @@ the session Durable Object (see [`session-lifecycle.md`](session-lifecycle.md)):
   session create/update. This drives the dashboard liveness projection.
 - **End** — on session deletion when OpenCode exposes that event. If the
   process exits or dies first, the server-side silence timer finalizes the
-  session within ~10 minutes. Explicit end via `mimir session end <id>` or the
-  MCP `session_end` tool always works.
+  session within ~10 minutes. Explicit end via `mimir session end <id>` always
+  works.
 
 The plugin never throws into OpenCode: delivery failures are swallowed and
 capture never interrupts the harness.
@@ -50,17 +50,17 @@ capture never interrupts the harness.
 
 Mimir does not modify general OpenCode configuration. OpenCode merges
 JSON, JSONC, project, environment, and managed configuration, and rewriting
-one guessed file can override user-owned provider, credential, MCP, plugin,
-and command settings. Installation and an opted-in `mimir update` may create or
+one guessed file can override user-owned provider, credential, plugin, and
+command settings. Installation and an opted-in `mimir update` may create or
 refresh only the exact plugin and skill files recorded in the Mimir receipt;
-they never rewrite OpenCode JSON/JSONC, provider, credential, command, or MCP
+they never rewrite OpenCode JSON/JSONC, provider, credential, or command
 configuration. `mimir doctor` checks state without taking ownership of
 conflicting files.
 
 Existing installations created by Mimir versions through v0.3.0 are not
 automatically removed or restored because Mimir did not retain the prior user
-values. Review any Mimir-created OpenCode files and provider/MCP entries
-before keeping them.
+values. Review any Mimir-created OpenCode files and provider entries before
+keeping them.
 
 `mimir uninstall` removes unchanged receipt-owned plugin and skill files while
 preserving modified, missing, unowned, non-regular, and symlinked paths. It does

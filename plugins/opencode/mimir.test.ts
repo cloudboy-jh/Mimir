@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -310,27 +310,6 @@ describe("createActivityTracker", () => {
     activity.touch("ses-2");
     now += 5 * 60_000;
     expect(activity.active()).toBeNull();
-  });
-});
-
-describe("resolveMCPCommand", () => {
-  it("loads the receipt-owned binary", () => {
-    const readFile = (path: string) => path.replace(/\\/g, "/").endsWith("/.mimir/install-receipt.json")
-      ? JSON.stringify({ cli: { path: "C:\\Tools\\mimir.exe" } })
-      : null;
-    expect(resolveMCPCommand({}, readFile, "/home/u")).toEqual(["C:\\Tools\\mimir.exe", "serve"]);
-    expect(resolveMCPCommand({}, () => "not-json", "/home/u")).toBeNull();
-  });
-});
-
-describe("injectMCP", () => {
-  it("adds Mimir without discarding other MCP servers", () => {
-    const config = { mcp: { existing: { type: "remote", url: "https://example.test" } } };
-    injectMCP(config, ["C:\\Tools\\mimir.exe", "serve"]);
-    expect(config.mcp).toEqual({
-      existing: { type: "remote", url: "https://example.test" },
-      mimir: { type: "local", command: ["C:\\Tools\\mimir.exe", "serve"], enabled: true },
-    });
   });
 });
 

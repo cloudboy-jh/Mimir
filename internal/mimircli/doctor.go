@@ -20,7 +20,6 @@ func doctor(ctx context.Context, args []string, out io.Writer) error {
 	configureInstall()
 	service := doctorpkg.New(apiRequester{})
 	service.Lifecycle = lifecycleService()
-	service.FindOpenCode = func() (string, error) { return findOpenCode() }
 	report := service.Run(ctx)
 	if jsonOutput {
 		data, err := json.Marshal(report.Structured())

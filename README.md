@@ -45,7 +45,7 @@ Mimir keeps two facts separate:
 
 ## How Mimir Works
 
-![Mimir system map. Agent harnesses send proxied model traffic and lifecycle events into a private Cloudflare deployment, where Mimir stores redacted memory for the CLI, optional MCP, and dashboard.](assets/images/mimir-system-map.svg)
+![Mimir system map. Agent harnesses send proxied model traffic and lifecycle events into a private Cloudflare deployment, where Mimir stores redacted memory for the CLI and dashboard.](assets/images/mimir-system-map.svg)
 
 Mimir combines two capture paths around one session boundary:
 
@@ -98,17 +98,17 @@ Record an evidenced result:
 mimir session outcome <id> landed --reason "merged in PR 42"
 ```
 
-The CLI is the primary agent surface. `mimir serve` exposes the same memory
-operations through optional stdio MCP.
+The CLI is the primary agent surface for searching, inspecting, and controlling
+memory. Harness plugins handle capture and lifecycle events over HTTP.
 
 ## Connect An Agent
 
 ### OpenCode
 
 The installer manages the Mimir plugin and skills without rewriting general
-OpenCode JSON or JSONC. The plugin reports turns and lifecycle events and
-injects the receipt-owned optional MCP command at startup. Restart OpenCode
-after installation or update. See [OpenCode capture setup](docs/opencode-capture-setup.md).
+OpenCode JSON or JSONC. The plugin reports turns and lifecycle events over
+HTTP. Restart OpenCode after installation or update. See
+[OpenCode capture setup](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
@@ -122,9 +122,9 @@ after installation or update. See [Hermes capture setup](docs/hermes-capture-set
 mimir connection
 ```
 
-The connection manifest supplies proxy base URLs, credential sources, the
-optional MCP command, and supported metadata-header names. CLI and MCP inspect
-and control memory; they do not capture unrelated model traffic.
+The connection manifest supplies proxy base URLs, credential sources, and
+supported metadata-header names. The CLI inspects and controls memory; it does
+not capture unrelated model traffic.
 
 ## Your Account, Your Data
 

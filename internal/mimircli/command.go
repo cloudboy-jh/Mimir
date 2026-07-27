@@ -14,7 +14,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/codeindex"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	"github.com/cloudboy-jh/mimir/internal/mcp"
+	searchpkg "github.com/cloudboy-jh/mimir/internal/search"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
 )
 
@@ -33,6 +33,17 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if ioctx.Err == nil {
 		ioctx.Err = os.Stderr
+	}
+	// Deferred Windows updates are normally completed by their detached
+	// helper. Any later CLI command is a second recovery path if that helper
+	// timed out or was interrupted. Update handles its own marker so it can
+	// report an applied deferred version accurately.
+	if len(args) == 0 || (args[0] != "update" && args[0] != "_apply-update") {
+		configureInstall()
+		if _, err := installpkg.FinalizePendingUpdate(); err != nil {
+			_, _ = fmt.Fprintf(ioctx.Err, "mimir: pending update: %v\n", err)
+		}
+		installpkg.CleanupStaleUpdateArtifacts()
 	}
 	if len(args) == 0 {
 		return usage(ioctx.Out)
@@ -80,18 +91,11 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		}
 		_, err = fmt.Fprintln(ioctx.Out, res.Output)
 		return err
-	case "serve":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: mimir serve")
-		}
-		return serveMCP(ctx, mcpOptions{In: ioctx.In, Out: ioctx.Out})
 	case "whoami":
 		if !onlyJSONFlag(args[1:]) {
 			return fmt.Errorf("usage: mimir whoami [--json]")
 		}
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
-	case "tools":
-		return cmdTools(args[1:], ioctx.Out)
 	case "list":
 		return cmdList(ctx, args[1:], ioctx.Out)
 	case "sessions":
@@ -106,7 +110,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if err != nil {
 			return err
 		}
-		data, err := currentSearchService().Search(ctx, query)
+		data, err := searchpkg.New(apiRequester{}).Search(ctx, query)
 		if err != nil {
 			return err
 		}
@@ -149,6 +153,11 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return writeConnectionManifest(ioctx.Out)
 	case "update":
 		return cmdUpdate(ctx, args[1:], ioctx.Out)
+	case "_apply-update":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir _apply-update")
+		}
+		return applyPendingUpdateHelper()
 	case "doctor":
 		return doctor(ctx, args[1:], ioctx.Out)
 	case "_post-update", "_install-integrations":
@@ -251,7 +260,7 @@ func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 		}
 	}
 	if report.OpenCode.State == "installed" {
-		if _, err := fmt.Fprintln(out, "opencode  configured  Mimir plugin and MCP · restart OpenCode"); err != nil {
+		if _, err := fmt.Fprintln(out, "opencode  configured  Mimir plugin · restart OpenCode"); err != nil {
 			return err
 		}
 	}
@@ -550,13 +559,6 @@ func cmdConfig(ctx context.Context, args []string, out io.Writer) error {
 	return fmt.Errorf("usage: mimir config get [--json] | mimir config set <key> <json-value> [--json]")
 }
 
-func cmdTools(args []string, out io.Writer) error {
-	if !onlyJSONFlag(args) {
-		return fmt.Errorf("usage: mimir tools [--json]")
-	}
-	return json.NewEncoder(out).Encode(map[string]any{"schema_version": 1, "tools": mcp.Tools()})
-}
-
 func onlyJSONFlag(args []string) bool {
 	return len(args) == 0 || (len(args) == 1 && args[0] == "--json")
 }
@@ -615,10 +617,9 @@ Usage:
   mimir session status <id> [--json]
   mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json] [--json]
   mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json] [--json]
-  mimir tools [--json]
   mimir reconcile
   mimir doctor [--json]
-  mimir update [--check] [--json]
+  mimir update [--check] [--force] [--json]
   mimir version [--json]
 
 Run "mimir help advanced" for diagnostic commands.`)
@@ -647,10 +648,8 @@ Usage:
   mimir outcome git <session>
   mimir config get [--json]
   mimir config set <key> <json-value> [--json]
-  mimir tools [--json]
   mimir index [--full]
-  mimir recall <query> [--budget 4000] [--json]
-  mimir serve`)
+  mimir recall <query> [--budget 4000] [--json]`)
 	return err
 }
 
