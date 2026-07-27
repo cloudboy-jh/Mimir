@@ -79,6 +79,9 @@ func (s Service) Enable(ctx context.Context, home string) error {
 	if err := s.RunPluginCommand(ctx, home, "enable", "mimir"); err != nil {
 		return fmt.Errorf("enabling Hermes Mimir plugin: %w", err)
 	}
+	if err := cleanupLegacyMimir(home); err != nil {
+		return fmt.Errorf("cleaning legacy Hermes Mimir integration: %w", err)
+	}
 	return nil
 }
 

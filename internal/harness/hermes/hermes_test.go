@@ -75,6 +75,146 @@ func TestEnableUsesHermesCLI(t *testing.T) {
 	}
 }
 
+func TestEnableRemovesLegacyMCPConfigAfterCLI(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "config.yaml")
+	input := "before: true\r\nmcp_servers:\r\n  mimir:\r\n    command: mimir.exe\r\n    args:\r\n      - serve\r\n  keep:\r\n    command: keep.exe\r\nafter: true\r\n"
+	if err := os.WriteFile(path, []byte(input), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	service := New()
+	service.RunPluginCommand = func(_ context.Context, _ string, _ ...string) error {
+		if got := string(mustReadFile(t, path)); got != input {
+			t.Fatalf("legacy config was removed before Hermes CLI succeeded: %q", got)
+		}
+		return nil
+	}
+	if err := service.Enable(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	got := string(mustReadFile(t, path))
+	want := "before: true\r\nmcp_servers:\r\n  keep:\r\n    command: keep.exe\r\nafter: true\r\n"
+	if got != want {
+		t.Fatalf("config = %q, want %q", got, want)
+	}
+}
+
+func TestEnablePreservesLegacyConfigWhenCLIEnableFails(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "config.yaml")
+	input := []byte("mcp_servers:\n  mimir:\n    command: mimir\n    args:\n      - serve\n")
+	if err := os.WriteFile(path, input, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := New()
+	service.RunPluginCommand = func(context.Context, string, ...string) error { return fmt.Errorf("failed") }
+	if err := service.Enable(context.Background(), home); err == nil {
+		t.Fatal("expected enable failure")
+	}
+	if got := mustReadFile(t, path); !bytes.Equal(got, input) {
+		t.Fatalf("legacy config changed after failed enable: %q", got)
+	}
+}
+
+func TestRemoveLegacyMCPBlockPreservesInlineSiblingAndComments(t *testing.T) {
+	input := []byte("mcp_servers:\n  mimir:\n    command: mimir\n    args:\n      - serve\n  # keep this comment\n  keep: {command: keep}\nafter: true\n")
+	want := "mcp_servers:\n  # keep this comment\n  keep: {command: keep}\nafter: true\n"
+	got, changed := removeLegacyMCPBlock(input)
+	if !changed || string(got) != want {
+		t.Fatalf("changed=%v config=%q, want %q", changed, got, want)
+	}
+}
+
+func TestRemoveLegacyMCPBlockRemovesEmptyParent(t *testing.T) {
+	input := []byte("before: true\nmcp_servers:\n  mimir:\n    command: mimir\n    args:\n      - serve\nafter: true\n")
+	got, changed := removeLegacyMCPBlock(input)
+	if !changed || string(got) != "before: true\nafter: true\n" {
+		t.Fatalf("changed=%v config=%q", changed, got)
+	}
+}
+
+func TestRemoveLegacyMCPBlockAcceptsInlineServeArgs(t *testing.T) {
+	input := []byte("mcp_servers:\n  mimir:\n    command: mimir\n    args: [\"serve\"]\nafter: true\n")
+	got, changed := removeLegacyMCPBlock(input)
+	if !changed || string(got) != "after: true\n" {
+		t.Fatalf("changed=%v config=%q", changed, got)
+	}
+}
+
+func TestRemoveLegacyMCPBlockPreservesAmbiguousConfig(t *testing.T) {
+	for name, input := range map[string]string{
+		"absent":     "other: true\n",
+		"duplicate":  "mcp_servers:\n  mimir: {}\nmcp_servers:\n  keep: {}\n",
+		"flow":       "mcp_servers: {mimir: {command: mimir}}\n",
+		"modified":   "mcp_servers:\n  mimir:\n    command: custom-mimir.exe\n    args:\n      - serve\n",
+		"extra args": "mcp_servers:\n  mimir:\n    command: mimir.exe\n    args:\n      - serve\n      - --custom\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, changed := removeLegacyMCPBlock([]byte(input))
+			if changed || string(got) != input {
+				t.Fatalf("changed=%v config=%q", changed, got)
+			}
+		})
+	}
+}
+
+func TestRemoveLegacyMCPBlockPreservesFollowingTopLevelComment(t *testing.T) {
+	input := []byte("mcp_servers:\n  mimir:\n    command: mimir\n    args:\n      - serve\n# explanation for next setting\nnext: true\n")
+	want := "# explanation for next setting\nnext: true\n"
+	got, changed := removeLegacyMCPBlock(input)
+	if !changed || string(got) != want {
+		t.Fatalf("changed=%v config=%q, want %q", changed, got, want)
+	}
+}
+
+func TestCleanupLegacySkillRequiresExactKnownTree(t *testing.T) {
+	for name, extra := range map[string]bool{"known": false, "extra": true} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			root := filepath.Join(home, "skills", "mimir")
+			if err := os.MkdirAll(filepath.Join(root, "references"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			skill := []byte("legacy skill")
+			formats := []byte("legacy formats")
+			oldSkill := legacySkillHashes["SKILL.md"]
+			oldFormats := legacySkillHashes["references/formats.md"]
+			legacySkillHashes["SKILL.md"] = map[string]bool{hashTestBytes(skill): true}
+			legacySkillHashes["references/formats.md"] = map[string]bool{hashTestBytes(formats): true}
+			t.Cleanup(func() {
+				legacySkillHashes["SKILL.md"] = oldSkill
+				legacySkillHashes["references/formats.md"] = oldFormats
+			})
+			if err := os.WriteFile(filepath.Join(root, "SKILL.md"), skill, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "references", "formats.md"), formats, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if extra {
+				if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("keep"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := cleanupLegacySkill(root); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Stat(root)
+			if extra && err != nil {
+				t.Fatal("modified legacy skill was removed")
+			}
+			if !extra && !os.IsNotExist(err) {
+				t.Fatal("known legacy skill remains")
+			}
+		})
+	}
+}
+
+func hashTestBytes(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
 func TestAuthorizeReportsStaleWorker(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

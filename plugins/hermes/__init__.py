@@ -36,6 +36,7 @@ HEARTBEAT_SECONDS = 60
 ACTIVITY_WINDOW_SECONDS = 5 * 60
 MAX_REPORTED_IDS = 1000
 HARNESS_LOAD_ATTEMPTS = 4
+USER_AGENT = "mimir-hermes/1.0"
 
 _UTC = timezone.utc
 
@@ -125,6 +126,7 @@ def post_harness_load(connection, load):
             headers={
                 "authorization": f"Bearer {connection['token']}",
                 "content-type": "application/json",
+                "user-agent": USER_AGENT,
             },
             method="POST",
         )
@@ -261,6 +263,7 @@ class _Reporter:
             headers={
                 "authorization": f"Bearer {self._connection['token']}",
                 "content-type": "application/json",
+                "user-agent": USER_AGENT,
             },
             method="POST",
         )

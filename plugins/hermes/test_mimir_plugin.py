@@ -108,6 +108,7 @@ class StartupBuildIdentityTest(unittest.TestCase):
         self.assertEqual(request.full_url, "https://mimir.example/integrations/harness-loads")
         self.assertEqual(request.method, "POST")
         self.assertEqual(request.get_header("Authorization"), "Bearer tok-secret")
+        self.assertEqual(request.get_header("User-agent"), "mimir-hermes/1.0")
         self.assertEqual(timeout, 10)
         self.assertEqual(json.loads(request.data), {
             "version": 1,
@@ -155,6 +156,28 @@ class StartupBuildIdentityTest(unittest.TestCase):
              patch("threading.Event.wait", return_value=True):
             report_harness_load(connection, load)
         self.assertEqual(post.call_count, 2)
+
+    def test_session_event_uses_explicit_user_agent(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        captured = []
+        reporter = mimir_plugin._Reporter(
+            {"url": "https://mimir.example", "token": "tok-secret"},
+            "repo",
+        )
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=lambda request, timeout: captured.append((request, timeout)) or Response(),
+        ):
+            self.assertTrue(reporter.post({"session_id": "session-1", "kind": "heartbeat"}))
+        request, timeout = captured[0]
+        self.assertEqual(request.get_header("User-agent"), "mimir-hermes/1.0")
+        self.assertEqual(timeout, 10)
 
 
 class RepoNameTest(unittest.TestCase):
