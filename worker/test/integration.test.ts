@@ -7,6 +7,7 @@ import { finalizeAcceptedExchange } from "../src/capture";
 const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE TABLE hermes_credentials (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, authorized_by TEXT);
+CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (harness IN ('opencode', 'hermes')), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
 CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
  CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT);
@@ -42,7 +43,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM hermes_credentials; DELETE FROM access_tokens;");
+  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens;");
   await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'test', '2026-01-01T00:00:00Z')").bind(await tokenHash("machine-token")).run();
   const objects = await env.LOGS.list();
   await Promise.all(objects.objects.map((object) => env.LOGS.delete(object.key)));
@@ -73,6 +74,80 @@ describe("Worker integration", () => {
     expect(upstreamHeaders.get("authorization")).toBe(`Bearer ${hermesKey}`);
     expect((await request("/whoami", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
     expect((await request("/v1/models", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
+  });
+
+  it("records and lists the authenticated machine token's loaded harness builds", async () => {
+    const firstBuild = "a".repeat(64);
+    const replacementBuild = "b".repeat(64);
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const firstPayload = { version: 1, harness: "opencode", source_sha256: firstBuild, bundle_version: "v1", cli_version: "1.2.3", cli_commit: "abc123", installation_id: "install-1" };
+    const first = await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify(firstPayload) });
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as { load: { client_loaded_at: string; reported_at: string } };
+    expect(firstBody).toMatchObject({ load: { harness: "opencode", artifact_sha256: firstBuild, bundle_version: "v1", cli_version: "1.2.3", cli_commit: "abc123", installation_id: "install-1", token_label: "test", client_loaded_at: expect.any(String), reported_at: expect.any(String) } });
+
+    const repeated = await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify(firstPayload) });
+    expect(repeated.status).toBe(200);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM harness_loads").first()).toEqual({ count: 1 });
+    const repeatedLoad = (await repeated.json() as { load: { client_loaded_at: string; reported_at: string } }).load;
+    expect(repeatedLoad.client_loaded_at).toBe(firstBody.load.client_loaded_at);
+    expect(repeatedLoad.reported_at >= firstBody.load.reported_at).toBe(true);
+
+    await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify({ version: 1, harness: "opencode", source_sha256: replacementBuild, installation_id: "install-1" }) });
+    await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify({ version: 1, harness: "hermes", source_sha256: firstBuild }) });
+    const listed = await request("/integrations/harness-loads", { headers: { authorization: "Bearer machine-token" } });
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({ loads: expect.arrayContaining([
+      expect.objectContaining({ harness: "hermes", artifact_sha256: firstBuild, installation_id: "", client_loaded_at: expect.any(String), reported_at: expect.any(String), token_label: "test" }),
+      expect.objectContaining({ harness: "opencode", artifact_sha256: replacementBuild, installation_id: "install-1", client_loaded_at: expect.any(String), reported_at: expect.any(String), token_label: "test" }),
+    ]) });
+  });
+
+  it("requires machine authentication for harness loads", async () => {
+    expect((await request("/integrations/harness-loads")).status).toBe(401);
+    expect((await request("/integrations/harness-loads", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(64) }),
+    })).status).toBe(401);
+  });
+
+  it("isolates harness loads by machine token", async () => {
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'other', '2026-01-01T00:00:00Z')").bind(await tokenHash("other-token")).run();
+    const post = (token: string, harness: string, buildID: string) => request("/integrations/harness-loads", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, harness, source_sha256: buildID }),
+    });
+    await post("machine-token", "opencode", "a".repeat(64));
+    await post("other-token", "hermes", "b".repeat(64));
+
+    const own = await (await request("/integrations/harness-loads", { headers: { authorization: "Bearer machine-token" } })).json() as { loads: Array<{ harness: string; token_label: string }> };
+    const other = await (await request("/integrations/harness-loads", { headers: { authorization: "Bearer other-token" } })).json() as { loads: Array<{ harness: string; token_label: string }> };
+    expect(own.loads).toEqual([expect.objectContaining({ harness: "opencode", token_label: "test" })]);
+    expect(other.loads).toEqual([expect.objectContaining({ harness: "hermes", token_label: "other" })]);
+  });
+
+  it.each([
+    ["invalid JSON", "{"],
+    ["a non-object body", "null"],
+    ["a missing version", JSON.stringify({ harness: "opencode", source_sha256: "a".repeat(64) })],
+    ["an unsupported version", JSON.stringify({ version: 2, harness: "opencode", source_sha256: "a".repeat(64) })],
+    ["an unknown harness", JSON.stringify({ version: 1, harness: "claude", source_sha256: "a".repeat(64) })],
+    ["a missing source hash", JSON.stringify({ version: 1, harness: "opencode" })],
+    ["an uppercase source hash", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "A".repeat(64) })],
+    ["a short source hash", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(63) })],
+    ["a non-string source hash", JSON.stringify({ version: 1, harness: "opencode", source_sha256: 123 })],
+    ["an empty optional identity", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(64), installation_id: "" })],
+    ["unknown fields", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(64), loaded_at: "2026-01-01T00:00:00Z" })],
+  ])("rejects %s for harness loads", async (_case, body) => {
+    const response = await request("/integrations/harness-loads", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body,
+    });
+    expect(response.status).toBe(400);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM harness_loads").first()).toEqual({ count: 0 });
   });
 
   it.each([
@@ -564,7 +639,7 @@ describe("Session object", () => {
 		await expect(response.json()).resolves.toMatchObject({
 			service: "mimir",
 			api_version: 1,
-			capabilities: expect.arrayContaining(["hermes_authorization", "session_events", "session_lifecycle"]),
+			capabilities: expect.arrayContaining(["harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle"]),
 		});
 	});
 

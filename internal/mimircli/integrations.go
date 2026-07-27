@@ -29,8 +29,14 @@ func refreshConnectedLifecycleIntegrations(ctx context.Context, operation string
 
 func integrationSummary(report harness.IntegrationReport) string {
 	var lines []string
-	if report.Hermes.State == "installed" {
-		lines = append(lines, "Hermes capture installed · restart Hermes", "Hermes scope: OpenRouter proxy plus direct providers")
+	if report.OpenCode.RestartRequired {
+		lines = append(lines, "OpenCode: restart required")
+	}
+	if report.Hermes.RestartRequired {
+		lines = append(lines, "Hermes: restart required")
+	}
+	if report.Hermes.State == "installed" && report.Hermes.Scope == "all-providers" {
+		lines = append(lines, "Hermes scope: OpenRouter proxy plus direct providers")
 	}
 	return strings.Join(lines, "\n")
 }

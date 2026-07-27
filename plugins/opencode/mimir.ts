@@ -17,15 +17,27 @@
 // server-side silence timer (~10 minutes without a heartbeat).
 
 import type { Plugin } from "@opencode-ai/plugin";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const HEARTBEAT_MS = 60_000;
 const ACTIVITY_WINDOW_MS = 5 * 60_000;
 
 type Connection = { url: string; token: string };
 type OpenCodeConfig = { mcp?: Record<string, unknown> };
+
+type HarnessLoad = {
+  version: 1;
+  harness: "opencode";
+  source_sha256: string;
+  bundle_version?: string;
+  cli_version?: string;
+  cli_commit?: string;
+  installation_id?: string;
+};
 
 type SessionEvent = {
   version: 1;
@@ -81,6 +93,66 @@ function loadConnection(): Connection | null {
       }
     })(),
   );
+}
+
+function buildHarnessLoad(source: string, receiptText: string | null): HarnessLoad {
+  const load: HarnessLoad = {
+    version: 1,
+    harness: "opencode",
+    source_sha256: createHash("sha256").update(source).digest("hex"),
+  };
+  if (!receiptText) return load;
+  try {
+    const receipt = JSON.parse(receiptText) as Record<string, unknown>;
+    const cli = typeof receipt.cli === "object" && receipt.cli ? receipt.cli as Record<string, unknown> : {};
+    if (typeof receipt.bundle_version === "string" && receipt.bundle_version) load.bundle_version = receipt.bundle_version;
+    if (typeof cli.version === "string" && cli.version) load.cli_version = cli.version;
+    if (typeof cli.commit === "string" && cli.commit) load.cli_commit = cli.commit;
+    if (typeof receipt.installation_id === "string" && receipt.installation_id) load.installation_id = receipt.installation_id;
+  } catch {
+    // A missing or malformed receipt must not suppress source identity.
+  }
+  return load;
+}
+
+function loadHarnessLoad(
+  env: Record<string, string | undefined>,
+  readFile: (path: string) => string | null,
+  home: string | undefined,
+  sourcePath = fileURLToPath(import.meta.url),
+): HarnessLoad | null {
+  const source = readFile(sourcePath);
+  if (source === null) return null;
+  const dir = env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
+  const receipt = dir ? readFile(join(dir, "install-receipt.json")) : null;
+  return buildHarnessLoad(source, receipt);
+}
+
+async function postHarnessLoad(conn: Connection, load: HarnessLoad): Promise<boolean> {
+  try {
+    const response = await fetch(`${conn.url}/integrations/harness-loads`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${conn.token}`, "content-type": "application/json" },
+      body: JSON.stringify(load),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function reportHarnessLoad(
+  conn: Connection,
+  load: HarnessLoad,
+  post: (conn: Connection, load: HarnessLoad) => Promise<boolean> = postHarnessLoad,
+  schedule: (callback: () => void, delay: number) => unknown = setTimeout,
+): void {
+  const attempt = async (number: number) => {
+    if (await post(conn, load) || number >= 4) return;
+    const timer = schedule(() => { void attempt(number + 1); }, 250 * (2 ** (number - 1)));
+    (timer as { unref?: () => void }).unref?.();
+  };
+  void attempt(1);
 }
 
 // buildTurnEvent converts a completed OpenCode assistant message into a Mimir
@@ -206,6 +278,12 @@ async function postEvent(conn: Connection, event: SessionEvent): Promise<boolean
 const server: Plugin = async ({ directory, worktree }) => {
   const conn = loadConnection();
   if (!conn) return {};
+  const readLocalFile = (path: string) => {
+    try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
+  };
+  const home = (() => { try { return homedir(); } catch { return undefined; } })();
+  const load = loadHarnessLoad(process.env, readLocalFile, home);
+  if (load) reportHarnessLoad(conn, load);
   const repo = repoName(worktree ?? directory);
   const delivery = createDeliveryQueue((event) => postEvent(conn, event));
   const activity = createActivityTracker();
@@ -224,9 +302,7 @@ const server: Plugin = async ({ directory, worktree }) => {
       if (repo) output.headers["x-mimir-repo"] = repo;
     },
     config: async (config: OpenCodeConfig) => {
-      const command = resolveMCPCommand(process.env, (path) => {
-        try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
-      }, (() => { try { return homedir(); } catch { return undefined; } })());
+      const command = resolveMCPCommand(process.env, readLocalFile, home);
       if (!command) return;
       injectMCP(config, command);
     },
@@ -265,4 +341,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent };
+export const __testing = { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

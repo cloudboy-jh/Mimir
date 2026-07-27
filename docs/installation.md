@@ -13,6 +13,12 @@ mimir update
 mimir install
 ```
 
+The update receipt distinguishes files installed on disk from plugins loaded by
+running harnesses and the Worker bundle deployed to Cloudflare. When plugin
+bytes change, restart the named harness and run `mimir doctor` to verify the
+active source hash. When the CLI changes, run `mimir deploy` to publish its
+embedded Worker bundle; `mimir update` does not deploy automatically.
+
 `go install github.com/cloudboy-jh/mimir/cmd/mimir@latest` only creates a Go
 binary. It does not create the Mimir receipt or install integrations. A verified
 Mimir binary created that way can be safely adopted by `mimir install` when no

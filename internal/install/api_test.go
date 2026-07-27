@@ -2,8 +2,19 @@ package install
 
 import (
 	"path/filepath"
+	"regexp"
 	"testing"
 )
+
+func TestEmbeddedWorkerIdentity(t *testing.T) {
+	identity, err := EmbeddedWorkerIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Version == "" || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(identity.SHA256) {
+		t.Fatalf("identity = %#v", identity)
+	}
+}
 
 func TestArtifactsReadyOwnsReadinessPolicy(t *testing.T) {
 	root := t.TempDir()

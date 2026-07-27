@@ -22,6 +22,7 @@ are reported by on_session_finalize; if the process dies first, the
 server-side silence timer finalizes the session within ~10 minutes.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,7 @@ from datetime import datetime, timezone
 HEARTBEAT_SECONDS = 60
 ACTIVITY_WINDOW_SECONDS = 5 * 60
 MAX_REPORTED_IDS = 1000
+HARNESS_LOAD_ATTEMPTS = 4
 
 _UTC = timezone.utc
 
@@ -77,6 +79,68 @@ def load_connection():
     except Exception:
         pass
     return resolve_connection(os.environ, _read_file, home)
+
+
+def build_harness_load(source, receipt_text=None):
+    load = {
+        "version": 1,
+        "harness": "hermes",
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+    }
+    if not receipt_text:
+        return load
+    try:
+        receipt = json.loads(receipt_text)
+        if not isinstance(receipt, dict):
+            return load
+        cli = receipt.get("cli") if isinstance(receipt.get("cli"), dict) else {}
+        fields = {
+            "bundle_version": receipt.get("bundle_version"),
+            "cli_version": cli.get("version"),
+            "cli_commit": cli.get("commit"),
+            "installation_id": receipt.get("installation_id"),
+        }
+        load.update({key: value for key, value in fields.items() if isinstance(value, str) and value})
+    except (TypeError, ValueError):
+        pass
+    return load
+
+
+def load_harness_load(env, read_file, home, source_path=__file__):
+    try:
+        with open(source_path, "rb") as handle:
+            source = handle.read()
+    except OSError:
+        return None
+    directory = (env.get("MIMIR_HOME") or "").strip() or (os.path.join(home, ".mimir") if home else None)
+    receipt = read_file(os.path.join(directory, "install-receipt.json")) if directory else None
+    return build_harness_load(source, receipt)
+
+
+def post_harness_load(connection, load):
+    try:
+        request = urllib.request.Request(
+            f"{connection['url']}/integrations/harness-loads",
+            data=json.dumps(load).encode("utf-8"),
+            headers={
+                "authorization": f"Bearer {connection['token']}",
+                "content-type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            status = response.getcode()
+            return isinstance(status, int) and 200 <= status < 300
+    except Exception:
+        return False
+
+
+def report_harness_load(connection, load):
+    for attempt in range(HARNESS_LOAD_ATTEMPTS):
+        if post_harness_load(connection, load):
+            return
+        if attempt + 1 < HARNESS_LOAD_ATTEMPTS:
+            threading.Event().wait(0.25 * (2 ** attempt))
 
 
 def repo_name(directory):
@@ -254,6 +318,14 @@ def register(ctx):
     connection = load_connection()
     if not connection:
         return
+    home = None
+    try:
+        home = os.path.expanduser("~")
+    except Exception:
+        pass
+    load = load_harness_load(os.environ, _read_file, home)
+    if load:
+        threading.Thread(target=report_harness_load, args=(connection, load), daemon=True).start()
     try:
         repo = repo_name(os.getcwd())
     except Exception:
@@ -306,4 +378,8 @@ __testing = {
     "uses_connection_url": _uses_connection_url,
     "liveness_only": liveness_only,
     "turn_uses_proxy": turn_uses_proxy,
+    "build_harness_load": build_harness_load,
+    "load_harness_load": load_harness_load,
+    "post_harness_load": post_harness_load,
+    "report_harness_load": report_harness_load,
 }

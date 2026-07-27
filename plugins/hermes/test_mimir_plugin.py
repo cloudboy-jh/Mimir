@@ -1,5 +1,7 @@
 import os
+import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +18,10 @@ build_simple_event = __testing["build_simple_event"]
 liveness_only = __testing["liveness_only"]
 turn_uses_proxy = __testing["turn_uses_proxy"]
 uses_connection_url = __testing["uses_connection_url"]
+build_harness_load = __testing["build_harness_load"]
+load_harness_load = __testing["load_harness_load"]
+post_harness_load = __testing["post_harness_load"]
+report_harness_load = __testing["report_harness_load"]
 
 
 class ParseMimirConfigTest(unittest.TestCase):
@@ -73,6 +79,79 @@ class BuildEventsTest(unittest.TestCase):
         self.assertEqual(event["reason"], "harness exit")
         heartbeat = build_simple_event("heartbeat", "ses-1", "mimir")
         self.assertNotIn("reason", heartbeat)
+
+
+class StartupBuildIdentityTest(unittest.TestCase):
+    def test_payload_auth_and_path_allowlist_safe_provenance(self):
+        load = build_harness_load(b"loaded plugin source", json.dumps({
+            "bundle_version": "v2.3.4",
+            "installation_id": "install-1",
+            "cli": {"version": "2.3.4", "commit": "abc123", "path": "/secret/mimir", "sha256": "cli-hash"},
+            "source": "/private/checkout",
+            "token": "do-not-send",
+        }))
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def getcode(self):
+                return 204
+
+        captured = []
+        with patch("urllib.request.urlopen", side_effect=lambda request, timeout: captured.append((request, timeout)) or Response()):
+            self.assertTrue(post_harness_load({"url": "https://mimir.example", "token": "tok-secret"}, load))
+        request, timeout = captured[0]
+        self.assertEqual(request.full_url, "https://mimir.example/integrations/harness-loads")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.get_header("Authorization"), "Bearer tok-secret")
+        self.assertEqual(timeout, 10)
+        self.assertEqual(json.loads(request.data), {
+            "version": 1,
+            "harness": "hermes",
+            "source_sha256": "1f276ede474cf6948a22d1f3dc41be29d345f91672da261558f922e1826aed59",
+            "bundle_version": "v2.3.4",
+            "cli_version": "2.3.4",
+            "cli_commit": "abc123",
+            "installation_id": "install-1",
+        })
+
+    def test_missing_receipt_reports_loaded_source_hash(self):
+        with tempfile.NamedTemporaryFile() as source:
+            source.write(b"source")
+            source.flush()
+            load = load_harness_load({"MIMIR_HOME": "/missing"}, lambda _path: None, None, source.name)
+        self.assertEqual(load, {
+            "version": 1,
+            "harness": "hermes",
+            "source_sha256": "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d",
+        })
+
+    def test_network_and_non_2xx_failures_are_contained_and_retried(self):
+        connection = {"url": "https://mimir.example", "token": "tok"}
+        load = build_harness_load(b"source")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def getcode(self):
+                return 503
+
+        with patch("urllib.request.urlopen", return_value=Response()):
+            self.assertFalse(post_harness_load(connection, load))
+        with patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            self.assertFalse(post_harness_load(connection, load))
+        with patch.object(mimir_plugin, "post_harness_load", side_effect=[False, True]) as post, \
+             patch("threading.Event.wait", return_value=True):
+            report_harness_load(connection, load)
+        self.assertEqual(post.call_count, 2)
 
 
 class RepoNameTest(unittest.TestCase):

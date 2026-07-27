@@ -73,6 +73,16 @@ try {
   cpSync(join(root, "migrations", "0008_request_kind.sql"), join(migrations, "0008_request_kind.sql"));
   applyMigrations();
 
+  cpSync(join(root, "migrations", "0009_hermes_credentials.sql"), join(migrations, "0009_hermes_credentials.sql"));
+  cpSync(join(root, "migrations", "0010_harness_loads.sql"), join(migrations, "0010_harness_loads.sql"));
+  applyMigrations();
+  execute(`
+    INSERT INTO hermes_credentials(token_hash, created_at, authorized_by)
+    VALUES ('hermes-hash', '2026-07-15T12:00:00Z', 'migration-test');
+    INSERT INTO harness_loads(token_hash, token_label, harness, artifact_sha256, installation_id, client_loaded_at, reported_at)
+    VALUES ('machine-hash', 'migration-test', 'opencode', '${"a".repeat(64)}', 'install-1', '2026-07-15T12:00:00Z', '2026-07-15T12:00:00Z');
+  `);
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
@@ -92,7 +102,10 @@ try {
       (SELECT saved_at FROM exchanges WHERE id = 'deployment-window-exchange') AS window_saved_at,
       (SELECT schema_version FROM exchanges WHERE id = 'deployment-window-exchange') AS window_schema_version,
       (SELECT request_kind FROM exchanges WHERE id = 'deployment-window-exchange') AS window_request_kind,
-      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('exchange_files', 'exchange_errors')) AS facet_tables
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('exchange_files', 'exchange_errors')) AS facet_tables,
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'hermes_credentials') AS hermes_credentials_table,
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'harness_loads') AS harness_loads_table,
+      (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_artifact_sha256
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -119,6 +132,9 @@ try {
     window_schema_version: 0,
     window_request_kind: "primary",
     facet_tables: 2,
+    hermes_credentials_table: 1,
+    harness_loads_table: 1,
+    harness_artifact_sha256: "a".repeat(64),
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

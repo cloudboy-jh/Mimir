@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent } = __testing;
+const { parseMimirConfig, resolveConnection, resolveMCPCommand, injectMCP, buildTurnEvent, repoName, createActivityTracker, createDeliveryQueue, postEvent, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -16,6 +16,8 @@ describe("chat.headers hook", () => {
     const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
     process.env.MIMIR_URL = "https://mimir.example";
     process.env.MIMIR_TOKEN = "tok";
+    const fetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("{}", { status: 200 });
     try {
       const hooks = await plugin.server({ directory: "C:\\repo\\mimir" } as never);
       const headers = { headers: {} as Record<string, string> };
@@ -25,8 +27,72 @@ describe("chat.headers hook", () => {
       await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "anthropic" } } as never, other);
       expect(other.headers).toEqual({});
     } finally {
+      globalThis.fetch = fetch;
       process.env.MIMIR_URL = original.MIMIR_URL;
       process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+});
+
+describe("startup build identity", () => {
+  it("posts only source identity and safe receipt provenance to the authenticated integration path", async () => {
+    const load = buildHarnessLoad("loaded plugin source", JSON.stringify({
+      bundle_version: "v2.3.4",
+      installation_id: "install-1",
+      cli: { version: "2.3.4", commit: "abc123", path: "/secret/mimir", sha256: "cli-hash" },
+      source: "/private/checkout",
+      token: "do-not-send",
+    }));
+    let request: Request | undefined;
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = async (input, init) => {
+        request = new Request(input, init);
+        return new Response("{}", { status: 204 });
+      };
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok-secret" }, load)).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(request?.url).toBe("https://mimir.example/integrations/harness-loads");
+    expect(request?.method).toBe("POST");
+    expect(request?.headers.get("authorization")).toBe("Bearer tok-secret");
+    expect(await request?.json()).toEqual({
+      version: 1,
+      harness: "opencode",
+      source_sha256: "1f276ede474cf6948a22d1f3dc41be29d345f91672da261558f922e1826aed59",
+      bundle_version: "v2.3.4",
+      cli_version: "2.3.4",
+      cli_commit: "abc123",
+      installation_id: "install-1",
+    });
+  });
+
+  it("reports source identity when the install receipt is missing", () => {
+    const files: Record<string, string> = { "/plugin/mimir.ts": "source" };
+    expect(loadHarnessLoad({ MIMIR_HOME: "/mimir" }, (path) => files[path] ?? null, undefined, "/plugin/mimir.ts"))
+      .toEqual({ version: 1, harness: "opencode", source_sha256: "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d" });
+  });
+
+  it("contains network and non-2xx failures and retries asynchronously", async () => {
+    const original = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => new Response("nope", { status: 503 });
+      const load = buildHarnessLoad("source", null);
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok" }, load)).toBe(false);
+      globalThis.fetch = async () => { throw new Error("offline"); };
+      expect(await postHarnessLoad({ url: "https://mimir.example", token: "tok" }, load)).toBe(false);
+
+      let attempts = 0;
+      const scheduled: Array<() => void> = [];
+      reportHarnessLoad({ url: "https://mimir.example", token: "tok" }, load, async () => ++attempts >= 2, (callback) => scheduled.push(callback));
+      await Bun.sleep(0);
+      expect(attempts).toBe(1);
+      scheduled.shift()?.();
+      await Bun.sleep(0);
+      expect(attempts).toBe(2);
+    } finally {
+      globalThis.fetch = original;
     }
   });
 });
