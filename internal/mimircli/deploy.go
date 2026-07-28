@@ -38,15 +38,21 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName = opts.WorkerDir, opts.WorkerName, opts.DatabaseName
 	domainOpts.Noninteractive = opts.JSON
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
 	if !opts.JSON {
-		opts.Progress = startProgress(ioctx.Out, "Mimir deploy", []string{"Preparing Worker", "Authenticating Cloudflare", "Configuring database", "Applying schema", "Deploying Worker"})
+		opts.Progress = startOperationProgress(operationCtx, ioctx, "Mimir deploy", []string{"Preparing Worker", "Authenticating Cloudflare", "Configuring database", "Applying schema", "Deploying Worker"}, cancelOperation)
 		defer opts.Progress.Stop()
 	}
 	fallback := ""
 	if pointer, err := loadPointer(); err == nil {
 		fallback = pointer.URL
 	}
-	domainResult, err := deployment.NewService(httpClient).Deploy(ctx, domainOpts, deployment.Hooks{
+	service := deployment.NewService(httpClient)
+	if opts.Progress != nil {
+		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
+	}
+	domainResult, err := service.Deploy(operationCtx, domainOpts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {

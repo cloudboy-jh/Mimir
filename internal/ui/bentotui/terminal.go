@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,11 @@ const (
 	KeyInterrupt
 )
 
+const (
+	terminalByteUp   byte = 0x11
+	terminalByteDown byte = 0x12
+)
+
 type Key struct {
 	Kind KeyKind
 	Rune rune
@@ -33,6 +39,10 @@ type Screen struct {
 type TerminalApp interface {
 	View(Screen) string
 	Handle(context.Context, Key) (quit bool)
+}
+
+type LiveTerminalApp interface {
+	Updates() <-chan struct{}
 }
 
 // Interactive reports whether both sides of a command are attached to a real
@@ -55,13 +65,27 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 		return err
 	}
 
+	readCtx, cancelRead := context.WithCancel(ctx)
+	var readers sync.WaitGroup
+	defer func() {
+		cancelRead()
+		readers.Wait()
+	}()
 	keys := make(chan Key)
 	errs := make(chan error, 1)
-	go readKeys(in, keys, errs)
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		readKeys(readCtx, in, keys, errs)
+	}()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
 	screen := terminalScreen(out)
+	var updates <-chan struct{}
+	if live, ok := app.(LiveTerminalApp); ok {
+		updates = live.Updates()
+	}
 	if err := draw(out, app.View(screen)); err != nil {
 		return err
 	}
@@ -82,9 +106,14 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 			if err := draw(out, app.View(screen)); err != nil {
 				return err
 			}
+		case <-updates:
+			screen = terminalScreen(out)
+			if err := draw(out, app.View(screen)); err != nil {
+				return err
+			}
 		case <-ticker.C:
 			next := terminalScreen(out)
-			if next != screen {
+			if next != screen || updates != nil {
 				screen = next
 				if err := draw(out, app.View(screen)); err != nil {
 					return err
@@ -95,24 +124,84 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 }
 
 func draw(out io.Writer, view string) error {
-	_, err := io.WriteString(out, "\x1b[H\x1b[2J"+strings.TrimRight(view, "\n")+"\x1b[0m")
+	view = strings.ReplaceAll(strings.TrimRight(view, "\n"), "\n", "\r\n")
+	_, err := io.WriteString(out, "\x1b[H\x1b[2J"+view+"\x1b[0m")
 	return err
 }
 
-func readKeys(in io.Reader, keys chan<- Key, errs chan<- error) {
-	bytes := make(chan byte)
-	go func() {
-		buffer := make([]byte, 1)
-		for {
-			if _, err := io.ReadFull(in, buffer); err != nil {
-				errs <- err
+func readKeys(ctx context.Context, in *os.File, keys chan<- Key, errs chan<- error) {
+	for {
+		value, err := readTerminalByte(ctx, in)
+		if err != nil {
+			select {
+			case errs <- err:
+			case <-ctx.Done():
+			}
+			return
+		}
+		key, ok := terminalKey(ctx, in, value)
+		if !ok {
+			continue
+		}
+		select {
+		case keys <- key:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
+	switch value {
+	case terminalByteUp:
+		return Key{Kind: KeyUp}, true
+	case terminalByteDown:
+		return Key{Kind: KeyDown}, true
+	case 0x03:
+		return Key{Kind: KeyInterrupt}, true
+	case '\r', '\n':
+		return Key{Kind: KeyEnter}, true
+	case 0x7f, 0x08:
+		return Key{Kind: KeyBackspace}, true
+	case 0x1b:
+		sequenceCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer cancel()
+		first, err := readTerminalByte(sequenceCtx, in)
+		if err != nil {
+			return Key{Kind: KeyEscape}, true
+		}
+		second, err := readTerminalByte(sequenceCtx, in)
+		if err != nil || first != '[' {
+			return Key{Kind: KeyEscape}, true
+		}
+		switch second {
+		case 'A':
+			return Key{Kind: KeyUp}, true
+		case 'B':
+			return Key{Kind: KeyDown}, true
+		default:
+			return Key{Kind: KeyEscape}, true
+		}
+	default:
+		if value >= 0x20 {
+			return Key{Kind: KeyRune, Rune: rune(value)}, true
+		}
+	}
+	return Key{}, false
+}
+
+func decodeKeys(ctx context.Context, bytes <-chan byte, keys chan<- Key) {
+	for {
+		var value byte
+		select {
+		case next, ok := <-bytes:
+			if !ok {
 				return
 			}
-			bytes <- buffer[0]
+			value = next
+		case <-ctx.Done():
+			return
 		}
-	}()
-	for {
-		value := <-bytes
 		switch value {
 		case 0x03:
 			keys <- Key{Kind: KeyInterrupt}
@@ -121,7 +210,7 @@ func readKeys(in io.Reader, keys chan<- Key, errs chan<- error) {
 		case 0x7f, 0x08:
 			keys <- Key{Kind: KeyBackspace}
 		case 0x1b:
-			first, second, ok := readEscapeSequence(bytes)
+			first, second, ok := readEscapeSequence(ctx, bytes)
 			if ok && first == '[' {
 				switch second {
 				case 'A':
@@ -142,14 +231,16 @@ func readKeys(in io.Reader, keys chan<- Key, errs chan<- error) {
 	}
 }
 
-func readEscapeSequence(bytes <-chan byte) (byte, byte, bool) {
+func readEscapeSequence(ctx context.Context, bytes <-chan byte) (byte, byte, bool) {
 	select {
 	case first := <-bytes:
 		select {
 		case second := <-bytes:
 			return first, second, true
+		case <-ctx.Done():
 		case <-time.After(20 * time.Millisecond):
 		}
+	case <-ctx.Done():
 	case <-time.After(20 * time.Millisecond):
 	}
 	return 0, 0, false

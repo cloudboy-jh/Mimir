@@ -56,6 +56,7 @@ type UpdateOptions struct {
 	// Force stops sibling Mimir processes (Windows) so the binary swap can
 	// proceed immediately instead of being deferred.
 	Force        bool
+	Progress     func(string)
 	Refresh      func(context.Context, string) (ArtifactReport, error)
 	AfterReplace func(context.Context, string) (ArtifactReport, error)
 }
@@ -68,6 +69,7 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 			return refreshManagedInstallation(true, operation)
 		}
 	}
+	options.progress("Checking managed artifacts")
 	artifacts, err := checkManagedArtifacts()
 	if err != nil {
 		return UpdateReport{}, err
@@ -76,16 +78,24 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	// deciding what this run needs to do.
 	appliedVersion, blockedPendingVersion := "", ""
 	if !check {
+		if err := ctx.Err(); err != nil {
+			return UpdateReport{}, err
+		}
+		options.progress("Finalizing pending update")
 		applied, pendingVersion, err := finalizePendingUpdate()
 		if err != nil {
 			return UpdateReport{}, fmt.Errorf("finalizing pending update: %w", err)
 		}
 		if applied {
 			appliedVersion = pendingVersion
+			bounded, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+			defer cancel()
+			ctx = bounded
 		} else {
 			blockedPendingVersion = pendingVersion
 		}
 	}
+	options.progress("Checking latest release")
 	release, err := fetchLatestRelease(ctx)
 	if err != nil {
 		return UpdateReport{}, err
@@ -96,6 +106,7 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	if latest == current || semverCompare(current, latest) > 0 {
 		binaryStatus = "current"
 		if !check {
+			options.progress("Refreshing managed integrations")
 			artifacts, err = refresh(ctx, "update")
 			if err != nil {
 				return UpdateReport{}, fmt.Errorf("mimir is current, but %w", err)
@@ -136,7 +147,10 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	// A deferred swap finalized above may already have placed this exact
 	// release on disk; the download and swap can be skipped entirely.
 	if appliedVersion != "" && appliedVersion == latest {
-		artifacts, err = afterReplace(ctx, target)
+		options.progress("Refreshing managed integrations")
+		postCommit, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		artifacts, err = afterReplace(postCommit, target)
+		cancel()
 		if err != nil {
 			return UpdateReport{}, fmt.Errorf("mimir updated, but refreshing managed artifacts failed: %w", err)
 		}
@@ -153,6 +167,7 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	if !ok {
 		return UpdateReport{}, fmt.Errorf("release %s has no checksums.txt", release.TagName)
 	}
+	options.progress("Downloading checksums")
 	checksums, err := download(ctx, checksumsURL)
 	if err != nil {
 		return UpdateReport{}, err
@@ -161,13 +176,16 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	if !ok {
 		return UpdateReport{}, fmt.Errorf("checksums.txt has no entry for %s", assetName)
 	}
+	options.progress("Downloading Mimir " + latest)
 	archive, err := download(ctx, assetURL)
 	if err != nil {
 		return UpdateReport{}, err
 	}
+	options.progress("Verifying release checksum")
 	if got := sha256.Sum256(archive); !strings.EqualFold(hex.EncodeToString(got[:]), want) {
 		return UpdateReport{}, fmt.Errorf("checksum mismatch for %s; aborting update", assetName)
 	}
+	options.progress("Extracting release binary")
 	binary, err := extractBinary(archive, runtime.GOOS)
 	if err != nil {
 		return UpdateReport{}, err
@@ -184,13 +202,19 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 	if receipt.CLI.Path == "" || !sameFilePath(receipt.CLI.Path, target) || receipt.CLI.Hash == "" || receipt.CLI.Hash != previousHash {
 		return UpdateReport{}, fmt.Errorf("mimir update requires the receipt-owned executable; run mimir install first")
 	}
+	if err := ctx.Err(); err != nil {
+		return UpdateReport{}, err
+	}
 	cleanupStaleSwapArtifacts(target)
 	stopped := []int{}
 	if options.Force {
+		options.progress("Stopping running Mimir processes")
 		stopped = stopSiblingMimirProcesses(os.Getpid(), target)
 	}
+	options.progress("Replacing Mimir executable")
 	if err := installBinary(target, binary, previousHash); err != nil {
 		if errors.Is(err, errExecutableLocked) {
+			options.progress("Scheduling deferred update")
 			detail, scheduleErr := scheduleDeferredSwap(target, binary, previousHash, latest)
 			if scheduleErr != nil {
 				return UpdateReport{}, fmt.Errorf("installing update: %w; scheduling a deferred update also failed: %v", err, scheduleErr)
@@ -202,13 +226,17 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 		return UpdateReport{}, fmt.Errorf("installing update: %w", err)
 	}
 	nextHash := hashBytes(binary)
+	options.progress("Recording managed binary")
 	if err := recordManagedBinaryUpdate(target, previousHash, nextHash, latest); err != nil {
 		if rollbackErr := rollbackUpdatedBinary(target, currentBinary, nextHash); rollbackErr != nil {
 			return UpdateReport{}, fmt.Errorf("recording updated binary: %w; rollback failed: %v", err, rollbackErr)
 		}
 		return UpdateReport{}, fmt.Errorf("recording updated binary: %w", err)
 	}
-	artifacts, err = afterReplace(ctx, target)
+	options.progress("Refreshing managed integrations")
+	postCommit, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	artifacts, err = afterReplace(postCommit, target)
+	cancel()
 	if err != nil {
 		return UpdateReport{}, fmt.Errorf("mimir updated, but refreshing managed artifacts failed: %w", err)
 	}
@@ -217,6 +245,12 @@ func Update(ctx context.Context, options UpdateOptions) (UpdateReport, error) {
 		report.Binary.Detail = "stopped Mimir process(es) " + joinInts(stopped)
 	}
 	return report, nil
+}
+
+func (o UpdateOptions) progress(message string) {
+	if o.Progress != nil {
+		o.Progress(message)
+	}
 }
 
 func rollbackUpdatedBinary(target string, previousBinary []byte, updatedHash string) error {

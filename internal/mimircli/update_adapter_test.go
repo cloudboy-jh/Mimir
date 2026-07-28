@@ -16,7 +16,7 @@ func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	called := false
-	runLifecycleUpdate = func(_ context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(_ context.Context, check, force bool, _ func(string)) (lifecyclepkg.UpdateReport, error) {
 		called = true
 		if !check {
 			t.Fatal("--check was not forwarded to the lifecycle service")
@@ -47,7 +47,7 @@ func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
 func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
 		t.Fatal("lifecycle update called for invalid arguments")
 		return lifecyclepkg.UpdateReport{}, nil
 	}
@@ -59,7 +59,7 @@ func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
 		return lifecyclepkg.UpdateReport{
 			Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"},
 			Artifacts: installpkg.ArtifactReport{ReceiptPath: "/receipt.json", Artifacts: []installpkg.ArtifactResult{
@@ -95,7 +95,7 @@ func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 func TestCmdUpdateForwardsForce(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(_ context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(_ context.Context, check, force bool, _ func(string)) (lifecyclepkg.UpdateReport, error) {
 		if check || !force {
 			t.Fatalf("check=%v force=%v, want check=false force=true", check, force)
 		}
@@ -113,7 +113,7 @@ func TestCmdUpdateForwardsForce(t *testing.T) {
 func TestCmdUpdateRejectsCheckWithForce(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
 		t.Fatal("lifecycle update called for --check --force")
 		return lifecyclepkg.UpdateReport{}, nil
 	}
@@ -125,7 +125,7 @@ func TestCmdUpdateRejectsCheckWithForce(t *testing.T) {
 func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool) (lifecyclepkg.UpdateReport, error) {
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
 		return lifecyclepkg.UpdateReport{
 			Binary: installpkg.UpdateBinaryReport{Status: "scheduled", Current: "1.0.0", Latest: "1.1.0", Detail: "blocked by Mimir process(es) 42; the update will apply after they exit"},
 		}, nil

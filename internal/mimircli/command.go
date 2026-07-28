@@ -158,7 +158,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		}
 		return writeConnectionManifest(ioctx.Out)
 	case "update":
-		return cmdUpdate(ctx, args[1:], ioctx.Out)
+		return cmdUpdateIO(ctx, args[1:], ioctx)
 	case "_apply-update":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir _apply-update")

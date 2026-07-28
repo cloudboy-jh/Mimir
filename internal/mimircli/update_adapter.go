@@ -14,12 +14,18 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
-var runLifecycleUpdate = func(ctx context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
+var runLifecycleUpdate = func(ctx context.Context, check, force bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
 	configureInstall()
-	return lifecycleService().Update(ctx, check, force)
+	service := lifecycleService()
+	service.Step = progress
+	return service.Update(ctx, check, force)
 }
 
 func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
+	return cmdUpdateIO(ctx, args, IO{Out: out})
+}
+
+func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
 	check, jsonOutput, force := false, false, false
 	for _, arg := range args {
 		switch arg {
@@ -36,14 +42,37 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if check && force {
 		return fmt.Errorf("--force cannot be combined with --check")
 	}
-	report, err := runLifecycleUpdate(ctx, check, force)
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
+	var operation *cliui.Operation
+	if !check && !jsonOutput {
+		operation = cliui.StartOperation(operationCtx, ioctx.In, ioctx.Out, "Mimir update", nil, cancelOperation)
+	}
+	progress := func(message string) {
+		if operation != nil {
+			operation.Status(message)
+		}
+	}
+	report, err := runLifecycleUpdate(operationCtx, check, force, progress)
 	if err != nil {
+		if operation != nil {
+			operation.Fail()
+			operation.Stop()
+		}
 		return err
 	}
-	if jsonOutput {
-		return json.NewEncoder(out).Encode(report)
+	if operation != nil {
+		label := "Update complete"
+		if report.Binary.Status == "scheduled" {
+			label = "Update scheduled"
+		}
+		operation.Complete(label)
+		operation.Stop()
 	}
-	render := cliui.New(out)
+	if jsonOutput {
+		return json.NewEncoder(ioctx.Out).Encode(report)
+	}
+	render := cliui.New(ioctx.Out)
 	message := ""
 	tone := bentotui.ToneNeutral
 	switch report.Binary.Status {
@@ -89,7 +118,7 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if report.Binary.Status == "updated" {
 		blocks = append(blocks, render.Callout(bentotui.ToneInfo, "Deployment", "Worker bundle may be behind this CLI version."), render.ActionHint("mimir deploy", "Deploy the bundled Worker and dashboard."))
 	}
-	_, err = fmt.Fprintln(out, bentotui.Stack(blocks...))
+	_, err = fmt.Fprintln(ioctx.Out, bentotui.Stack(blocks...))
 	return err
 }
 

@@ -3,6 +3,7 @@
 package bentotui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"syscall"
@@ -52,4 +53,37 @@ func terminalSize(file *os.File) (int, int) {
 		return 0, 0
 	}
 	return int(size.Col), int(size.Row)
+}
+
+func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
+	fd := int(file.Fd())
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+		var set syscall.FdSet
+		mask := int32(1 << uint(fd%32))
+		set.Bits[fd/32] |= mask
+		timeout := syscall.Timeval{Usec: 25000}
+		err := syscall.Select(fd+1, &set, nil, nil, &timeout)
+		if err != nil {
+			if err == syscall.EINTR {
+				continue
+			}
+			return 0, err
+		}
+		if set.Bits[fd/32]&mask == 0 {
+			continue
+		}
+		var buffer [1]byte
+		count, err := syscall.Read(fd, buffer[:])
+		if err != nil {
+			return 0, err
+		}
+		if count == 1 {
+			return buffer[0], nil
+		}
+	}
 }

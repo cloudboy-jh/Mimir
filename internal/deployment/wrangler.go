@@ -34,6 +34,41 @@ type WranglerClient interface {
 	UpdateVars(string, map[string]string) error
 }
 
+type observingWrangler struct {
+	base WranglerClient
+	out  io.Writer
+}
+
+func ObserveWrangler(base WranglerClient, out io.Writer) WranglerClient {
+	if base == nil || out == nil {
+		return base
+	}
+	return observingWrangler{base: base, out: out}
+}
+
+func (w observingWrangler) Run(ctx context.Context, dir string, input io.Reader, args ...string) (string, error) {
+	output, err := w.base.Run(ctx, dir, input, args...)
+	if strings.TrimSpace(output) != "" {
+		_, _ = io.WriteString(w.out, output+"\n")
+	}
+	if err != nil {
+		_, _ = io.WriteString(w.out, err.Error()+"\n")
+	}
+	return output, err
+}
+
+func (w observingWrangler) Interactive(ctx context.Context, dir string, streams Streams, args ...string) error {
+	return w.base.Interactive(ctx, dir, streams, args...)
+}
+
+func (w observingWrangler) UpdateConfig(path string, config Config) error {
+	return w.base.UpdateConfig(path, config)
+}
+
+func (w observingWrangler) UpdateVars(path string, vars map[string]string) error {
+	return w.base.UpdateVars(path, vars)
+}
+
 type Wrangler struct{}
 
 func (Wrangler) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {

@@ -105,7 +105,8 @@ func TestUpdateInstallsVerifiedBinary(t *testing.T) {
 	version = "1.0.0"
 	t.Cleanup(func() { version = oldVersion })
 
-	report, err := Update(context.Background(), UpdateOptions{AfterReplace: func(context.Context, string) (ArtifactReport, error) {
+	var progress []string
+	report, err := Update(context.Background(), UpdateOptions{Progress: func(message string) { progress = append(progress, message) }, AfterReplace: func(context.Context, string) (ArtifactReport, error) {
 		return checkManagedArtifacts()
 	}})
 	if err != nil {
@@ -127,6 +128,12 @@ func TestUpdateInstallsVerifiedBinary(t *testing.T) {
 	}
 	if receipt.CLI.Version != "9.9.9" || receipt.CLI.Hash != hashBytes([]byte("new-binary")) {
 		t.Fatalf("updated receipt %#v", receipt.CLI)
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	for _, expected := range []string{"Checking latest release", "Downloading Mimir 9.9.9", "Verifying release checksum", "Replacing Mimir executable", "Refreshing managed integrations"} {
+		if !strings.Contains(joinedProgress, expected) {
+			t.Fatalf("progress missing %q:\n%s", expected, joinedProgress)
+		}
 	}
 }
 

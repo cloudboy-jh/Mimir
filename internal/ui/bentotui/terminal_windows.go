@@ -3,6 +3,7 @@
 package bentotui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"syscall"
@@ -22,6 +23,21 @@ type terminalState struct {
 	outputMode    uint32
 	inputModeSet  bool
 	outputModeSet bool
+}
+
+type consoleInputRecord struct {
+	EventType uint16
+	_         uint16
+	Event     [16]byte
+}
+
+type consoleKeyEvent struct {
+	KeyDown         int32
+	RepeatCount     uint16
+	VirtualKeyCode  uint16
+	VirtualScanCode uint16
+	UnicodeChar     uint16
+	ControlKeyState uint32
 }
 
 func enterRawMode(in, out *os.File) (terminalState, error) {
@@ -71,4 +87,47 @@ func terminalSize(file *os.File) (int, int) {
 		return 0, 0
 	}
 	return int(value.Window.Right-value.Window.Left) + 1, int(value.Window.Bottom-value.Window.Top) + 1
+}
+
+func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
+	kernel := syscall.NewLazyDLL("kernel32.dll")
+	wait := kernel.NewProc("WaitForSingleObject")
+	readInput := kernel.NewProc("ReadConsoleInputW")
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+		result, _, err := wait.Call(file.Fd(), 25)
+		switch result {
+		case 0:
+			var record consoleInputRecord
+			var read uint32
+			ok, _, readErr := readInput.Call(file.Fd(), uintptr(unsafe.Pointer(&record)), 1, uintptr(unsafe.Pointer(&read)))
+			if ok == 0 {
+				return 0, fmt.Errorf("reading console input: %v", readErr)
+			}
+			if read != 1 || record.EventType != 0x0001 {
+				continue
+			}
+			key := (*consoleKeyEvent)(unsafe.Pointer(&record.Event[0]))
+			if key.KeyDown == 0 {
+				continue
+			}
+			switch key.VirtualKeyCode {
+			case 0x26:
+				return terminalByteUp, nil
+			case 0x28:
+				return terminalByteDown, nil
+			}
+			if key.UnicodeChar > 0 && key.UnicodeChar <= 0xff {
+				return byte(key.UnicodeChar), nil
+			}
+		case 0x102:
+			continue
+		default:
+			return 0, fmt.Errorf("waiting for console input: %v", err)
+		}
+	}
 }

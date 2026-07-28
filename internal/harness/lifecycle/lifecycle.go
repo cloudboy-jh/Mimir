@@ -179,6 +179,9 @@ func (s Service) Update(ctx context.Context, check, force bool) (UpdateReport, e
 	mechanical, err := install.Update(ctx, install.UpdateOptions{
 		Check: check,
 		Force: force,
+		Progress: func(message string) {
+			s.step(message)
+		},
 		Refresh: func(ctx context.Context, operation string) (install.ArtifactReport, error) {
 			lifecycle = s.Refresh(ctx, operation)
 			if !lifecycle.OK {

@@ -2,15 +2,19 @@ package bentotui
 
 import (
 	"bytes"
-	"io"
+	"context"
 	"testing"
 	"time"
 )
 
 func TestReadKeysDecodesNavigationAndInterrupt(t *testing.T) {
 	keys := make(chan Key, 8)
-	errs := make(chan error, 1)
-	go readKeys(bytes.NewBuffer([]byte{'j', 0x1b, '[', 'A', '\r', 0x03}), keys, errs)
+	input := make(chan byte, 8)
+	for _, value := range []byte{'j', 0x1b, '[', 'A', '\r', 0x03} {
+		input <- value
+	}
+	close(input)
+	go decodeKeys(context.Background(), input, keys)
 	want := []Key{{Kind: KeyRune, Rune: 'j'}, {Kind: KeyUp}, {Kind: KeyEnter}, {Kind: KeyInterrupt}}
 	for index, expected := range want {
 		select {
@@ -22,12 +26,14 @@ func TestReadKeysDecodesNavigationAndInterrupt(t *testing.T) {
 			t.Fatalf("timed out waiting for key %d", index)
 		}
 	}
-	select {
-	case err := <-errs:
-		if err != io.EOF {
-			t.Fatalf("read error %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("reader did not report EOF")
+}
+
+func TestDrawUsesCarriageReturnNewlinesForRawTerminals(t *testing.T) {
+	var out bytes.Buffer
+	if err := draw(&out, "one\ntwo"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("one\r\ntwo")) {
+		t.Fatalf("draw output %q", out.String())
 	}
 }
