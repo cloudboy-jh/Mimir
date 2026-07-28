@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"github.com/cloudboy-jh/mimir/internal/sessions"
 )
 
 func cmdList(ctx context.Context, args []string, out io.Writer) error {
@@ -52,6 +50,5 @@ func cmdList(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, sessions.FormatReceipts(receipts, limit))
-	return err
+	return renderReceipts(out, receipts, limit)
 }

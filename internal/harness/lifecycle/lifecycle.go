@@ -59,6 +59,7 @@ type Service struct {
 	InstallFiles             func(string, func() (string, error)) (install.InstallReport, error)
 	UninstallFiles           func(bool) (install.UninstallReport, error)
 	Hermes                   hermesintegration.Service
+	Step                     func(string)
 }
 
 func New() Service {
@@ -80,6 +81,7 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	if err != nil {
 		return InstallReport{}, err
 	}
+	s.step("CLI and managed artifacts installed")
 	paths, err := s.Paths()
 	if err != nil {
 		return InstallReport{}, err
@@ -92,6 +94,7 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 	}
 	report.OpenCodeReady = report.OpenCode.State != "failed"
+	s.step("OpenCode integration configured")
 	if paths.HermesDetected {
 		if !install.ArtifactsReady(mechanical.Artifacts, paths.HermesHome, hermesintegration.ArtifactSourcePrefixes()...) {
 			report.HermesReady = false
@@ -120,8 +123,15 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	} else {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
+	s.step("Hermes integration checked")
 	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.OpenCodeReady || !report.HermesReady
 	return report, nil
+}
+
+func (s Service) step(message string) {
+	if s.Step != nil {
+		s.Step(message)
+	}
 }
 
 func (s Service) Uninstall(ctx context.Context, keepBinary bool) (UninstallReport, error) {

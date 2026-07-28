@@ -11,6 +11,7 @@ export type CaptureSummary = {
 
 export type Session = {
   id: string;
+  parent_session_id: string | null;
   started_at: string;
   ended_at: string | null;
   state: "active" | "inactive";
@@ -29,6 +30,7 @@ export type Session = {
   tokens_in: number;
   tokens_out: number;
   intent: string | null;
+  child_session_count: number;
   capture: CaptureSummary;
 };
 
@@ -49,7 +51,7 @@ export type Exchange = {
   r2_key: string;
 };
 
-export type SessionExchange = Pick<Exchange, "id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens"> & {
+export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens"> & {
   request_excerpt: string;
   capture_status: string;
   capture_reason: string | null;
@@ -59,6 +61,7 @@ export type SessionExchange = Pick<Exchange, "id" | "ts" | "model" | "provider" 
 export type SessionDetail = {
   session: Omit<Session, "capture">;
   capture: CaptureSummary;
+  supporting_sessions: Array<Omit<Session, "capture" | "child_session_count">>;
   outcome_events: Array<{ id: string; outcome: Outcome; source: string; reason: string | null; evidence_json: string | null; created_at: string }>;
   exchanges: SessionExchange[];
   files: string[];

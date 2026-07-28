@@ -12,6 +12,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
 )
 
 type setupOptions struct {
@@ -31,7 +32,7 @@ type setupOptions struct {
 
 var newDeploymentService = deployment.NewService
 
-func setup(ctx context.Context, args []string, ioctx IO) error {
+func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 	opts := setupOptions{Mode: "quick", WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
 	for i := 0; i < len(args); i++ {
 		value := func() (string, error) {
@@ -98,8 +99,18 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !opts.JSON {
 		printSetupBanner(ioctx.Out)
-		opts.Progress = startSetupProgress(ioctx.Out, []string{"Preparing Worker", "Authenticating Cloudflare", "Provisioning database", "Provisioning archive", "Applying schema", "Configuring credentials", "Connecting OpenRouter", "Deploying Worker", "Verifying connection"})
-		defer func() { opts.Progress.Stop() }()
+		phases := []string{"Preparing Worker", "Authenticating Cloudflare", "Provisioning database", "Provisioning archive", "Applying schema", "Configuring credentials", "Connecting OpenRouter", "Deploying Worker", "Verifying connection"}
+		if opts.URL != "" {
+			phases = []string{"Verifying connection"}
+		}
+		opts.Progress = startSetupProgress(ioctx.Out, phases)
+		defer func() {
+			if resultErr != nil {
+				opts.Progress.Fail()
+			} else {
+				opts.Progress.Stop()
+			}
+		}()
 	}
 	if opts.URL != "" {
 		if err := mimirapi.ValidateDeploymentURL(opts.URL); err != nil {
@@ -133,7 +144,7 @@ func setup(ctx context.Context, args []string, ioctx IO) error {
 		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 		opts.Progress.Stop()
 		result := addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/"), "artifacts": lifecycle.Artifacts, "integrations": integrations}, opts.URL)
-		human := connectionSummary(opts.URL)
+		human := connectionSummary(ioctx.Out, opts.URL)
 		if summary := integrationSummary(integrations); summary != "" {
 			human += "\n\n" + summary
 		}
@@ -203,7 +214,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 	opts.Progress.Stop()
 	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access, "artifacts": lifecycle.Artifacts, "integrations": integrations}
-	human := connectionSummary(url)
+	human := connectionSummary(ioctx.Out, url)
 	if summary := integrationSummary(integrations); summary != "" {
 		human += "\n\n" + summary
 	}
@@ -227,7 +238,7 @@ func writeSetupResult(out io.Writer, jsonOutput bool, result map[string]any, hum
 }
 
 func promptSecret(ioctx IO, label string) (string, error) {
-	if _, err := fmt.Fprint(ioctx.Out, label); err != nil {
+	if _, err := fmt.Fprint(ioctx.Out, cliui.New(ioctx.Out).Prompt(label)); err != nil {
 		return "", err
 	}
 	file, terminal := ioctx.In.(*os.File)

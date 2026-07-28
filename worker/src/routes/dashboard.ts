@@ -1,13 +1,13 @@
 import type { Hono } from "hono";
-import { canonicalOutcome, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
-import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, sessionStatusResponse } from "../storage";
+import { canonicalOutcome, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
+import { attachCaptureSummary, captureSummary, captureTreeSummary, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import type { AppEnv } from "../types";
 
 export function registerDashboardRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/api/bootstrap", async (c) => {
     const [captures, sessions, latest] = await Promise.all([
       c.env.DB.prepare("SELECT COUNT(*) AS requests, SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END) AS saved_exchanges, SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END) AS capture_failures FROM exchanges").first(),
-      c.env.DB.prepare("SELECT COUNT(*) AS count FROM sessions").first<{ count: number }>(),
+      c.env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE parent_session_id IS NULL").first<{ count: number }>(),
       c.env.DB.prepare("SELECT ts FROM exchanges WHERE capture_status = 'saved' ORDER BY ts DESC LIMIT 1").first<{ ts: string }>(),
     ]);
     return c.json({ requests: captures?.requests ?? 0, saved_exchanges: captures?.saved_exchanges ?? 0, capture_failures: captures?.capture_failures ?? 0, sessions: sessions?.count ?? 0, latest_request_at: latest?.ts ?? null });
@@ -70,22 +70,27 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
 
   app.get("/dashboard/api/sessions", async (c) => {
     await expireSessions(c.env.DB);
-    const result = await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS}, ${CAPTURE_SUMMARY_COLUMNS} FROM sessions ORDER BY started_at DESC LIMIT 100`).all<Record<string, unknown>>();
+    const result = await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE sessions.parent_session_id IS NULL ORDER BY sessions.started_at DESC LIMIT 100`).all<Record<string, unknown>>();
     return c.json({ sessions: result.results.map(attachCaptureSummary) });
   });
 
   app.get("/dashboard/api/sessions/:id", async (c) => {
     await expireSessions(c.env.DB);
-    const session = await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
+    const requested = await c.env.DB.prepare("SELECT parent_session_id FROM sessions WHERE id = ?").bind(c.req.param("id")).first<{ parent_session_id: string | null }>();
+    const session = requested?.parent_session_id
+      ? await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first()
+      : await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS} FROM sessions WHERE sessions.id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
-    const [exchanges, files, errors, capture, outcomeEvents] = await Promise.all([
-      c.env.DB.prepare("SELECT id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, request_excerpt, capture_status, capture_reason, failure_code FROM exchanges WHERE session_id = ? ORDER BY ts").bind(c.req.param("id")).all(),
-      c.env.DB.prepare("SELECT file FROM session_files WHERE session_id = ? ORDER BY file").bind(c.req.param("id")).all<{ file: string }>(),
-      c.env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = ? ORDER BY signature").bind(c.req.param("id")).all<{ signature: string }>(),
-      captureSummary(c.env.DB, c.req.param("id")),
+    const subtree = "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id)";
+    const [exchanges, files, errors, capture, outcomeEvents, children] = await Promise.all([
+      c.env.DB.prepare(`${subtree} SELECT id, session_id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, request_excerpt, capture_status, capture_reason, failure_code FROM exchanges WHERE session_id IN (SELECT id FROM subtree) ORDER BY ts`).bind(c.req.param("id")).all(),
+      c.env.DB.prepare(`${subtree} SELECT DISTINCT file FROM session_files WHERE session_id IN (SELECT id FROM subtree) ORDER BY file`).bind(c.req.param("id")).all<{ file: string }>(),
+      c.env.DB.prepare(`${subtree} SELECT DISTINCT signature FROM session_errors WHERE session_id IN (SELECT id FROM subtree) ORDER BY signature`).bind(c.req.param("id")).all<{ signature: string }>(),
+      captureTreeSummary(c.env.DB, c.req.param("id")),
       c.env.DB.prepare("SELECT id, outcome, source, reason, evidence_json, created_at FROM session_outcome_events WHERE session_id = ? ORDER BY created_at DESC").bind(c.req.param("id")).all(),
+      c.env.DB.prepare(`${subtree} SELECT ${SESSION_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM subtree) AND id <> ? ORDER BY started_at`).bind(c.req.param("id"), c.req.param("id")).all(),
     ]);
-    return c.json({ session, capture, outcome_events: outcomeEvents.results, exchanges: exchanges.results, files: files.results.map((row) => row.file), errors: errors.results.map((row) => row.signature) });
+    return c.json({ session, capture, outcome_events: outcomeEvents.results, supporting_sessions: children.results, exchanges: exchanges.results, files: files.results.map((row) => row.file), errors: errors.results.map((row) => row.signature) });
   });
 
   app.get("/dashboard/api/sessions/:id/status", async (c) => {
@@ -108,7 +113,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
 
   app.get("/dashboard/api/overview", async (c) => {
     const [totals, models, providers, apps] = await Promise.all([
-      c.env.DB.prepare("SELECT COUNT(*) AS requests, COUNT(DISTINCT session_id) AS sessions, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END), 0) AS saved_exchanges, COALESCE(SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END), 0) AS capture_failures, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN input_tokens ELSE 0 END), 0) AS input_tokens, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN output_tokens ELSE 0 END), 0) AS output_tokens FROM exchanges").first(),
+      c.env.DB.prepare("SELECT COUNT(*) AS requests, (SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL) AS sessions, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END), 0) AS saved_exchanges, COALESCE(SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END), 0) AS capture_failures, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN input_tokens ELSE 0 END), 0) AS input_tokens, COALESCE(SUM(CASE WHEN capture_status = 'saved' THEN output_tokens ELSE 0 END), 0) AS output_tokens FROM exchanges").first(),
       c.env.DB.prepare("SELECT model AS name, COUNT(*) AS requests FROM exchanges WHERE capture_status = 'saved' GROUP BY model ORDER BY requests DESC LIMIT 6").all(),
       c.env.DB.prepare("SELECT COALESCE(provider, 'Unknown') AS name, COUNT(*) AS requests FROM exchanges WHERE capture_status = 'saved' GROUP BY provider ORDER BY requests DESC LIMIT 6").all(),
       c.env.DB.prepare("SELECT COALESCE(harness, 'Unknown') AS name, COUNT(*) AS requests FROM exchanges WHERE capture_status = 'saved' GROUP BY harness ORDER BY requests DESC LIMIT 6").all(),

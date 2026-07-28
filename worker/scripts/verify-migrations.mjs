@@ -75,6 +75,7 @@ try {
 
   cpSync(join(root, "migrations", "0009_hermes_credentials.sql"), join(migrations, "0009_hermes_credentials.sql"));
   cpSync(join(root, "migrations", "0010_harness_loads.sql"), join(migrations, "0010_harness_loads.sql"));
+  cpSync(join(root, "migrations", "0011_session_hierarchy.sql"), join(migrations, "0011_session_hierarchy.sql"));
   applyMigrations();
   execute(`
     INSERT INTO hermes_credentials(token_hash, created_at, authorized_by)
@@ -105,6 +106,7 @@ try {
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('exchange_files', 'exchange_errors')) AS facet_tables,
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'hermes_credentials') AS hermes_credentials_table,
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'harness_loads') AS harness_loads_table,
+      (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id') AS session_parent_column,
       (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_artifact_sha256
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
@@ -134,6 +136,7 @@ try {
     facet_tables: 2,
     hermes_credentials_table: 1,
     harness_loads_table: 1,
+    session_parent_column: 1,
     harness_artifact_sha256: "a".repeat(64),
   });
 

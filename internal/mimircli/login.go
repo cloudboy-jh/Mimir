@@ -42,12 +42,16 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if !opts.JSON {
 		printSetupBanner(ioctx.Out)
+		opts.Progress = startProgress(ioctx.Out, "Mimir login", []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"})
+		defer opts.Progress.Stop()
 	}
 	if !forceDiscovery {
 		pointer, pointerErr := loadPointer()
 		identity, identityErr := deployment.LoadIdentity()
 		if pointerErr == nil && identityErr == nil {
 			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
+				setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+				opts.Progress.Stop()
 				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
 			}
 		}
@@ -63,6 +67,8 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {
+			opts.Progress.Pause()
+			defer opts.Progress.Resume()
 			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
@@ -71,12 +77,14 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		},
 	}, opts.URL)
 	if err != nil {
+		opts.Progress.Fail()
 		return err
 	}
 	pointer := mimirapi.Pointer{URL: result.URL, Token: result.Token}
 	if err := savePointer(pointer); err != nil {
 		return err
 	}
+	opts.Progress.Stop()
 	return writeLoginResult(ctx, ioctx, opts.JSON, result.Identity, result.URL)
 }
 

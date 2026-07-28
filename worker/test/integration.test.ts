@@ -8,7 +8,7 @@ const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE TABLE hermes_credentials (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, authorized_by TEXT);
 CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (harness IN ('opencode', 'hermes')), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
-CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
  CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -58,6 +58,28 @@ describe("Worker integration", () => {
   it("rejects unauthenticated requests", async () => {
     const response = await request("/whoami");
     expect(response.status).toBe(401);
+  });
+
+  it("lists root sessions with aggregated supporting-run evidence and roots child outcomes", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, boundary, state, request_count, tokens_in, tokens_out, intent) VALUES ('root-session', '2026-07-27T10:00:00Z', 'header', 'inactive', 1, 10, 5, 'Ship the feature');
+      INSERT INTO sessions(id, parent_session_id, started_at, boundary, state, request_count, tokens_in, tokens_out, intent) VALUES ('child-session', 'root-session', '2026-07-27T10:01:00Z', 'header', 'inactive', 1, 20, 7, 'Research the implementation');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('root-exchange', 'root-session', '2026-07-27T10:00:30Z', 'harness', 1, 'log/root.json', 'saved', '2026-07-27T10:00:31Z');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('child-exchange', 'child-session', '2026-07-27T10:01:30Z', 'harness', 1, 'log/child.json', 'saved', '2026-07-27T10:01:31Z');
+    `);
+
+    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<Record<string, unknown>> };
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0]).toMatchObject({ id: "root-session", child_session_count: 1, request_count: 2, tokens_in: 30, tokens_out: 12, capture: { saved_exchanges: 2 } });
+
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/root-session")).json() as { supporting_sessions: Array<{ id: string }>; exchanges: Array<{ id: string }> };
+    expect(detail.supporting_sessions).toContainEqual(expect.objectContaining({ id: "child-session" }));
+    expect(detail.exchanges.map((exchange) => exchange.id)).toEqual(["root-exchange", "child-exchange"]);
+
+    const outcome = await request("/sessions/child-session/outcome", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ outcome: "landed", reason: "kept by parent" }) });
+    expect(await outcome.json()).toMatchObject({ id: "root-session", outcome: "landed" });
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'root-session'").first()).toMatchObject({ work_outcome: "landed" });
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'child-session'").first()).toMatchObject({ work_outcome: "unresolved" });
   });
 
   it("accepts an authorized OpenRouter key only on Hermes compatibility routes", async () => {

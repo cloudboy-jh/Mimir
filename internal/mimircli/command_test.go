@@ -441,7 +441,7 @@ func TestExecuteSessionEnd(t *testing.T) {
 	if err := ExecuteIO(context.Background(), []string{"session", "end", "session-1", "--outcome", "landed", "--reason", "verified"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "Session ended · Saved to Mimir · 1 exchange in this session\n" {
+	if !strings.Contains(output.String(), "Capture finalized") || !strings.Contains(output.String(), "Saved to Mimir · 1 exchange in this session") || !strings.Contains(output.String(), "landed") {
 		t.Fatalf("output %q", output.String())
 	}
 	var machine bytes.Buffer

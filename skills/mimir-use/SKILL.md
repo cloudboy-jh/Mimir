@@ -34,8 +34,8 @@ other provider transports that bypass the proxy.
 
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that an exchange was saved. Never report persistence from transport activity alone.
 
-After meaningful work, when the exact session ID is available, run
-`mimir session status <id> --json`. It waits briefly for background capture and
+After meaningful work, call `mimir_session_status`. It uses the harness's exact
+session ID and waits briefly for background capture. The result
 returns the authoritative receipt. When
 dashboard Access is configured, the receipt includes `View session`. Let the
 harness display that result near the completed response; do not repeat the
@@ -44,9 +44,8 @@ explicitly asks for storage details.
 
 Treat `Saving to Mimir...`, `Partially saved`, and `Mimir couldn't save this session` as real user-visible states. Never rewrite them as saved. Do not call `session_status` during routine tool use or when no meaningful unit of work has completed.
 
-Set an outcome only when completed work provides evidence. Use
-`mimir session outcome <id> <value> --reason <text> --evidence <json> --json`
-with one canonical value:
+Set an outcome only when completed work provides evidence. Call
+`mimir_session_outcome` with one canonical value:
 
 - `landed`: the result was kept or shipped
 - `discarded`: the result was deliberately rejected or reverted
@@ -56,7 +55,7 @@ with one canonical value:
 Include a concise reason and the supporting evidence. Capture state and work outcome are independent: a saved session can remain unresolved, and landed work is not proof that its exchanges were saved.
 
 When the user explicitly asks to end, close, or finalize the session, use
-`mimir session end <id> --json` with the exact session ID.
+`mimir session end <id> --json` with the exact session ID when it is available.
 Include the evidenced outcome and reason when available, then return its
 receipt. Do not end a session merely because one task or response finished; an
 ended exact session may be reactivated by later traffic.

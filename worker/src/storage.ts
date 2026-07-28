@@ -17,6 +17,8 @@ export type CaptureReceipt = {
 
 export const CAPTURE_SUMMARY_COLUMNS = "(SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_saved_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'failed') AS capture_failed_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'accepted') AS capture_pending_exchanges, (SELECT MAX(e.saved_at) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_last_saved_at";
 
+export const TREE_CAPTURE_SUMMARY_COLUMNS = "(SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'saved') AS capture_saved_exchanges, (SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'failed') AS capture_failed_exchanges, (SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'accepted') AS capture_pending_exchanges, (SELECT MAX(e.saved_at) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'saved') AS capture_last_saved_at";
+
 export type ReconcileResponse = {
   scanned: number;
   database_truncated: boolean;
@@ -45,6 +47,12 @@ type ReconcileRow = {
 
 export async function captureSummary(db: D1Database, sessionId: string): Promise<CaptureSummary> {
   const row = await db.prepare("SELECT SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END) AS saved_exchanges, SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END) AS failed_exchanges, SUM(CASE WHEN capture_status = 'accepted' THEN 1 ELSE 0 END) AS accepted_exchanges, MAX(CASE WHEN capture_status = 'saved' THEN saved_at END) AS last_saved_at FROM exchanges WHERE session_id = ?")
+    .bind(sessionId).first<{ saved_exchanges: number | null; failed_exchanges: number | null; accepted_exchanges: number | null; last_saved_at: string | null }>();
+  return captureSummaryValues(row?.saved_exchanges ?? 0, row?.failed_exchanges ?? 0, row?.accepted_exchanges ?? 0, row?.last_saved_at ?? null);
+}
+
+export async function captureTreeSummary(db: D1Database, sessionId: string): Promise<CaptureSummary> {
+  const row = await db.prepare("WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id) SELECT SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END) AS saved_exchanges, SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END) AS failed_exchanges, SUM(CASE WHEN capture_status = 'accepted' THEN 1 ELSE 0 END) AS accepted_exchanges, MAX(CASE WHEN capture_status = 'saved' THEN saved_at END) AS last_saved_at FROM exchanges WHERE session_id IN (SELECT id FROM subtree)")
     .bind(sessionId).first<{ saved_exchanges: number | null; failed_exchanges: number | null; accepted_exchanges: number | null; last_saved_at: string | null }>();
   return captureSummaryValues(row?.saved_exchanges ?? 0, row?.failed_exchanges ?? 0, row?.accepted_exchanges ?? 0, row?.last_saved_at ?? null);
 }

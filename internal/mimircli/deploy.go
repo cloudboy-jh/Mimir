@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 // deploy is the single supported way to ship Worker code and dashboard assets.
@@ -36,6 +38,10 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName = opts.WorkerDir, opts.WorkerName, opts.DatabaseName
 	domainOpts.Noninteractive = opts.JSON
+	if !opts.JSON {
+		opts.Progress = startProgress(ioctx.Out, "Mimir deploy", []string{"Preparing Worker", "Authenticating Cloudflare", "Configuring database", "Applying schema", "Deploying Worker"})
+		defer opts.Progress.Stop()
+	}
 	fallback := ""
 	if pointer, err := loadPointer(); err == nil {
 		fallback = pointer.URL
@@ -44,15 +50,19 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {
+			opts.Progress.Pause()
+			defer opts.Progress.Resume()
 			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 	}, fallback)
 	if err != nil {
+		opts.Progress.Fail()
 		return err
 	}
 	url := domainResult.URL
+	opts.Progress.Stop()
 	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
-	human := fmt.Sprintf("Mimir deployed\n\n  Worker %s", strings.TrimRight(url, "/"))
+	human := cliui.New(ioctx.Out).Card("Deployment complete", bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")}, bentotui.Field{Label: "Status", Value: "ready"})
 	return writeSetupResult(ioctx.Out, opts.JSON, result, human)
 }

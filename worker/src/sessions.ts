@@ -3,7 +3,11 @@ import { readSaveConfig } from "./config";
 import { reportSessionEvent } from "./session-events";
 import type { AppEnv } from "./types";
 
-export const SESSION_COLUMNS = "id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent";
+export const SESSION_COLUMNS = "id, parent_session_id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent";
+
+export const SESSION_TREE_CTE = "WITH RECURSIVE session_tree(root_id, id) AS (SELECT id, id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT session_tree.root_id, sessions.id FROM sessions JOIN session_tree ON sessions.parent_session_id = session_tree.id)";
+
+export const ROOT_SESSION_COLUMNS = "sessions.id, sessions.parent_session_id, sessions.started_at, sessions.ended_at, sessions.state, sessions.last_active_at, sessions.inactive_at, sessions.harness, sessions.boundary, sessions.work_outcome AS outcome, sessions.outcome_src, sessions.outcome_updated_at, sessions.outcome_reason, sessions.repo, sessions.source_ref, sessions.model_primary, (SELECT COALESCE(SUM(child.request_count), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS request_count, (SELECT COALESCE(SUM(child.tokens_in), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_in, (SELECT COALESCE(SUM(child.tokens_out), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_out, sessions.intent, (SELECT COUNT(*) - 1 FROM session_tree WHERE session_tree.root_id = sessions.id) AS child_session_count";
 
 export type WorkOutcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type OutcomeSource = "agent" | "user" | "git";
@@ -51,9 +55,10 @@ export async function updateOutcome(c: Context<AppEnv>, input: OutcomeInput, def
   const id = c.req.param("id");
   if (!id) return c.json({ error: "session id is required" }, 400);
   if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+  const outcomeSessionID = await rootSessionID(c.env.DB, id);
   const now = new Date().toISOString();
-  await c.env.DB.batch(outcomeStatements(c.env.DB, id, normalized, now));
-  return c.json(outcomeResult(id, normalized, now));
+  await c.env.DB.batch(outcomeStatements(c.env.DB, outcomeSessionID, normalized, now));
+  return c.json(outcomeResult(outcomeSessionID, normalized, now));
 }
 
 export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSource) {
@@ -86,16 +91,23 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   const endStatement = c.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE ended_at END, inactive_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE inactive_at END WHERE id = ?").bind(now, now, id);
   await endStatement.run();
   if (normalized && !("error" in normalized)) {
+    const outcomeSessionID = await rootSessionID(c.env.DB, id);
     const generation = await c.env.DB.prepare("SELECT inactive_at AS value FROM sessions WHERE id = ?").bind(id).first<{ value: string }>();
-    const eventID = await endOutcomeEventID(id, generation?.value ?? "", normalized);
+    const eventID = await endOutcomeEventID(outcomeSessionID, generation?.value ?? "", normalized);
     await c.env.DB.batch([
-      c.env.DB.prepare("INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(eventID, id, normalized.outcome, normalized.source, normalized.reason, normalized.evidenceJson, now),
-      c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = (SELECT created_at FROM session_outcome_events WHERE id = ?), outcome_reason = ? WHERE id = ?").bind(normalized.outcome, legacyOutcome(normalized.outcome), normalized.source, eventID, normalized.reason, id),
+      c.env.DB.prepare("INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(eventID, outcomeSessionID, normalized.outcome, normalized.source, normalized.reason, normalized.evidenceJson, now),
+      c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = (SELECT created_at FROM session_outcome_events WHERE id = ?), outcome_reason = ? WHERE id = ?").bind(normalized.outcome, legacyOutcome(normalized.outcome), normalized.source, eventID, normalized.reason, outcomeSessionID),
     ]);
   }
   const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
   await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
   return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
+}
+
+async function rootSessionID(db: D1Database, id: string): Promise<string> {
+  const root = await db.prepare("WITH RECURSIVE ancestors(id, parent_session_id) AS (SELECT id, parent_session_id FROM sessions WHERE id = ? UNION ALL SELECT sessions.id, sessions.parent_session_id FROM sessions JOIN ancestors ON sessions.id = ancestors.parent_session_id) SELECT id FROM ancestors WHERE parent_session_id IS NULL LIMIT 1")
+    .bind(id).first<{ id: string }>();
+  return root?.id ?? id;
 }
 
 async function finalizeObjectOnlySession(c: Context<AppEnv>, id: string, now: string): Promise<boolean> {

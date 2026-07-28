@@ -29,15 +29,5 @@ func doctor(ctx context.Context, args []string, out io.Writer) error {
 		_, err = fmt.Fprintln(out, string(data))
 		return err
 	}
-	for _, check := range report.Checks {
-		fmt.Fprintf(out, "%s  %s", check.Status, check.Name)
-		if check.Detail != "" {
-			fmt.Fprintf(out, " · %s", check.Detail)
-		}
-		if check.Repair != "" {
-			fmt.Fprintf(out, " · repair: %s", check.Repair)
-		}
-		fmt.Fprintln(out)
-	}
-	return nil
+	return renderDoctor(out, report)
 }

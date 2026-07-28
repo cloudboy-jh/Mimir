@@ -106,6 +106,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "session":
 		return cmdSession(ctx, args[1:], ioctx.Out)
 	case "search":
+		_, jsonOutput := stripJSONFlag(args[1:])
 		query, err := parseSearchArgs(args[1:])
 		if err != nil {
 			return err
@@ -114,8 +115,11 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(ioctx.Out, string(data))
-		return err
+		if jsonOutput {
+			_, err = fmt.Fprintln(ioctx.Out, string(data))
+			return err
+		}
+		return renderSearch(ioctx.Out, data)
 	case "mark":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>")
@@ -244,38 +248,21 @@ func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
 		return fmt.Errorf("--bin-dir requires a value")
 	}
-	report, err := installManaged(ctx, binDir)
+	var progress *setupProgress
+	if !jsonOutput {
+		progress = startProgress(out, "Mimir install", []string{"Installing CLI and managed artifacts", "Configuring OpenCode", "Checking Hermes"})
+		defer progress.Stop()
+	}
+	report, err := installManaged(ctx, binDir, func(message string) { setupStep(progress, out, jsonOutput, message) })
 	if err != nil {
+		progress.Fail()
 		return err
 	}
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
-	if _, err := fmt.Fprintf(out, "mimir %s  %s  %s\n", report.Binary.Version, report.Binary.Status, report.Binary.Path); err != nil {
-		return err
-	}
-	for _, artifact := range report.Artifacts.Artifacts {
-		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
-			return err
-		}
-	}
-	if report.OpenCode.State == "installed" {
-		if _, err := fmt.Fprintln(out, "opencode  configured  Mimir plugin · restart OpenCode"); err != nil {
-			return err
-		}
-	}
-	if !report.OpenCodeReady {
-		if _, err := fmt.Fprintln(out, "OpenCode integration incomplete: conflicting or modified Mimir files were preserved; stale skills or capture code may still be active."); err != nil {
-			return err
-		}
-	}
-	if !report.HermesReady {
-		if _, err := fmt.Fprintln(out, "Hermes integration incomplete: conflicting or modified Mimir plugin files were preserved and were not enabled."); err != nil {
-			return err
-		}
-	}
-	_, err = fmt.Fprintf(out, "%s\nInstall log: %s\n", report.Artifacts.Summary, report.Artifacts.LogPath)
-	return err
+	progress.Stop()
+	return renderInstall(out, report)
 }
 
 func containsBinDirArg(args []string) bool {
@@ -361,8 +348,7 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 			}
 			return printRemoteData(out, data)
 		}
-		_, err = fmt.Fprintln(out, sessions.EndedReceiptText(status))
-		return err
+		return renderEndedReceipt(out, status)
 	}
 	if len(args) >= 2 && args[0] == "status" {
 		if len(args) > 3 || (len(args) == 3 && args[2] != "--json") {

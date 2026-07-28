@@ -34,6 +34,57 @@ describe("chat.headers hook", () => {
   });
 });
 
+describe("session hierarchy", () => {
+  it("reports OpenCode parent sessions on lifecycle events", async () => {
+    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok";
+    const originalFetch = globalThis.fetch;
+    let body: Record<string, unknown> | null = null;
+    globalThis.fetch = async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return new Response("{}", { status: 200 });
+    };
+    try {
+      const hooks = await plugin.server({ directory: "/repo/mimir" } as never);
+      await hooks.event!({ event: { type: "session.created", properties: { info: { id: "child", parentID: "root" } } } } as never);
+      await Bun.sleep(10);
+      expect(body).toMatchObject({ kind: "heartbeat", session_id: "child", parent_session_id: "root" });
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
+      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+});
+
+describe("session outcome tools", () => {
+  it("uses the exact OpenCode session and returns authoritative status", async () => {
+    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok";
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ url: string; method: string; body?: string }> = [];
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
+      if (url.endsWith("/status")) return Response.json({ session_id: "child/session", outcome: "landed", capture: { status: "saved" } });
+      return Response.json({ ok: true });
+    };
+    try {
+      const hooks = await plugin.server({ directory: "/repo/mimir" } as never);
+      const output = await hooks.tool!.mimir_session_outcome.execute({ outcome: "landed", reason: "tests passed", evidence: "commit abc123" }, { sessionID: "child/session" } as never);
+      expect(JSON.parse(output)).toMatchObject({ session_id: "child/session", outcome: "landed" });
+      expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/outcome", method: "POST" }));
+      expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/status", method: "GET" }));
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
+      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+});
+
 describe("startup build identity", () => {
   it("posts only source identity and safe receipt provenance to the authenticated integration path", async () => {
     const load = buildHarnessLoad("loaded plugin source", JSON.stringify({

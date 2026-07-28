@@ -8,6 +8,7 @@ describe("parseSessionEvent", () => {
     expect(parseSessionEvent({ ...base, kind: "turn", turn: { model: "openai/test" } })).toMatchObject({ kind: "turn", turn: { model: "openai/test" } });
     expect(parseSessionEvent({ ...base, kind: "heartbeat" })).toMatchObject({ kind: "heartbeat", harness: null });
     expect(parseSessionEvent({ ...base, kind: "end" })).toMatchObject({ kind: "end", reason: "explicit" });
+    expect(parseSessionEvent({ ...base, kind: "heartbeat", parent_session_id: "session-root" })).toMatchObject({ parent_session_id: "session-root" });
   });
 
   it("rejects malformed envelopes", () => {
@@ -16,6 +17,7 @@ describe("parseSessionEvent", () => {
     expect(parseSessionEvent({ ...base, version: 2, kind: "turn" })).toEqual({ error: "unsupported event version" });
     expect(parseSessionEvent({ ...base, kind: "note" })).toEqual({ error: "invalid event kind" });
     expect(parseSessionEvent({ ...base, kind: "turn", session_id: "bad id!" })).toEqual({ error: "invalid session_id" });
+    expect(parseSessionEvent({ ...base, kind: "heartbeat", parent_session_id: base.session_id })).toEqual({ error: "invalid parent_session_id" });
     expect(parseSessionEvent({ ...base, kind: "turn", ts: "not-a-date" })).toEqual({ error: "invalid ts" });
   });
 

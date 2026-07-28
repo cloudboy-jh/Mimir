@@ -3,8 +3,8 @@ import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
 import { ingestReportedExchange } from "../reported-exchanges";
 import { parseSessionEvent, SESSION_ID } from "../session-events";
-import { canonicalOutcome, endSession, expireSessions, SESSION_COLUMNS, updateOutcome } from "../sessions";
-import { attachCaptureSummary, CAPTURE_SUMMARY_COLUMNS, captureSummary, reconcile, sessionStatusResponse } from "../storage";
+import { canonicalOutcome, endSession, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
+import { attachCaptureSummary, captureSummary, captureTreeSummary, reconcile, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import type { AppEnv } from "../types";
 
 const SEARCH_TYPES = ["intent", "excerpts", "files", "errors"] as const;
@@ -28,7 +28,7 @@ function clauseNeedles(type: SearchType) {
 export function registerMachineRoutes(app: Hono<AppEnv>) {
   app.get("/whoami", async (c) => {
     const [sessions, exchanges] = await Promise.all([
-      c.env.DB.prepare("SELECT COUNT(*) AS count FROM sessions").first<{ count: number }>(),
+      c.env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE parent_session_id IS NULL").first<{ count: number }>(),
       c.env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges WHERE capture_status = 'saved'").first<{ count: number }>(),
     ]);
 		return c.json({
@@ -71,23 +71,29 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
       where.push("started_at <= ?");
       values.push(to);
     }
-    const sql = `SELECT ${SESSION_COLUMNS}, ${CAPTURE_SUMMARY_COLUMNS} FROM sessions ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC LIMIT 100`;
+    where.push("parent_session_id IS NULL");
+    const sql = `${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY sessions.started_at DESC LIMIT 100`;
     const results = await c.env.DB.prepare(sql).bind(...values).all<Record<string, unknown>>();
     return c.json({ sessions: results.results.map(attachCaptureSummary) });
   });
 
   app.get("/sessions/:id", async (c) => {
     await expireSessions(c.env.DB);
-    const session = await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
+    const requested = await c.env.DB.prepare("SELECT parent_session_id FROM sessions WHERE id = ?").bind(c.req.param("id")).first<{ parent_session_id: string | null }>();
+    const session = requested?.parent_session_id
+      ? await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first()
+      : await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS} FROM sessions WHERE sessions.id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
-    const [exchanges, files, errors, capture, outcomeEvents] = await Promise.all([
-      c.env.DB.prepare("SELECT * FROM exchanges WHERE session_id = ? ORDER BY ts").bind(c.req.param("id")).all(),
-      c.env.DB.prepare("SELECT file FROM session_files WHERE session_id = ? ORDER BY file").bind(c.req.param("id")).all<{ file: string }>(),
-      c.env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = ? ORDER BY signature").bind(c.req.param("id")).all<{ signature: string }>(),
-      captureSummary(c.env.DB, c.req.param("id")),
+    const subtree = "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id)";
+    const [exchanges, files, errors, capture, outcomeEvents, children] = await Promise.all([
+      c.env.DB.prepare(`${subtree} SELECT * FROM exchanges WHERE session_id IN (SELECT id FROM subtree) ORDER BY ts`).bind(c.req.param("id")).all(),
+      c.env.DB.prepare(`${subtree} SELECT DISTINCT file FROM session_files WHERE session_id IN (SELECT id FROM subtree) ORDER BY file`).bind(c.req.param("id")).all<{ file: string }>(),
+      c.env.DB.prepare(`${subtree} SELECT DISTINCT signature FROM session_errors WHERE session_id IN (SELECT id FROM subtree) ORDER BY signature`).bind(c.req.param("id")).all<{ signature: string }>(),
+      captureTreeSummary(c.env.DB, c.req.param("id")),
       c.env.DB.prepare("SELECT id, outcome, source, reason, evidence_json, created_at FROM session_outcome_events WHERE session_id = ? ORDER BY created_at DESC").bind(c.req.param("id")).all(),
+      c.env.DB.prepare(`${subtree} SELECT ${SESSION_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM subtree) AND id <> ? ORDER BY started_at`).bind(c.req.param("id"), c.req.param("id")).all(),
     ]);
-    return c.json({ session, capture, outcome_events: outcomeEvents.results, files: files.results.map((row) => row.file), errors: errors.results.map((row) => row.signature), exchanges: exchanges.results });
+    return c.json({ session, capture, outcome_events: outcomeEvents.results, supporting_sessions: children.results, files: files.results.map((row) => row.file), errors: errors.results.map((row) => row.signature), exchanges: exchanges.results });
   });
 
   app.get("/sessions/:id/status", async (c) => {
@@ -184,17 +190,17 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     }
     const where = [`(${clauses.join(" OR ")})`];
     if (filters.repo) {
-      where.push("s.repo = ?");
+      where.push("root.repo = ?");
       values.push(filters.repo);
     }
     if (filters.outcome) {
       const canonical = canonicalOutcome(filters.outcome);
       if (!canonical) return c.json({ error: "invalid outcome" }, 400);
-      where.push("s.work_outcome = ?");
+      where.push("root.work_outcome = ?");
       values.push(canonical);
     }
     where.push("e.capture_status = 'saved'");
-    const sql = `SELECT s.id AS session_id, s.started_at, s.work_outcome AS outcome, s.repo, s.model_primary, e.id AS exchange_id, e.request_excerpt, e.response_excerpt, e.r2_key FROM sessions s JOIN exchanges e ON e.session_id = s.id WHERE ${where.join(" AND ")} ORDER BY s.started_at DESC LIMIT 50`;
+    const sql = `${SESSION_TREE_CTE} SELECT root.id AS session_id, root.started_at, root.work_outcome AS outcome, root.repo, root.model_primary, e.id AS exchange_id, e.request_excerpt, e.response_excerpt, e.r2_key FROM sessions s JOIN session_tree ON session_tree.id = s.id JOIN sessions root ON root.id = session_tree.root_id JOIN exchanges e ON e.session_id = s.id WHERE ${where.join(" AND ")} ORDER BY root.started_at DESC LIMIT 50`;
     const result = await c.env.DB.prepare(sql).bind(...values).all<Record<string, unknown>>();
     const matches: Record<string, unknown>[] = [];
     let used = 0;

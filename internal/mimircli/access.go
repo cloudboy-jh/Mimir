@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
 )
 
 const dashboardAccessAppName = deployment.DashboardAccessAppName
@@ -131,7 +132,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 }
 
 func promptValue(ioctx IO, label string) (string, error) {
-	if _, err := fmt.Fprint(ioctx.Out, label); err != nil {
+	if _, err := fmt.Fprint(ioctx.Out, cliui.New(ioctx.Out).Prompt(label)); err != nil {
 		return "", err
 	}
 	line, err := bufio.NewReader(ioctx.In).ReadString('\n')

@@ -274,8 +274,7 @@ func useStableTestExecutable(t *testing.T) {
 
 func TestSetupProgressStopIsIdempotent(t *testing.T) {
 	var output bytes.Buffer
-	progress := &setupProgress{out: &output, enabled: true, phases: []string{"testing"}}
-	progress.Resume()
+	progress := startSetupProgress(&output, []string{"testing"})
 	progress.Stop()
 	first := output.String()
 	progress.Stop()

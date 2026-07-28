@@ -14,7 +14,9 @@ func configureInstall() {
 	installpkg.SetBuildInfo(installpkg.BuildInfo{Version: version, Commit: commit, Date: date})
 }
 
-func installManaged(ctx context.Context, explicitDir string) (lifecyclepkg.InstallReport, error) {
+func installManaged(ctx context.Context, explicitDir string, step func(string)) (lifecyclepkg.InstallReport, error) {
 	configureInstall()
-	return lifecycleService().Install(ctx, explicitDir, executablePath)
+	service := lifecycleService()
+	service.Step = step
+	return service.Install(ctx, explicitDir, executablePath)
 }

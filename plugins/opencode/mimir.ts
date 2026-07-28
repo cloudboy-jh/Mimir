@@ -15,7 +15,7 @@
 // Session deletion is reported immediately. Process loss is covered by the
 // server-side silence timer (~10 minutes without a heartbeat).
 
-import type { Plugin } from "@opencode-ai/plugin";
+import { tool, type Plugin } from "@opencode-ai/plugin";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -47,6 +47,7 @@ type SessionEvent = {
   version: 1;
   kind: "turn" | "heartbeat" | "end";
   session_id: string;
+  parent_session_id?: string | null;
   harness: string | null;
   repo?: string | null;
   ts: string;
@@ -437,6 +438,17 @@ async function postDirectExchange(conn: Connection, sessionID: string, exchange:
   }
 }
 
+async function sessionRequest(conn: Connection, sessionID: string, path: "status" | "outcome", body?: Record<string, unknown>): Promise<string> {
+  const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(sessionID)}/${path}`, {
+    method: body ? "POST" : "GET",
+    headers: { authorization: `Bearer ${conn.token}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Mimir ${path} failed (${response.status}): ${text}`);
+  return text;
+}
+
 function createDirectExchangeReporter(
   load: (sessionID: string) => Promise<unknown>,
   send: (sessionID: string, exchange: DirectExchange) => Promise<boolean>,
@@ -503,6 +515,27 @@ const server: Plugin = async ({ client, directory, worktree }) => {
   (timer as { unref?: () => void }).unref?.();
 
   return {
+    tool: {
+      mimir_session_status: tool({
+        description: "Verify the current OpenCode session's durable Mimir capture status.",
+        args: {},
+        async execute(_args, context) {
+          return sessionRequest(conn, context.sessionID, "status");
+        },
+      }),
+      mimir_session_outcome: tool({
+        description: "Record the evidenced work outcome for the current OpenCode session. Child-session outcomes are applied to the root work session.",
+        args: {
+          outcome: tool.schema.enum(["landed", "discarded", "abandoned", "unresolved"]),
+          reason: tool.schema.string().min(1).max(2000),
+          evidence: tool.schema.string().max(32000).optional(),
+        },
+        async execute(args, context) {
+          await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(args.evidence ? { evidence: args.evidence } : {}) });
+          return sessionRequest(conn, context.sessionID, "status");
+        },
+      }),
+    },
     "chat.headers": async (input: { sessionID: string; model?: { providerID?: string } }, output: { headers: Record<string, string> }) => {
       if (input.model?.providerID !== "openrouter") return;
       output.headers["x-mimir-session"] = input.sessionID;
@@ -525,7 +558,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         const info = properties.info as Record<string, unknown> | undefined;
         if (typeof info?.id === "string") {
           activity.touch(info.id);
-          delivery.deliver({ version: 1, kind: "heartbeat", session_id: info.id, harness: "opencode", repo, ts: new Date().toISOString() });
+          const parentSessionID = typeof info.parentID === "string" && info.parentID !== info.id ? info.parentID : null;
+          delivery.deliver({ version: 1, kind: "heartbeat", session_id: info.id, parent_session_id: parentSessionID, harness: "opencode", repo, ts: new Date().toISOString() });
         }
         return;
       }
@@ -545,4 +579,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

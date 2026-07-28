@@ -150,17 +150,21 @@ func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbac
 	if err := s.ensureAuth(ctx, dir, hooks, opts.Noninteractive); err != nil {
 		return DeployResult{}, err
 	}
+	hooks.step("Cloudflare authenticated")
 	opts, err = s.configure(ctx, dir, opts)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	hooks.step("Database configured")
 	if _, err := s.Wrangler.Run(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
 		return DeployResult{}, fmt.Errorf("applying database migrations: %w", err)
 	}
+	hooks.step("Schema current")
 	output, err := s.Wrangler.Run(ctx, dir, nil, "deploy")
 	if err != nil {
 		return DeployResult{}, err
 	}
+	hooks.step("Worker deployed")
 	url := workerURL(output)
 	if url == "" {
 		url = fallbackURL

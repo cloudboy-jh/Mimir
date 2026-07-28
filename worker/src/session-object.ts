@@ -15,6 +15,7 @@ type StoredTurn = SessionEventTurn & { ts: string };
 
 type SessionMeta = {
   sessionId: string;
+  parentSessionId: string | null;
   harness: string | null;
   repo: string | null;
   startedAt: string;
@@ -81,13 +82,14 @@ export class SessionObject implements DurableObject {
 		}
     if (event.kind !== "end") {
       await this.env.DB.batch([
-        this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, 'header', ?, ?)").bind(meta.sessionId, meta.startedAt, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null),
-        this.env.DB.prepare("UPDATE sessions SET state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ?").bind(event.ts, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null, meta.sessionId),
+        this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, parent_session_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, 'header', ?, ?)").bind(meta.sessionId, event.parent_session_id ?? meta.parentSessionId, meta.startedAt, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null),
+        this.env.DB.prepare("UPDATE sessions SET parent_session_id = COALESCE(parent_session_id, ?), state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ?").bind(event.parent_session_id ?? meta.parentSessionId, event.ts, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null, meta.sessionId),
       ]);
     }
     meta.lastEventAt = event.ts;
     if (event.harness) meta.harness = meta.harness ?? event.harness;
     if (event.repo) meta.repo = meta.repo ?? event.repo;
+    if (event.parent_session_id) meta.parentSessionId = meta.parentSessionId ?? event.parent_session_id;
     if (event.kind === "turn" && event.turn) {
 		meta.turnCount += 1;
 		meta.tokensIn += event.turn.usage?.input_tokens ?? 0;
@@ -140,6 +142,7 @@ export class SessionObject implements DurableObject {
     const transcript = {
       schema_version: 1,
       session_id: meta.sessionId,
+      parent_session_id: meta.parentSessionId,
       started_at: meta.startedAt,
       ended_at: now,
       harness: meta.harness,
@@ -151,8 +154,8 @@ export class SessionObject implements DurableObject {
     };
     await this.env.LOGS.put(`sessions/${meta.sessionId}/transcript.json`, JSON.stringify(transcript), { httpMetadata: { contentType: "application/json" } });
     await this.env.DB.batch([
-      this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo) VALUES (?, ?, ?, ?, 'header', ?)").bind(meta.sessionId, meta.startedAt, meta.lastEventAt, meta.harness, meta.repo),
-      this.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN state = 'active' THEN ? ELSE ended_at END, inactive_at = CASE WHEN state = 'active' THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?").bind(now, now, meta.lastEventAt, meta.lastEventAt, meta.harness, meta.repo, meta.sessionId),
+      this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, parent_session_id, started_at, last_active_at, harness, boundary, repo) VALUES (?, ?, ?, ?, ?, 'header', ?)").bind(meta.sessionId, meta.parentSessionId, meta.startedAt, meta.lastEventAt, meta.harness, meta.repo),
+      this.env.DB.prepare("UPDATE sessions SET parent_session_id = COALESCE(parent_session_id, ?), state = 'inactive', ended_at = CASE WHEN state = 'active' THEN ? ELSE ended_at END, inactive_at = CASE WHEN state = 'active' THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?").bind(meta.parentSessionId, now, now, meta.lastEventAt, meta.lastEventAt, meta.harness, meta.repo, meta.sessionId),
     ]);
     meta.finalizedAt = now;
     meta.endReason = reason;
@@ -174,6 +177,7 @@ export class SessionObject implements DurableObject {
         : "active";
     return {
       session_id: meta.sessionId,
+      parent_session_id: meta.parentSessionId,
       liveness,
       harness: meta.harness,
       repo: meta.repo,
@@ -222,8 +226,10 @@ export class SessionObject implements DurableObject {
       this.ctx.storage.get<StoredTurn[]>("turns"),
     ]);
     const now = new Date().toISOString();
+    if (meta) meta.parentSessionId ??= null;
     this.meta = meta ?? {
       sessionId: sessionId ?? "unknown",
+      parentSessionId: null,
       harness: null,
       repo: null,
       startedAt: now,

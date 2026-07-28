@@ -27,6 +27,7 @@ export type SessionEvent = {
   version: typeof SESSION_EVENT_VERSION;
   kind: SessionEventKind;
   session_id: string;
+  parent_session_id?: string | null;
   harness: string | null;
   repo?: string | null;
   ts: string;
@@ -43,6 +44,7 @@ export function parseSessionEvent(input: unknown): SessionEvent | { error: strin
   if (body.version !== SESSION_EVENT_VERSION) return { error: "unsupported event version" };
   if (!(SESSION_EVENT_KINDS as readonly string[]).includes(body.kind as string)) return { error: "invalid event kind" };
   if (typeof body.session_id !== "string" || !SESSION_ID.test(body.session_id)) return { error: "invalid session_id" };
+  if (body.parent_session_id !== undefined && body.parent_session_id !== null && (typeof body.parent_session_id !== "string" || !SESSION_ID.test(body.parent_session_id) || body.parent_session_id === body.session_id)) return { error: "invalid parent_session_id" };
   if (typeof body.ts !== "string" || Number.isNaN(Date.parse(body.ts))) return { error: "invalid ts" };
   if (body.harness !== undefined && body.harness !== null && typeof body.harness !== "string") return { error: "invalid harness" };
   if (body.repo !== undefined && body.repo !== null && typeof body.repo !== "string") return { error: "invalid repo" };
@@ -54,6 +56,7 @@ export function parseSessionEvent(input: unknown): SessionEvent | { error: strin
     ts: new Date(body.ts).toISOString(),
   };
   if (typeof body.repo === "string") event.repo = body.repo.slice(0, 512);
+  if (typeof body.parent_session_id === "string") event.parent_session_id = body.parent_session_id;
   if (body.reason !== undefined) {
     if (typeof body.reason !== "string" || body.reason.length > MAX_END_REASON_CHARS) return { error: "invalid reason" };
     event.reason = body.reason;
