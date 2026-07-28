@@ -5,9 +5,9 @@ import "strings"
 type Field struct{ Label, Value string }
 
 func Card(theme Theme, enabled bool, title string, fields []Field) string {
-	width := len([]rune(title)) + 4
+	width := VisibleWidth(title) + 4
 	for _, field := range fields {
-		line := len([]rune(field.Label)) + len([]rune(field.Value)) + 7
+		line := VisibleWidth(field.Label) + VisibleWidth(field.Value) + 7
 		if line > width {
 			width = line
 		}
@@ -18,14 +18,47 @@ func Card(theme Theme, enabled bool, title string, fields []Field) string {
 	if width > 76 {
 		width = 76
 	}
-	border := Style{Color: theme.Border, Enabled: enabled}
-	heading := Style{Color: theme.Text, Bold: true, Enabled: enabled}
-	muted := Style{Color: theme.Muted, Enabled: enabled}
-	var out strings.Builder
-	out.WriteString(border.Render("┌─ ") + heading.Render(title) + border.Render(" "+strings.Repeat("─", max(0, width-len([]rune(title))-4))))
-	for _, field := range fields {
-		out.WriteString("\n" + border.Render("│") + " " + muted.Render(PadRight(field.Label, 11)) + " " + field.Value)
+	return CardContext(Context{Width: width, Color: enabled, Theme: theme}, title, fields)
+}
+
+// CardContext renders a complete, fixed-width card and wraps every field.
+func CardContext(ctx Context, title string, fields []Field) string {
+	ctx = ctx.normalized()
+	width := ctx.Width
+	if width <= 0 {
+		width = 76
 	}
-	out.WriteString("\n" + border.Render("└"+strings.Repeat("─", width-1)))
+	if width < 4 {
+		return strings.Join(Wrap(title, width), "\n")
+	}
+	border := Style{Color: ctx.Theme.Border, Enabled: ctx.Color}
+	heading := Style{Color: ctx.Theme.Text, Bold: true, Enabled: ctx.Color}
+	muted := Style{Color: ctx.Theme.Muted, Enabled: ctx.Color}
+	inner := width - 4
+	cardTitle := Truncate(title, width-5)
+	var out strings.Builder
+	out.WriteString(border.Render("┌─ ") + heading.Render(cardTitle) + border.Render(" "+strings.Repeat("─", max(0, width-VisibleWidth(cardTitle)-5))+"┐"))
+	for _, field := range fields {
+		labelWidth := min(11, max(1, inner/3))
+		valueWidth := inner - labelWidth - 1
+		labelLines, valueLines := Wrap(field.Label, labelWidth), Wrap(field.Value, valueWidth)
+		lineCount := max(len(labelLines), len(valueLines))
+		for i := 0; i < lineCount; i++ {
+			label, value := "", ""
+			if i < len(labelLines) {
+				label = labelLines[i]
+			}
+			if i < len(valueLines) {
+				value = valueLines[i]
+			}
+			out.WriteString("\n" + border.Render("│") + " " + muted.Render(PadRight(label, labelWidth)) + " " + PadRight(value, valueWidth) + " " + border.Render("│"))
+		}
+	}
+	out.WriteString("\n" + border.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	return out.String()
+}
+
+// CardWithContext is the descriptive alias for CardContext.
+func CardWithContext(ctx Context, title string, fields []Field) string {
+	return CardContext(ctx, title, fields)
 }

@@ -16,6 +16,8 @@ import (
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 	searchpkg "github.com/cloudboy-jh/mimir/internal/search"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 type IO struct {
@@ -218,12 +220,12 @@ func cmdVersion(args []string, out io.Writer) error {
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
-	if _, err := fmt.Fprintln(out, versionString()); err != nil {
-		return err
-	}
+	render := cliui.New(out)
+	fields := []bentotui.Field{{Label: "Version", Value: versionString()}}
 	if receipt.BundleVersion != "" {
-		_, err = fmt.Fprintf(out, "Bundle %s · %s\n", receipt.BundleVersion, installpkg.ArtifactSummary(artifacts))
+		fields = append(fields, bentotui.Field{Label: "Bundle", Value: receipt.BundleVersion}, bentotui.Field{Label: "Artifacts", Value: installpkg.ArtifactSummary(artifacts)})
 	}
+	_, err = fmt.Fprintln(out, render.Card("Mimir", fields...))
 	return err
 }
 
@@ -294,21 +296,17 @@ func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
-	if _, err := fmt.Fprintf(out, "binary  %s  %s\n", report.Binary.Status, report.Binary.Path); err != nil {
-		return err
-	}
+	render := cliui.New(out)
+	items := []cliui.StatusItem{{Title: report.Binary.Path, Stat: report.Binary.Status, Tone: cliui.ToneForStatus(report.Binary.Status)}}
 	for _, artifact := range report.Artifacts {
 		if artifact.Status == installpkg.ArtifactUnowned {
 			continue
 		}
-		if _, err := fmt.Fprintf(out, "%s  %s\n", artifact.Status, artifact.Path); err != nil {
-			return err
-		}
+		status := string(artifact.Status)
+		items = append(items, cliui.StatusItem{Title: artifact.Path, Stat: status, Tone: cliui.ToneForStatus(status)})
 	}
-	if _, err := fmt.Fprintf(out, "hermes  %s  %s\n", report.Hermes.State, report.Hermes.Detail); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "%s\nConnection, local Worker files, Cloudflare deployment, and install log preserved.\n", report.Summary)
+	items = append(items, cliui.StatusItem{Title: "Hermes", Detail: report.Hermes.Detail, Stat: report.Hermes.State, Tone: cliui.ToneForStatus(report.Hermes.State)})
+	_, err = fmt.Fprintf(out, "%s\n\n%s\n\n%s\n", render.Heading("Uninstall complete"), render.StatusItems(items), render.Callout(bentotui.ToneInfo, report.Summary, "Connection, local Worker files, Cloudflare deployment, and install log preserved."))
 	return err
 }
 
@@ -455,18 +453,22 @@ func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutpu
 	if status.Capture.LastSavedAt != nil {
 		lastSaved = *status.Capture.LastSavedAt
 	}
-	_, err = fmt.Fprintf(out, "%s\nSession   %s\nCapture   %s\nSaved     %d\nPending   %d\nFailed    %d\nLast save %s\nOutcome   %s\n", sessions.ReceiptSummary(status), status.SessionID, displayState(status.Capture.Status), status.Capture.SavedExchanges, status.Capture.PendingExchanges, status.Capture.FailedExchanges, lastSaved, displayState(status.Outcome))
-	if err == nil && status.DashboardURL != nil {
-		_, err = fmt.Fprintf(out, "Dashboard %s\n", *status.DashboardURL)
+	render := cliui.New(out)
+	fields := []bentotui.Field{
+		{Label: "Capture", Value: sessions.ReceiptSummary(status)},
+		{Label: "Session", Value: status.SessionID},
+		{Label: "State", Value: render.CaptureBadge(status.Capture.Status)},
+		{Label: "Saved", Value: fmt.Sprint(status.Capture.SavedExchanges)},
+		{Label: "Pending", Value: fmt.Sprint(status.Capture.PendingExchanges)},
+		{Label: "Failed", Value: fmt.Sprint(status.Capture.FailedExchanges)},
+		{Label: "Last save", Value: lastSaved},
+		{Label: "Outcome", Value: render.OutcomeBadge(status.Outcome)},
 	}
+	if status.DashboardURL != nil {
+		fields = append(fields, bentotui.Field{Label: "Dashboard", Value: *status.DashboardURL})
+	}
+	_, err = fmt.Fprintln(out, render.Card("Session status", fields...))
 	return err
-}
-
-func displayState(value string) string {
-	if value == "" {
-		return "Unavailable"
-	}
-	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 type outcomeEvidence struct {
@@ -587,55 +589,46 @@ func printRemoteData(out io.Writer, data []byte) error {
 }
 
 func usage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, `mimir remembers
-
-Usage:
-  mimir setup [--quick] [--json]
-  mimir install [--bin-dir <dir>] [--json]
-  mimir uninstall [--keep-binary] [--json]
-  mimir deploy [--json]
-  mimir access [--token <api-token> --email <address> | --aud <tag> --team-domain <domain>] [--json]
-  mimir login [--json]
-  mimir dashboard
-  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20] [--json]
-  mimir search <query> [--json]
-  mimir session get <id> [--json]
-  mimir session status <id> [--json]
-  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json] [--json]
-  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json] [--json]
-  mimir reconcile
-  mimir doctor [--json]
-  mimir update [--check] [--force] [--json]
-  mimir version [--json]
-
-Run "mimir help advanced" for diagnostic commands.`)
+	render := cliui.New(out)
+	commands := []cliui.CommandItem{
+		{Usage: "mimir setup [--quick] [--json]", Description: "Provision or reconnect Mimir."},
+		{Usage: "mimir install [--bin-dir <dir>] [--json]", Description: "Install the CLI and managed harness files."},
+		{Usage: "mimir uninstall [--keep-binary] [--json]", Description: "Remove owned local files without deleting memory."},
+		{Usage: "mimir deploy [--json]", Description: "Deploy the bundled Worker and dashboard."},
+		{Usage: "mimir access [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
+		{Usage: "mimir login [--json]", Description: "Authenticate and register this machine."},
+		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
+		{Usage: "mimir list [filters] [--json]", Description: "List captured work sessions."},
+		{Usage: "mimir search <query> [--json]", Description: "Search session evidence and local code."},
+		{Usage: "mimir session status <id> [--json]", Description: "Inspect capture and outcome state."},
+		{Usage: "mimir session end <id> [options]", Description: "Finalize capture and optionally record an outcome."},
+		{Usage: "mimir doctor [--json]", Description: "Check the installation and connection."},
+		{Usage: "mimir update [--check] [--force] [--json]", Description: "Check or apply CLI and harness updates."},
+		{Usage: "mimir version [--json]", Description: "Show CLI, bundle, and artifact versions."},
+	}
+	content := bentotui.Stack(render.Commands(commands), render.ActionHint("mimir help advanced", "Show diagnostic and development commands."))
+	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir remembers"), content)
 	return err
 }
 
 func advancedUsage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, `mimir advanced commands
-
-These commands support harness integrations, diagnostics, and development.
-
-Usage:
-  mimir connection
-  mimir doctor [--json]
-  mimir whoami [--json]
-  mimir list [--repo name] [--outcome landed|discarded|abandoned|unresolved] [--limit 20]
-  mimir sessions
-  mimir session <id>
-  mimir session get <id> [--json]
-  mimir session status <id>
-  mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text]
-  mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]
-  mimir search <query> [--json]
-  mimir reconcile
-  mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>
-  mimir outcome git <session>
-  mimir config get [--json]
-  mimir config set <key> <json-value> [--json]
-  mimir index [--full]
-  mimir recall <query> [--budget 4000] [--json]`)
+	render := cliui.New(out)
+	commands := []cliui.CommandItem{
+		{Usage: "mimir connection", Description: "Print the active connection manifest."},
+		{Usage: "mimir whoami [--json]", Description: "Verify machine authentication."},
+		{Usage: "mimir sessions [--json]", Description: "Fetch the canonical session collection."},
+		{Usage: "mimir session <id>", Description: "Fetch one canonical session record."},
+		{Usage: "mimir session get <id> [--json]", Description: "Fetch the complete canonical session record."},
+		{Usage: "mimir session outcome <id> <outcome> [options]", Description: "Record an evidenced work outcome."},
+		{Usage: "mimir reconcile", Description: "Reconcile pending session state."},
+		{Usage: "mimir mark <session> <outcome>", Description: "Compatibility alias for recording an outcome."},
+		{Usage: "mimir outcome git <session>", Description: "Infer an outcome from repository evidence."},
+		{Usage: "mimir config get [--json]", Description: "Read canonical Worker configuration."},
+		{Usage: "mimir config set <key> <json-value> [--json]", Description: "Update canonical Worker configuration."},
+		{Usage: "mimir index [--full]", Description: "Refresh the local repository code index."},
+		{Usage: "mimir recall <query> [--budget 4000] [--json]", Description: "Search local code memory."},
+	}
+	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir advanced commands"), render.Commands(commands))
 	return err
 }
 

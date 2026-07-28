@@ -174,7 +174,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 		Login: func(ctx context.Context, dir string) error {
 			opts.Progress.Pause()
 			defer opts.Progress.Resume()
-			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			cloudflareLoginNotice(ioctx.Out)
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 		PromptOpenRouterKey: func() (string, error) {
@@ -189,7 +189,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 			}
 			opts.Progress.Pause()
 			defer opts.Progress.Resume()
-			fmt.Fprint(ioctx.Out, accessTokenHint)
+			fmt.Fprintln(ioctx.Out, renderAccessTokenHint(ioctx.Out))
 			return promptSecret(ioctx, "Cloudflare API token (enables automatic dashboard Access; Enter to skip): ")
 		},
 		Verify: func(ctx context.Context, url, token string) error {
@@ -219,7 +219,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 		human += "\n\n" + summary
 	}
 	if access.State != "configured" && !opts.JSON {
-		human += "\n\n" + accessChecklist(url)
+		human += "\n\n" + renderAccessChecklist(ioctx.Out, url)
 	}
 	return writeSetupResult(ioctx.Out, opts.JSON, addConnectionManifest(result, url), human)
 }

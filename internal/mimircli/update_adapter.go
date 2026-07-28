@@ -10,6 +10,8 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 var runLifecycleUpdate = func(ctx context.Context, check, force bool) (lifecyclepkg.UpdateReport, error) {
@@ -41,47 +43,54 @@ func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
+	render := cliui.New(out)
 	message := ""
+	tone := bentotui.ToneNeutral
 	switch report.Binary.Status {
 	case "current":
 		message = fmt.Sprintf("mimir %s is up to date", report.Binary.Current)
+		tone = bentotui.ToneSuccess
 	case "available":
 		message = fmt.Sprintf("mimir %s available (current %s)", report.Binary.Latest, report.Binary.Current)
+		tone = bentotui.ToneWarn
 	case "updated":
 		message = fmt.Sprintf("updated mimir %s → %s", report.Binary.Current, report.Binary.Latest)
+		tone = bentotui.ToneSuccess
 	case "scheduled":
 		message = fmt.Sprintf("update to mimir %s scheduled (current %s)", report.Binary.Latest, report.Binary.Current)
+		tone = bentotui.ToneWarn
 	}
-	if report.Binary.Detail != "" {
-		message += "\n" + report.Binary.Detail
-	}
+	blocks := []string{render.Heading("Mimir update"), render.Callout(tone, message, report.Binary.Detail)}
 	if report.Binary.Status == "scheduled" {
-		message += "\nRun: mimir update --force to stop running Mimir processes and apply now"
+		blocks = append(blocks, render.ActionHint("mimir update --force", "Stop running Mimir processes and apply the update now."))
 	}
-	message += "\n" + artifactDetails(report.Artifacts)
+	artifactFields := []bentotui.Field{{Label: "Summary", Value: installpkg.ArtifactSummary(report.Artifacts)}}
+	if report.Artifacts.ReceiptPath != "" {
+		artifactFields = append(artifactFields, bentotui.Field{Label: "Receipt", Value: report.Artifacts.ReceiptPath})
+	}
+	artifactBlock := render.KeyValues("Managed artifacts", artifactFields...)
+	items := make([]cliui.StatusItem, 0, len(report.Artifacts.Artifacts))
+	for _, artifact := range report.Artifacts.Artifacts {
+		status := string(artifact.Status)
+		detail := strings.TrimSpace(strings.Join([]string{artifact.Source, artifact.Detail}, " · "))
+		detail = strings.Trim(detail, " ·")
+		items = append(items, cliui.StatusItem{Title: artifact.Path, Detail: detail, Stat: status, Tone: cliui.ToneForStatus(status)})
+	}
+	if len(items) > 0 {
+		artifactBlock = bentotui.Join("\n\n", artifactBlock, render.StatusItems(items))
+	}
+	blocks = append(blocks, artifactBlock)
 	if summary := integrationSummary(report.Integrations); strings.TrimSpace(summary) != "" {
-		message += "\n" + summary
+		blocks = append(blocks, render.Section("Harness integrations", summary))
 	}
 	if activation := activationRequired(report.Artifacts, report.Integrations); activation != "" {
-		message += "\nActivation required:\n" + activation
+		blocks = append(blocks, render.Callout(bentotui.ToneWarn, "Activation required", activation))
 	}
 	if report.Binary.Status == "updated" {
-		message += "\nDeployment:\n  Worker bundle may be behind this CLI version\n  Run: mimir deploy"
+		blocks = append(blocks, render.Callout(bentotui.ToneInfo, "Deployment", "Worker bundle may be behind this CLI version."), render.ActionHint("mimir deploy", "Deploy the bundled Worker and dashboard."))
 	}
-	_, err = fmt.Fprintln(out, message)
+	_, err = fmt.Fprintln(out, bentotui.Stack(blocks...))
 	return err
-}
-
-func artifactDetails(report installpkg.ArtifactReport) string {
-	lines := []string{installpkg.ArtifactSummary(report)}
-	for _, artifact := range report.Artifacts {
-		line := fmt.Sprintf("  %s  %s · %s", artifact.Status, artifact.Source, artifact.Path)
-		if artifact.Detail != "" {
-			line += " · " + artifact.Detail
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
 }
 
 func activationRequired(artifacts installpkg.ArtifactReport, integrations harness.IntegrationReport) string {

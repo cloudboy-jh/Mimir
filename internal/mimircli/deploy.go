@@ -52,7 +52,7 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		Login: func(ctx context.Context, dir string) error {
 			opts.Progress.Pause()
 			defer opts.Progress.Resume()
-			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			cloudflareLoginNotice(ioctx.Out)
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 	}, fallback)
@@ -63,6 +63,7 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	url := domainResult.URL
 	opts.Progress.Stop()
 	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
-	human := cliui.New(ioctx.Out).Card("Deployment complete", bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")}, bentotui.Field{Label: "Status", Value: "ready"})
+	render := cliui.New(ioctx.Out)
+	human := render.Card("Deployment complete", bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")}, bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "READY", bentotui.VariantSuccess)})
 	return writeSetupResult(ioctx.Out, opts.JSON, result, human)
 }

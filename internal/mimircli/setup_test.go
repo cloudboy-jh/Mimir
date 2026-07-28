@@ -17,6 +17,8 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 func TestConnectExistingEndpointJSON(t *testing.T) {
@@ -200,7 +202,7 @@ func TestLoginSummaryShowsUserAndConnection(t *testing.T) {
 	}{ID: "abc", Name: "Example Account"})
 
 	summary := loginSummary(identity, "https://mimir.example.workers.dev/", false)
-	for _, want := range []string{"◆ Cloudflare", "Email:    user@example.com", "Account:  Example Account", "Auth:     OAuth Token", "◆ Connection", "Worker:   https://mimir.example.workers.dev", "Status:   ✓ connected"} {
+	for _, want := range []string{"◆ Cloudflare", "Email:", "user@example.com", "Account:", "Example Account", "Auth:", "OAuth Token", "◆ Connection", "Worker:", "https://mimir.example.workers.dev", "Status:", "[✓] connected"} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary missing %q:\n%s", want, summary)
 		}
@@ -216,10 +218,27 @@ func TestLoginSummaryShowsUserAndConnection(t *testing.T) {
 func TestLoginSummaryUsesMimirPalette(t *testing.T) {
 	identity := deployment.Identity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
 	summary := loginSummary(identity, "https://mimir.example.workers.dev", true)
-	for _, color := range []string{mimirMint, mimirGreen, mimirMutedGreen} {
+	for _, color := range []string{
+		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Accent.R, bentotui.Mimir.Accent.G, bentotui.Mimir.Accent.B),
+		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Success.R, bentotui.Mimir.Success.G, bentotui.Mimir.Success.B),
+		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Muted.R, bentotui.Mimir.Muted.G, bentotui.Mimir.Muted.B),
+	} {
 		if !strings.Contains(summary, "38;2;"+color+"m") {
 			t.Fatalf("summary missing palette color %s", color)
 		}
+	}
+}
+
+func TestLoginSummaryFitsNarrowTerminal(t *testing.T) {
+	identity := deployment.Identity{LoggedIn: true, AuthType: "OAuth Token", Email: "user-with-a-long-address@example.com"}
+	identity.Accounts = append(identity.Accounts, struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}{Name: "A Cloudflare account with an unusually long display name"})
+	render := cliui.Renderer{Width: 40, Theme: bentotui.Mimir}
+	summary := loginSummaryWithRenderer(identity, "https://mimir.example.workers.dev/with/a/long/path", render)
+	if !bentotui.FitsWidth(summary, 40) {
+		t.Fatalf("summary exceeds terminal width:\n%s", summary)
 	}
 }
 

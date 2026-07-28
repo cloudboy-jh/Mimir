@@ -32,7 +32,7 @@ func TestCmdListPassesFilters(t *testing.T) {
 	if err := cmdList(context.Background(), []string{"--repo", "mimir", "--outcome=landed"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "[LANDED] s1") || !strings.Contains(out.String(), "m · 3 exchanges saved") {
+	if !strings.Contains(out.String(), "[LANDED] s1") || !strings.Contains(out.String(), "3 exchanges saved") || !strings.Contains(out.String(), "No repository · m") {
 		t.Fatalf("output %q", out.String())
 	}
 }

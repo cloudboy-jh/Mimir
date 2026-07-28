@@ -3,12 +3,13 @@ package mimircli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 func login(ctx context.Context, args []string, ioctx IO) error {
@@ -69,7 +70,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		Login: func(ctx context.Context, dir string) error {
 			opts.Progress.Pause()
 			defer opts.Progress.Resume()
-			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			cloudflareLoginNotice(ioctx.Out)
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 		Verify: func(ctx context.Context, url, token string) error {
@@ -98,7 +99,7 @@ func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity d
 	}
 	integrations := lifecycle.Integrations
 	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity, "artifacts": lifecycle.Artifacts, "integrations": integrations}, url)
-	human := loginSummary(identity, url, terminalColor(ioctx.Out))
+	human := loginSummaryWithRenderer(identity, url, cliui.New(ioctx.Out))
 	if summary := integrationSummary(integrations); summary != "" {
 		human += "\n\n" + summary
 	}
@@ -106,6 +107,10 @@ func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity d
 }
 
 func loginSummary(identity deployment.Identity, url string, color bool) string {
+	return loginSummaryWithRenderer(identity, url, cliui.Renderer{Color: color, Width: 80, Theme: bentotui.Mimir})
+}
+
+func loginSummaryWithRenderer(identity deployment.Identity, url string, render cliui.Renderer) string {
 	accountNames := make([]string, 0, len(identity.Accounts))
 	for _, account := range identity.Accounts {
 		if account.Name != "" {
@@ -121,23 +126,15 @@ func loginSummary(identity deployment.Identity, url string, color bool) string {
 		machine = "registered"
 	}
 
-	var summary strings.Builder
-	fmt.Fprintln(&summary, cliColor(color, "◆ Cloudflare", mimirMint, true))
-	writeSummaryRow(&summary, color, "Email", identity.Email)
-	writeSummaryRow(&summary, color, "Account", accounts)
-	writeSummaryRow(&summary, color, "Auth", identity.AuthType)
-	fmt.Fprintln(&summary)
-	fmt.Fprintln(&summary, cliColor(color, "◆ Connection", mimirMint, true))
-	writeSummaryRow(&summary, color, "Worker", strings.TrimRight(url, "/"))
-	writeSummaryRow(&summary, color, "Machine", machine)
-	status := cliColor(color, "✓", mimirGreen, true) + " connected"
-	writeSummaryRow(&summary, color, "Status", status)
-	return strings.TrimRight(summary.String(), "\n")
-}
-
-func writeSummaryRow(out io.Writer, color bool, label, value string) {
-	if strings.TrimSpace(value) == "" {
-		value = "unavailable"
-	}
-	fmt.Fprintf(out, "  %s %s\n", cliColor(color, fmt.Sprintf("%-9s", label+":"), mimirMutedGreen, false), value)
+	cloudflare := render.KeyValues("Cloudflare",
+		bentotui.Field{Label: "Email", Value: identity.Email},
+		bentotui.Field{Label: "Account", Value: accounts},
+		bentotui.Field{Label: "Auth", Value: identity.AuthType},
+	)
+	connection := render.KeyValues("Connection",
+		bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")},
+		bentotui.Field{Label: "Machine", Value: machine},
+		bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "✓", bentotui.VariantSuccess) + " connected"},
+	)
+	return bentotui.Stack(cloudflare, connection)
 }

@@ -25,7 +25,7 @@ func TestAccessHelpIncludesEmail(t *testing.T) {
 	if err := usage(&output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "mimir access [--token <api-token> --email <address>") {
+	if !strings.Contains(output.String(), "--token <api-token>") || !strings.Contains(output.String(), "--email") || !strings.Contains(output.String(), "<address>") {
 		t.Fatalf("access help does not include --email:\n%s", output.String())
 	}
 }

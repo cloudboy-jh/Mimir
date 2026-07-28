@@ -1,5 +1,5 @@
-// Package bentotui contains stdlib ports of the small BentoTUI rendering
-// contracts Mimir uses. It intentionally contains no Bubble Tea or Lipgloss.
+// Package bentotui is Mimir's dependency-free terminal rendering system. It
+// adapts BentoTUI's visual contracts without requiring Bubble Tea or Lipgloss.
 package bentotui
 
 type Color struct{ R, G, B uint8 }
@@ -8,6 +8,21 @@ type Theme struct {
 	Text, Muted, Accent           Color
 	Success, Warning, Error, Info Color
 	Border                        Color
+}
+
+// Context carries the terminal capabilities used by width-aware renderers.
+// Width is the maximum visible width; values <= 0 mean unconstrained.
+type Context struct {
+	Width int
+	Color bool
+	Theme Theme
+}
+
+func (c Context) normalized() Context {
+	if c.Theme == (Theme{}) {
+		c.Theme = Mimir
+	}
+	return c
 }
 
 var Mimir = Theme{

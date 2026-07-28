@@ -30,8 +30,8 @@ func TestExecuteVersion(t *testing.T) {
 	if err := ExecuteIO(context.Background(), []string{"version"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "1.2.3 (abc123)\n"; got != want {
-		t.Fatalf("version output %q, want %q", got, want)
+	if got := output.String(); !strings.Contains(got, "Mimir") || !strings.Contains(got, "Version") || !strings.Contains(got, "1.2.3 (abc123)") {
+		t.Fatalf("version output %q", got)
 	}
 }
 
@@ -380,7 +380,7 @@ func TestExecuteSessionStatusHumanAndJSON(t *testing.T) {
 	if err := ExecuteIO(context.Background(), []string{"session", "status", "session-1"}, IO{Out: &human}); err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"Saved to Mimir · 14 exchanges in this session", "Session   session-1", "Capture   Saved", "Saved     14", "Failed    1", "Outcome   Unresolved", "Dashboard https://mimir.example/dashboard/sessions/session-1"} {
+	for _, value := range []string{"Session status", "Saved to Mimir · 14 exchanges in this session", "Session", "session-1", "[SAVED]", "Saved", "14", "Failed", "1", "[UNRESOLVED]", "https://mimir.example/dashboard/sessions/session-1"} {
 		if !strings.Contains(human.String(), value) {
 			t.Fatalf("human status missing %q: %s", value, human.String())
 		}
@@ -441,7 +441,7 @@ func TestExecuteSessionEnd(t *testing.T) {
 	if err := ExecuteIO(context.Background(), []string{"session", "end", "session-1", "--outcome", "landed", "--reason", "verified"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Capture finalized") || !strings.Contains(output.String(), "Saved to Mimir · 1 exchange in this session") || !strings.Contains(output.String(), "landed") {
+	if !strings.Contains(output.String(), "Capture finalized") || !strings.Contains(output.String(), "Saved to Mimir · 1 exchange in this session") || !strings.Contains(output.String(), "[LANDED]") {
 		t.Fatalf("output %q", output.String())
 	}
 	var machine bytes.Buffer

@@ -76,10 +76,15 @@ func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"updated  plugins/opencode/mimir.ts · /opencode/mimir.ts · replaced managed plugin",
-		"current  skills/mimir-use/SKILL.md · /skills/SKILL.md",
-		"Activation required:\n  OpenCode · restart OpenCode to load the updated managed plugin",
-		"Deployment:\n  Worker bundle may be behind this CLI version\n  Run: mimir deploy",
+		"/opencode/mimir.ts",
+		"plugins/opencode/mimir.ts · replaced managed plugin",
+		"/skills/SKILL.md",
+		"skills/mimir-use/SKILL.md",
+		"Activation required",
+		"OpenCode · restart OpenCode to load the updated managed plugin",
+		"Deployment",
+		"Worker bundle may be behind this CLI version",
+		"[mimir deploy] Deploy the bundled Worker and dashboard.",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, output.String())
@@ -132,7 +137,7 @@ func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
 	for _, want := range []string{
 		"update to mimir 1.1.0 scheduled (current 1.0.0)",
 		"blocked by Mimir process(es) 42; the update will apply after they exit",
-		"Run: mimir update --force to stop running Mimir processes and apply now",
+		"[mimir update --force] Stop running Mimir processes and apply the update now.",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("output missing %q:\n%s", want, output.String())

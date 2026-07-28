@@ -16,26 +16,18 @@ import (
 
 func renderDoctor(out io.Writer, report doctorpkg.Report) error {
 	render := cliui.New(out)
-	rows := make([]bentotui.Row, 0, len(report.Checks))
+	rows := make([]cliui.StatusItem, 0, len(report.Checks))
 	for _, check := range report.Checks {
-		row := bentotui.Row{Primary: check.Name, Secondary: check.Detail}
-		switch check.Status {
-		case "ok":
-			row.Tone = bentotui.ToneSuccess
-		case "warning", "skipped":
-			row.Tone = bentotui.ToneWarn
-		default:
-			row.Tone = bentotui.ToneDanger
-		}
+		row := cliui.StatusItem{Title: check.Name, Detail: check.Detail, Stat: check.Status, Tone: cliui.ToneForStatus(check.Status)}
 		if check.Repair != "" {
-			if row.Secondary != "" {
-				row.Secondary += " · "
+			if row.Detail != "" {
+				row.Detail += " · "
 			}
-			row.Secondary += "repair: " + check.Repair
+			row.Detail += "repair: " + check.Repair
 		}
 		rows = append(rows, row)
 	}
-	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir doctor"), render.Rows(rows))
+	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir doctor"), render.StatusItems(rows))
 	return err
 }
 
@@ -50,19 +42,13 @@ func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
 	if _, err := fmt.Fprintln(out, render.Card("Installation complete", fields...)); err != nil {
 		return err
 	}
-	rows := make([]bentotui.Row, 0, len(report.Artifacts.Artifacts))
+	rows := make([]cliui.StatusItem, 0, len(report.Artifacts.Artifacts))
 	for _, artifact := range report.Artifacts.Artifacts {
-		tone := bentotui.ToneSuccess
 		status := string(artifact.Status)
-		if status == "conflict" || status == "modified" || status == "failed" {
-			tone = bentotui.ToneDanger
-		} else if status == "preserved" || status == "skipped" {
-			tone = bentotui.ToneWarn
-		}
-		rows = append(rows, bentotui.Row{Primary: artifact.Path, RightStat: status, Tone: tone})
+		rows = append(rows, cliui.StatusItem{Title: artifact.Path, Stat: status, Tone: cliui.ToneForStatus(status)})
 	}
 	if len(rows) > 0 {
-		_, err := fmt.Fprintf(out, "\n%s\n", render.Rows(rows))
+		_, err := fmt.Fprintf(out, "\n%s\n", render.StatusItems(rows))
 		return err
 	}
 	return nil
@@ -73,7 +59,8 @@ func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error
 		receipts = receipts[:limit]
 	}
 	if len(receipts) == 0 {
-		_, err := fmt.Fprintln(out, "No sessions found.")
+		render := cliui.New(out)
+		_, err := fmt.Fprintln(out, render.EmptyState("No sessions found", "Captured model traffic will appear here as work sessions."))
 		return err
 	}
 	render := cliui.New(out)
@@ -84,15 +71,6 @@ func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error
 		outcome := receipt.Outcome
 		if outcome == "" {
 			outcome = "unresolved"
-		}
-		variant := bentotui.VariantNeutral
-		switch outcome {
-		case "landed":
-			variant = bentotui.VariantSuccess
-		case "discarded":
-			variant = bentotui.VariantDanger
-		case "abandoned":
-			variant = bentotui.VariantWarning
 		}
 		title := receipt.ID
 		if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
@@ -116,10 +94,10 @@ func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error
 		} else if receipt.Capture.FailedExchanges > 0 {
 			capture = fmt.Sprintf("%d saved · %d failed", receipt.Capture.SavedExchanges, receipt.Capture.FailedExchanges)
 		}
-		badge := bentotui.Badge(render.Theme, render.Color, strings.ToUpper(outcome), variant)
-		fmt.Fprintf(out, "  %s %s\n", badge, title)
-		fmt.Fprintf(out, "      %s · %s · %s · %s\n", started, repo, model, capture)
-		fmt.Fprintf(out, "      %s\n", receipt.ID)
+		fmt.Fprintln(out, render.Session(cliui.SessionItem{
+			Title: title, Outcome: outcome, Capture: capture,
+			Metadata: strings.Join([]string{started, repo, model}, " · "), ID: receipt.ID,
+		}))
 		if i < len(receipts)-1 {
 			fmt.Fprintln(out)
 		}
@@ -146,7 +124,7 @@ func renderSearch(out io.Writer, data []byte) error {
 	render := cliui.New(out)
 	fmt.Fprintf(out, "%s\n", render.Heading("Search · "+result.Query))
 	if len(result.Matches) == 0 && strings.TrimSpace(result.Code) == "" {
-		_, err := fmt.Fprintln(out, "\n  No matches found.")
+		_, err := fmt.Fprintln(out, "\n"+render.EmptyState("No matches found", "Try a broader query or search a repository, model, or session ID."))
 		return err
 	}
 	for _, match := range result.Matches {
@@ -154,14 +132,18 @@ func renderSearch(out io.Writer, data []byte) error {
 		if excerpt == "" {
 			excerpt = strings.TrimSpace(match.ResponseExcerpt)
 		}
-		fmt.Fprintf(out, "\n  %s  %s\n", bentotui.Badge(render.Theme, render.Color, strings.ToUpper(match.Outcome), bentotui.VariantNeutral), match.SessionID)
-		fmt.Fprintf(out, "      %s · %s\n", emptyFallback(match.Repo, "No repository"), emptyFallback(match.Model, "unknown model"))
-		if excerpt != "" {
-			fmt.Fprintf(out, "      %s\n", excerpt)
-		}
+		fmt.Fprintf(out, "\n%s\n", render.Session(cliui.SessionItem{
+			Title: match.SessionID, Outcome: match.Outcome,
+			Metadata: strings.Join([]string{emptyFallback(match.Repo, "No repository"), emptyFallback(match.Model, "unknown model")}, " · "),
+			Excerpt:  excerpt,
+		}))
 	}
-	if strings.TrimSpace(result.Code) != "" {
-		fmt.Fprintf(out, "\n%s\n%s\n", render.Heading("Local code"), strings.TrimSpace(result.Code))
+	if code := strings.Trim(result.Code, "\r\n"); code != "" {
+		var lines []string
+		for _, line := range strings.Split(code, "\n") {
+			lines = append(lines, bentotui.WrapPreserve(line, render.Width)...)
+		}
+		fmt.Fprintf(out, "\n%s\n%s\n", render.Heading("Local code"), strings.Join(lines, "\n"))
 	}
 	return nil
 }
@@ -170,7 +152,7 @@ func renderEndedReceipt(out io.Writer, status sessions.Status) error {
 	render := cliui.New(out)
 	fields := []bentotui.Field{
 		{Label: "Capture", Value: sessions.ReceiptSummary(status)},
-		{Label: "Outcome", Value: emptyFallback(status.Outcome, "unresolved")},
+		{Label: "Outcome", Value: render.OutcomeBadge(emptyFallback(status.Outcome, "unresolved"))},
 		{Label: "Session", Value: status.SessionID},
 	}
 	if status.DashboardURL != nil && *status.DashboardURL != "" {

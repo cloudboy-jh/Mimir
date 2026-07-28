@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 const dashboardAccessAppName = deployment.DashboardAccessAppName
@@ -35,6 +36,16 @@ Manual steps in Zero Trust → Access → Applications:
 
 Machine API routes (/v1, /sessions, ...) stay outside Access; the Worker
 authenticates them with bearer tokens.`, dashboardAccessAppName, domains[0], domains[1])
+}
+
+func renderAccessChecklist(out io.Writer, workerURL string) string {
+	render := cliui.New(out)
+	return render.Callout(bentotui.ToneWarn, "Dashboard Access needs configuration", accessChecklist(workerURL))
+}
+
+func renderAccessTokenHint(out io.Writer) string {
+	render := cliui.New(out)
+	return render.Callout(bentotui.ToneInfo, "Cloudflare API token", strings.TrimSpace(accessTokenHint))
 }
 
 func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
@@ -75,7 +86,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 			token = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 		}
 		if token == "" && !jsonOut {
-			fmt.Fprint(ioctx.Out, accessTokenHint)
+			fmt.Fprintln(ioctx.Out, renderAccessTokenHint(ioctx.Out))
 			token, err = promptSecret(ioctx, "Cloudflare API token (Enter to print manual steps): ")
 			if err != nil {
 				return err
@@ -92,7 +103,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 				}
 				return writeSetupResult(ioctx.Out, true, result, "")
 			}
-			_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
+			_, err := fmt.Fprintln(ioctx.Out, renderAccessChecklist(ioctx.Out, url))
 			return err
 		}
 		if email == "" {
@@ -110,7 +121,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 	outcome, err := deployment.NewService(httpClient).ConfigureAccess(ctx, opts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Login: func(ctx context.Context, dir string) error {
-			fmt.Fprintln(ioctx.Out, "Cloudflare login required. Opening Wrangler authentication...")
+			cloudflareLoginNotice(ioctx.Out)
 			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 	})
@@ -124,11 +135,12 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 				"action": "provide --email for an exact dashboard Allow policy, then rerun mimir access",
 			}, "")
 		}
-		_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
+		_, err := fmt.Fprintln(ioctx.Out, renderAccessChecklist(ioctx.Out, url))
 		return err
 	}
 	result := map[string]any{"state": "configured", "aud": outcome.Aud, "team_domain": outcome.TeamDomain}
-	return writeSetupResult(ioctx.Out, jsonOut, result, "Dashboard Access configured\n\n  Worker "+url)
+	render := cliui.New(ioctx.Out)
+	return writeSetupResult(ioctx.Out, jsonOut, result, render.Card("Dashboard Access configured", bentotui.Field{Label: "Worker", Value: url}, bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "READY", bentotui.VariantSuccess)}))
 }
 
 func promptValue(ioctx IO, label string) (string, error) {
