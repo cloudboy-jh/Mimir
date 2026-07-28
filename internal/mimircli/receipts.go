@@ -75,22 +75,23 @@ func cmdListIO(ctx context.Context, args []string, in io.Reader, out io.Writer) 
 	if interactive == "always" && !interactiveTerminal {
 		return fmt.Errorf("interactive list requires terminal input and output")
 	}
+	if interactive == "always" || (interactive == "auto" && interactiveTerminal) {
+		input, inputOK := in.(*os.File)
+		output, outputOK := out.(*os.File)
+		if inputOK && outputOK {
+			return runSessionBrowser(ctx, input, output, repo, outcome, limit)
+		}
+	}
 	receipts, err := currentSessionService().FetchReceipts(ctx, repo, outcome)
 	if err != nil {
 		return err
 	}
-	if interactive == "always" || (interactive == "auto" && interactiveTerminal) {
-		input, inputOK := in.(*os.File)
-		output, outputOK := out.(*os.File)
-		if !inputOK || !outputOK {
-			return renderReceipts(out, receipts, limit)
-		}
-		return runSessionBrowser(ctx, input, output, receipts, repo, outcome, limit)
-	}
 	return renderReceipts(out, receipts, limit)
 }
 
-func runSessionBrowser(ctx context.Context, in, out *os.File, receipts []sessions.Receipt, repo, outcome string, limit int) error {
+func runSessionBrowser(ctx context.Context, in, out *os.File, repo, outcome string, limit int) error {
+	browserCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	filters := make([]string, 0, 2)
 	if repo != "" {
 		filters = append(filters, "repo="+repo)
@@ -103,7 +104,7 @@ func runSessionBrowser(ctx context.Context, in, out *os.File, receipts []session
 		return sessionui.Items(values, pointer.URL, limit)
 	}
 	browser := sessionui.NewSessionBrowser(sessionui.SessionBrowserOptions{
-		Out: out, Items: toItems(receipts), Filters: strings.Join(filters, " · "),
+		Out: out, Context: browserCtx, Load: true, Filters: strings.Join(filters, " · "),
 		Refresh: func(ctx context.Context) ([]sessionui.BrowserSession, error) {
 			values, err := currentSessionService().FetchReceipts(ctx, repo, outcome)
 			if err != nil {
@@ -117,7 +118,7 @@ func runSessionBrowser(ctx context.Context, in, out *os.File, receipts []session
 			return err
 		},
 	})
-	return bentotui.Run(ctx, in, out, browser)
+	return bentotui.Run(browserCtx, in, out, browser)
 }
 
 func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error {

@@ -45,6 +45,25 @@ func (p *Progress) Resume() {
 	}
 }
 
+// PromptSecret collects a secret inside the active application frame. The
+// boolean is false when the line-oriented fallback owns presentation.
+func (p *Progress) PromptSecret(label string) (value string, handled bool, err error) {
+	if p == nil || p.operation == nil {
+		return "", false, nil
+	}
+	value, err = p.operation.PromptSecret(label)
+	return value, true, err
+}
+
+// Handoff visibly suspends the app while an external interactive process owns
+// the terminal, then restores the same operation state.
+func (p *Progress) Handoff(label string, action func() error) error {
+	if p == nil || p.operation == nil {
+		return action()
+	}
+	return p.operation.Handoff(label, action)
+}
+
 func (p *Progress) Stop() {
 	if p != nil && p.operation != nil {
 		p.operation.Stop()
@@ -87,6 +106,12 @@ func (p *Progress) Fail() {
 		label = p.phases[p.phase]
 	}
 	p.writeLine("×", bentotui.VariantDanger, label)
+}
+
+func (p *Progress) Finish(label string) {
+	if p != nil && p.operation != nil {
+		p.operation.Finish(label)
+	}
 }
 
 func (p *Progress) Commit() {

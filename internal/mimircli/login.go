@@ -57,6 +57,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		if pointerErr == nil && identityErr == nil {
 			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
 				setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+				opts.Progress.Finish("Login complete")
 				opts.Progress.Stop()
 				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
 			}
@@ -69,14 +70,18 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName, domainOpts.Noninteractive = opts.WorkerDir, opts.WorkerName, opts.DatabaseName, opts.JSON
-	result, err := deployment.NewService(httpClient).Login(ctx, domainOpts, deployment.Hooks{
+	service := deployment.NewService(httpClient)
+	if opts.Progress != nil {
+		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
+	}
+	result, err := service.Login(ctx, domainOpts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {
-			opts.Progress.Pause()
-			defer opts.Progress.Resume()
-			cloudflareLoginNotice(ioctx.Out)
-			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			return opts.Progress.Handoff("Waiting for Cloudflare authentication", func() error {
+				cloudflareLoginNotice(ioctx.Out)
+				return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			})
 		},
 		Verify: func(ctx context.Context, url, token string) error {
 			return (mimirapi.Client{HTTPClient: httpClient, Pointer: mimirapi.Pointer{URL: url, Token: token}}).Verify(ctx)
@@ -88,8 +93,10 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	pointer := mimirapi.Pointer{URL: result.URL, Token: result.Token}
 	if err := savePointer(pointer); err != nil {
+		opts.Progress.Fail()
 		return err
 	}
+	opts.Progress.Finish("Login complete")
 	opts.Progress.Stop()
 	return writeLoginResult(ctx, ioctx, opts.JSON, result.Identity, result.URL)
 }

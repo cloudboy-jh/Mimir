@@ -45,6 +45,11 @@ type LiveTerminalApp interface {
 	Updates() <-chan struct{}
 }
 
+// RenderedTerminalApp is notified after a frame has been written.
+type RenderedTerminalApp interface {
+	Rendered()
+}
+
 // Interactive reports whether both sides of a command are attached to a real
 // terminal. Commands must retain a non-interactive path for pipes and agents.
 func Interactive(in io.Reader, out io.Writer) bool {
@@ -86,7 +91,8 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 	if live, ok := app.(LiveTerminalApp); ok {
 		updates = live.Updates()
 	}
-	if err := draw(out, app.View(screen)); err != nil {
+	renderer := terminalRenderer{out: out}
+	if err := drawApp(&renderer, app, screen); err != nil {
 		return err
 	}
 	for {
@@ -103,19 +109,20 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 				return nil
 			}
 			screen = terminalScreen(out)
-			if err := draw(out, app.View(screen)); err != nil {
+			if err := drawApp(&renderer, app, screen); err != nil {
 				return err
 			}
 		case <-updates:
 			screen = terminalScreen(out)
-			if err := draw(out, app.View(screen)); err != nil {
+			if err := drawApp(&renderer, app, screen); err != nil {
 				return err
 			}
 		case <-ticker.C:
 			next := terminalScreen(out)
-			if next != screen || updates != nil {
+			if next != screen {
 				screen = next
-				if err := draw(out, app.View(screen)); err != nil {
+				renderer.reset()
+				if err := drawApp(&renderer, app, screen); err != nil {
 					return err
 				}
 			}
@@ -123,10 +130,43 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 	}
 }
 
+func drawApp(renderer *terminalRenderer, app TerminalApp, screen Screen) error {
+	if err := renderer.draw(app.View(screen)); err != nil {
+		return err
+	}
+	if rendered, ok := app.(RenderedTerminalApp); ok {
+		rendered.Rendered()
+	}
+	return nil
+}
+
+type terminalRenderer struct {
+	out   io.Writer
+	frame string
+	drawn bool
+}
+
+func (r *terminalRenderer) reset() { r.drawn = false }
+
+func (r *terminalRenderer) draw(view string) error {
+	frame := strings.ReplaceAll(strings.TrimRight(view, "\n"), "\n", "\r\n")
+	if r.drawn && frame == r.frame {
+		return nil
+	}
+	prefix := "\x1b[H"
+	if !r.drawn {
+		prefix += "\x1b[2J"
+	}
+	if _, err := io.WriteString(r.out, prefix+frame+"\x1b[0m"); err != nil {
+		return err
+	}
+	r.frame = frame
+	r.drawn = true
+	return nil
+}
+
 func draw(out io.Writer, view string) error {
-	view = strings.ReplaceAll(strings.TrimRight(view, "\n"), "\n", "\r\n")
-	_, err := io.WriteString(out, "\x1b[H\x1b[2J"+view+"\x1b[0m")
-	return err
+	return (&terminalRenderer{out: out}).draw(view)
 }
 
 func readKeys(ctx context.Context, in *os.File, keys chan<- Key, errs chan<- error) {
@@ -253,10 +293,10 @@ func isCharacterDevice(file *os.File) bool {
 
 func terminalScreen(file *os.File) Screen {
 	width, height := terminalSize(file)
-	if width < 20 {
+	if width <= 0 {
 		width = 80
 	}
-	if height < 8 {
+	if height <= 0 {
 		height = 24
 	}
 	return Screen{Width: width, Height: height}

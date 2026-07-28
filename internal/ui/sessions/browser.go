@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
@@ -18,13 +19,17 @@ type SessionBrowserOptions struct {
 	Out     io.Writer
 	Items   []BrowserSession
 	Filters string
+	Context context.Context
+	Load    bool
 	Refresh func(context.Context) ([]BrowserSession, error)
 	Open    func(context.Context, string) error
 	Copy    func(string) error
 }
 
 type SessionBrowser struct {
+	mu        sync.Mutex
 	options   SessionBrowserOptions
+	updates   chan struct{}
 	items     []BrowserSession
 	visible   []int
 	selected  int
@@ -36,15 +41,29 @@ type SessionBrowser struct {
 	detailTop int
 	detailMax int
 	help      bool
+	loading   bool
+	loaded    bool
 }
 
 func NewSessionBrowser(options SessionBrowserOptions) *SessionBrowser {
-	browser := &SessionBrowser{options: options, items: append([]BrowserSession(nil), options.Items...)}
+	browser := &SessionBrowser{options: options, updates: make(chan struct{}, 1), items: append([]BrowserSession(nil), options.Items...)}
 	browser.applyFilter()
 	return browser
 }
 
 func (b *SessionBrowser) View(screen bentotui.Screen) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.options.Load && !b.loaded && !b.loading {
+		ctx := b.options.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		b.refresh(ctx)
+	}
+	if appframe.TooSmall(screen) {
+		return appframe.SmallScreen(screen)
+	}
 	render := appframe.New(b.options.Out).WithWidth(appframe.ForScreen(screen).Width)
 	if b.help {
 		return b.helpView(render, screen)
@@ -56,6 +75,8 @@ func (b *SessionBrowser) View(screen bentotui.Screen) string {
 }
 
 func (b *SessionBrowser) Handle(ctx context.Context, key bentotui.Key) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if key.Kind == bentotui.KeyInterrupt {
 		return true
 	}
@@ -139,16 +160,7 @@ func (b *SessionBrowser) Handle(ctx context.Context, key bentotui.Key) bool {
 			b.message = ""
 		}
 	case 'r':
-		if b.options.Refresh != nil {
-			items, err := b.options.Refresh(ctx)
-			if err != nil {
-				b.message = "Refresh failed: " + err.Error()
-			} else {
-				b.items = append([]BrowserSession(nil), items...)
-				b.applyFilter()
-				b.message = "Sessions refreshed"
-			}
-		}
+		b.refresh(ctx)
 	case 'o':
 		if session, ok := b.current(); ok && b.options.Open != nil && session.DashboardURL != "" {
 			if err := b.options.Open(ctx, session.DashboardURL); err != nil {
@@ -169,6 +181,47 @@ func (b *SessionBrowser) Handle(ctx context.Context, key bentotui.Key) bool {
 	return false
 }
 
+func (b *SessionBrowser) Updates() <-chan struct{} { return b.updates }
+
+func (b *SessionBrowser) refresh(ctx context.Context) {
+	if b.options.Refresh == nil || b.loading {
+		return
+	}
+	initial := b.options.Load && !b.loaded
+	b.loading = true
+	if initial {
+		b.message = "Loading sessions..."
+	} else {
+		b.message = "Refreshing sessions..."
+	}
+	go func() {
+		items, err := b.options.Refresh(ctx)
+		b.mu.Lock()
+		b.loading = false
+		b.loaded = true
+		if err != nil {
+			if initial {
+				b.message = "Load failed: " + err.Error()
+			} else {
+				b.message = "Refresh failed: " + err.Error()
+			}
+		} else {
+			b.items = append([]BrowserSession(nil), items...)
+			b.applyFilter()
+			if initial {
+				b.message = "Sessions loaded"
+			} else {
+				b.message = "Sessions refreshed"
+			}
+		}
+		b.mu.Unlock()
+		select {
+		case b.updates <- struct{}{}:
+		default:
+		}
+	}()
+}
+
 func (b *SessionBrowser) listView(render appframe.Renderer, screen bentotui.Screen) string {
 	layout := appframe.ForScreen(screen)
 	blocks := []string{}
@@ -181,10 +234,16 @@ func (b *SessionBrowser) listView(render appframe.Renderer, screen bentotui.Scre
 	}
 	if len(b.visible) == 0 {
 		body := "Captured model traffic will appear here as work sessions."
-		if b.query != "" {
+		if b.loading {
+			body = "Loading sessions..."
+		} else if b.query != "" {
 			body = "No loaded sessions match the current filter."
 		}
-		blocks = append(blocks, render.EmptyState("No sessions found", body))
+		title := "No sessions found"
+		if b.loading {
+			title = "Loading"
+		}
+		blocks = append(blocks, render.EmptyState(title, body))
 	} else {
 		reserved := 0
 		if len(blocks) > 0 {
@@ -206,6 +265,9 @@ func (b *SessionBrowser) listView(render appframe.Renderer, screen bentotui.Scre
 		footer = bentotui.Truncate(b.message, layout.BodyWidth)
 	}
 	status := fmt.Sprintf("%d results", len(b.visible))
+	if b.loading {
+		status += " · loading"
+	}
 	if b.options.Filters != "" {
 		status = b.options.Filters + " · " + status
 	}

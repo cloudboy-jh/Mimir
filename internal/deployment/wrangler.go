@@ -1,6 +1,7 @@
 package deployment
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/cloudboy-jh/mimir/internal/jsonconfig"
 )
@@ -43,6 +45,10 @@ func ObserveWrangler(base WranglerClient, out io.Writer) WranglerClient {
 	if base == nil || out == nil {
 		return base
 	}
+	if wrangler, ok := base.(Wrangler); ok {
+		wrangler.observe = out
+		return wrangler
+	}
 	return observingWrangler{base: base, out: out}
 }
 
@@ -54,6 +60,7 @@ func (w observingWrangler) Run(ctx context.Context, dir string, input io.Reader,
 	if err != nil {
 		_, _ = io.WriteString(w.out, err.Error()+"\n")
 	}
+	flushOutput(w.out)
 	return output, err
 }
 
@@ -69,17 +76,59 @@ func (w observingWrangler) UpdateVars(path string, vars map[string]string) error
 	return w.base.UpdateVars(path, vars)
 }
 
-type Wrangler struct{}
+type Wrangler struct {
+	observe io.Writer
+}
 
-func (Wrangler) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
+type commandOutput struct {
+	mu      sync.Mutex
+	buffer  bytes.Buffer
+	observe io.Writer
+}
+
+func (w *commandOutput) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, _ = w.buffer.Write(data)
+	if w.observe != nil {
+		_, _ = w.observe.Write(data)
+	}
+	return len(data), nil
+}
+
+func (w *commandOutput) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buffer.String()
+}
+
+func (w Wrangler) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
 	name, commandArgs := wranglerCommand(dir, args)
 	cmd := exec.CommandContext(ctx, name, commandArgs...)
 	cmd.Dir, cmd.Stdin = dir, stdin
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("%s %s: %s: %w", name, strings.Join(commandArgs, " "), strings.TrimSpace(string(output)), err)
+	var output string
+	var err error
+	if w.observe == nil {
+		data, runErr := cmd.CombinedOutput()
+		output, err = string(data), runErr
+	} else {
+		capture := &commandOutput{observe: w.observe}
+		cmd.Stdout, cmd.Stderr = capture, capture
+		err = cmd.Run()
+		output = capture.String()
 	}
-	return string(output), nil
+	if err != nil {
+		flushOutput(w.observe)
+		return "", fmt.Errorf("%s %s: %s: %w", name, strings.Join(commandArgs, " "), strings.TrimSpace(output), err)
+	}
+	flushOutput(w.observe)
+	return output, nil
+}
+
+func flushOutput(out io.Writer) {
+	if flusher, ok := out.(interface{ Flush() }); ok {
+		flusher.Flush()
+	}
 }
 
 func (Wrangler) Interactive(ctx context.Context, dir string, streams Streams, args ...string) error {

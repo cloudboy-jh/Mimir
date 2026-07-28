@@ -50,3 +50,19 @@ func TestLayoutUsesGlobalMaximumAndMinimumFallbackBoundary(t *testing.T) {
 		t.Fatalf("small layout %#v", small)
 	}
 }
+
+func TestSmallScreenViewPreservesMeasuredDimensions(t *testing.T) {
+	view := SmallScreen(bentotui.Screen{Width: 40, Height: 10})
+	lines := strings.Split(view, "\n")
+	if len(lines) != 10 {
+		t.Fatalf("height %d", len(lines))
+	}
+	for _, line := range lines {
+		if bentotui.VisibleWidth(line) != 40 {
+			t.Fatalf("width %d for %q", bentotui.VisibleWidth(line), line)
+		}
+	}
+	if !strings.Contains(view, "Terminal too small") {
+		t.Fatalf("missing resize guidance:\n%s", view)
+	}
+}

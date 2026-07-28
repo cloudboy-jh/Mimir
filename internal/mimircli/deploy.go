@@ -56,10 +56,10 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {
-			opts.Progress.Pause()
-			defer opts.Progress.Resume()
-			cloudflareLoginNotice(ioctx.Out)
-			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			return opts.Progress.Handoff("Waiting for Cloudflare authentication", func() error {
+				cloudflareLoginNotice(ioctx.Out)
+				return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			})
 		},
 	}, fallback)
 	if err != nil {
@@ -67,6 +67,7 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		return err
 	}
 	url := domainResult.URL
+	opts.Progress.Finish("Deployment complete")
 	opts.Progress.Stop()
 	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
 	render := cliui.New(ioctx.Out)

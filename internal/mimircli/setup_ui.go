@@ -29,6 +29,26 @@ func startOperationProgress(ctx context.Context, ioctx IO, title string, phases 
 	return operationui.Start(ctx, ioctx.In, ioctx.Out, title, phases, cancel)
 }
 
+func promptProgressSecret(progress *setupProgress, ioctx IO, label string) (string, error) {
+	if progress != nil {
+		value, handled, err := progress.PromptSecret(strings.TrimSpace(strings.TrimSuffix(label, ":")))
+		if handled {
+			return value, err
+		}
+	}
+	return promptSecret(ioctx, label)
+}
+
+func writeOperationWarning(progress *setupProgress, fallback io.Writer, format string, args ...any) {
+	if progress != nil {
+		if output := progress.Output(); output != nil {
+			fmt.Fprintf(output, format+"\n", args...)
+			return
+		}
+	}
+	fmt.Fprintf(fallback, format+"\n", args...)
+}
+
 const setupLogoWidth = 64
 
 func printSetupBanner(out io.Writer) {

@@ -3,6 +3,7 @@ package bentotui
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,5 +36,52 @@ func TestDrawUsesCarriageReturnNewlinesForRawTerminals(t *testing.T) {
 	}
 	if !bytes.Contains(out.Bytes(), []byte("one\r\ntwo")) {
 		t.Fatalf("draw output %q", out.String())
+	}
+}
+
+func TestTerminalRendererClearsOnlyInitialFrame(t *testing.T) {
+	var out bytes.Buffer
+	renderer := terminalRenderer{out: &out}
+	if err := renderer.draw("one\ntwo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.draw("three\nfour"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "\x1b[H\x1b[2Jone\r\ntwo\x1b[0m\x1b[Hthree\r\nfour\x1b[0m"
+	if got := out.String(); got != want {
+		t.Fatalf("draw sequence %q, want %q", got, want)
+	}
+}
+
+func TestTerminalRendererSkipsIdenticalFrames(t *testing.T) {
+	var out bytes.Buffer
+	renderer := terminalRenderer{out: &out}
+	if err := renderer.draw("same\n"); err != nil {
+		t.Fatal(err)
+	}
+	first := out.String()
+	if err := renderer.draw("same"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := out.String(); got != first {
+		t.Fatalf("identical frame emitted output: got %q want %q", got, first)
+	}
+}
+
+func TestTerminalRendererClearsAfterResizeReset(t *testing.T) {
+	var out bytes.Buffer
+	renderer := terminalRenderer{out: &out}
+	if err := renderer.draw("large"); err != nil {
+		t.Fatal(err)
+	}
+	renderer.reset()
+	if err := renderer.draw("small"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "\x1b[2J"); got != 2 {
+		t.Fatalf("clear count %d, want 2", got)
 	}
 }

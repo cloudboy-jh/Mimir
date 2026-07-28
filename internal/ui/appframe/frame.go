@@ -44,6 +44,22 @@ func ForScreen(screen bentotui.Screen) Layout {
 	return Layout{Width: width, Height: height, BodyWidth: max(1, width-4), BodyHeight: max(2, height-4)}
 }
 
+func TooSmall(screen bentotui.Screen) bool {
+	return screen.Width < MinimumWidth || screen.Height < MinimumHeight
+}
+
+func SmallScreen(screen bentotui.Screen) string {
+	width, height := max(1, screen.Width), max(1, screen.Height)
+	lines := []string{"Mimir", "", "Terminal too small", "Need at least 48x12"}
+	for index := range lines {
+		lines[index] = bentotui.PadRight(bentotui.Truncate(lines[index], width), width)
+	}
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", width))
+	}
+	return strings.Join(lines[:height], "\n")
+}
+
 func Wrap(lines []string, width int) []string {
 	wrapped := make([]string, 0, len(lines))
 	for _, line := range lines {

@@ -127,9 +127,7 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 		}
 		if opts.Token == "" {
 			var err error
-			opts.Progress.Pause()
-			opts.Token, err = promptSecret(ioctx, "Mimir token: ")
-			opts.Progress.Resume()
+			opts.Token, err = promptProgressSecret(opts.Progress, ioctx, "Mimir token: ")
 			if err != nil {
 				return err
 			}
@@ -143,10 +141,11 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 		}
 		lifecycle := refreshConnectedLifecycleIntegrations(ctx, "setup")
 		if !lifecycle.OK {
-			fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
+			writeOperationWarning(opts.Progress, ioctx.Err, "harness integration refresh warning: %s", lifecycle.Error)
 		}
 		integrations := lifecycle.Integrations
 		setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+		opts.Progress.Finish("Setup complete")
 		opts.Progress.Stop()
 		result := addConnectionManifest(map[string]any{"state": "connected", "url": strings.TrimRight(opts.URL, "/"), "artifacts": lifecycle.Artifacts, "integrations": integrations}, opts.URL)
 		human := connectionSummary(ioctx.Out, opts.URL)
@@ -160,6 +159,9 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 
 func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	service := newDeploymentService(httpClient)
+	if opts.Progress != nil {
+		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
+	}
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName = opts.WorkerDir, opts.WorkerName
 	domainOpts.DatabaseName, domainOpts.DatabaseID, domainOpts.BucketName = opts.DatabaseName, opts.DatabaseID, opts.BucketName
@@ -177,25 +179,25 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
 		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
 		Login: func(ctx context.Context, dir string) error {
-			opts.Progress.Pause()
-			defer opts.Progress.Resume()
-			cloudflareLoginNotice(ioctx.Out)
-			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			return opts.Progress.Handoff("Waiting for Cloudflare authentication", func() error {
+				cloudflareLoginNotice(ioctx.Out)
+				return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
+			})
 		},
 		PromptOpenRouterKey: func() (string, error) {
-			opts.Progress.Pause()
-			defer opts.Progress.Resume()
-			return promptSecret(ioctx, "OpenRouter API key: ")
+			return promptProgressSecret(opts.Progress, ioctx, "OpenRouter API key: ")
 		},
 		PromptAccessToken: func() (string, error) {
 			token := strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 			if token != "" || opts.JSON {
 				return token, nil
 			}
-			opts.Progress.Pause()
-			defer opts.Progress.Resume()
-			fmt.Fprintln(ioctx.Out, renderAccessTokenHint(ioctx.Out))
-			return promptSecret(ioctx, "Cloudflare API token (enables automatic dashboard Access; Enter to skip): ")
+			if output := opts.Progress.Output(); output != nil {
+				fmt.Fprintln(output, "Cloudflare API token is optional and enables automatic dashboard Access configuration.")
+			} else {
+				fmt.Fprintln(ioctx.Out, renderAccessTokenHint(ioctx.Out))
+			}
+			return promptProgressSecret(opts.Progress, ioctx, "Cloudflare API token (enables automatic dashboard Access; Enter to skip): ")
 		},
 		Verify: func(ctx context.Context, url, token string) error {
 			return (mimirapi.Client{HTTPClient: httpClient, Pointer: mimirapi.Pointer{URL: url, Token: token}}).Verify(ctx)
@@ -206,7 +208,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 			}
 			lifecycle = refreshConnectedLifecycleIntegrations(ctx, "setup")
 			if !lifecycle.OK {
-				fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
+				writeOperationWarning(opts.Progress, ioctx.Err, "harness integration refresh warning: %s", lifecycle.Error)
 			}
 			return nil
 		},
@@ -217,6 +219,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	url, access := domainResult.URL, domainResult.Access
 	integrations := lifecycle.Integrations
 	setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
+	opts.Progress.Finish("Setup complete")
 	opts.Progress.Stop()
 	result := map[string]any{"state": "ready", "url": strings.TrimRight(url, "/"), "memory": true, "access": access, "artifacts": lifecycle.Artifacts, "integrations": integrations}
 	human := connectionSummary(ioctx.Out, url)

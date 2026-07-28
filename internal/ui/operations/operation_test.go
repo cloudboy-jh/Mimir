@@ -16,7 +16,7 @@ func TestOperationViewportTracksPhasesAndNavigation(t *testing.T) {
 		entries: []operationEntry{{label: "Preparing Worker", state: StepComplete}, {label: "Deploying Worker", state: StepActive}},
 		cancel:  func() { cancelled = true }, cancellable: true,
 	}
-	view := app.View(bentotui.Screen{Width: 64, Height: 10})
+	view := app.View(bentotui.Screen{Width: 64, Height: 12})
 	for _, expected := range []string{"┌─ Mimir · Deploy", "[✓] Preparing Worker", "[›] Deploying Worker", "^C Cancel", "└"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("missing %q:\n%s", expected, view)
@@ -85,12 +85,25 @@ func TestOperationOutputSanitizesAndBoundsLogs(t *testing.T) {
 	}
 }
 
+func TestOperationOutputFlushesPartialLine(t *testing.T) {
+	app := &operationApp{updates: make(chan struct{}, 1), active: -1}
+	writer := &operationLogWriter{app: app}
+	_, _ = writer.Write([]byte("final output"))
+	if len(app.logs) != 0 {
+		t.Fatalf("partial output emitted before flush: %#v", app.logs)
+	}
+	writer.Flush()
+	if len(app.logs) != 1 || app.logs[0] != "final output" {
+		t.Fatalf("flushed logs %#v", app.logs)
+	}
+}
+
 func TestOperationFollowUsesWrappedViewportLines(t *testing.T) {
 	app := &operationApp{
 		title: "Mimir deploy", started: time.Now(), active: -1, follow: true, status: "running", updates: make(chan struct{}, 1),
 		logs: []string{strings.Repeat("long output ", 20), "TAIL"},
 	}
-	view := app.View(bentotui.Screen{Width: 40, Height: 8})
+	view := app.View(bentotui.Screen{Width: 48, Height: 12})
 	if !strings.Contains(view, "TAIL") {
 		t.Fatalf("follow mode did not reach wrapped tail:\n%s", view)
 	}
@@ -115,5 +128,49 @@ func TestOperationUsesGlobalAnchoredFrame(t *testing.T) {
 				t.Fatalf("unanchored global frame line %q", line)
 			}
 		}
+	}
+}
+
+func TestOperationPromptSecretStaysInsideFrame(t *testing.T) {
+	app := &operationApp{
+		title: "Mimir setup", started: time.Now(), active: -1, follow: true, status: "running",
+		updates: make(chan struct{}, 1), rendered: make(chan struct{}, 1),
+	}
+	operation := &Operation{ctx: context.Background(), app: app}
+	result := make(chan string, 1)
+	go func() {
+		value, err := operation.PromptSecret("OpenRouter API key")
+		if err != nil {
+			result <- "error: " + err.Error()
+			return
+		}
+		result <- value
+	}()
+	<-app.Updates()
+	view := app.View(bentotui.Screen{Width: 80, Height: 20})
+	if !strings.Contains(view, "OpenRouter API key") || !strings.Contains(view, "Enter Continue") {
+		t.Fatalf("prompt not rendered in frame:\n%s", view)
+	}
+	app.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: 's'})
+	app.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: '3'})
+	app.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
+	if got := <-result; got != "s3" {
+		t.Fatalf("prompt result %q", got)
+	}
+}
+
+func TestOperationFinishPublishesTerminalState(t *testing.T) {
+	app := &operationApp{
+		title: "Mimir deploy", started: time.Now(), active: 0, follow: true, status: "running",
+		updates: make(chan struct{}, 1), entries: []operationEntry{{label: "Deploying", state: StepActive}}, cancellable: true,
+	}
+	operation := &Operation{app: app}
+	operation.Finish("Deployment complete")
+	if app.status != "completed" || app.cancellable || app.active != -1 {
+		t.Fatalf("status=%q cancellable=%v active=%d", app.status, app.cancellable, app.active)
+	}
+	view := app.View(bentotui.Screen{Width: 80, Height: 20})
+	if !strings.Contains(view, "Deployment complete") || !strings.Contains(view, "completed") {
+		t.Fatalf("final state missing:\n%s", view)
 	}
 }

@@ -70,7 +70,7 @@ func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
 		if report.Binary.Status == "scheduled" {
 			label = "Update scheduled"
 		}
-		operation.Complete(label)
+		operation.Finish(label)
 		operation.Stop()
 	}
 	if jsonOutput {

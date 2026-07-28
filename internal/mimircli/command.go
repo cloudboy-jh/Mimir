@@ -270,6 +270,7 @@ func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 	if jsonOutput {
 		return json.NewEncoder(ioctx.Out).Encode(report)
 	}
+	progress.Finish("Installation complete")
 	progress.Stop()
 	return renderInstall(ioctx.Out, report)
 }
