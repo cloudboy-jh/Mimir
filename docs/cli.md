@@ -30,11 +30,16 @@ terminals. Redirected output and `--no-interactive` retain the static text
 format. Agents and scripts should use `mimir list --json`; JSON mode never emits
 terminal control sequences.
 
-Long-running `mimir deploy` and `mimir update` operations use a bordered,
-scrollable viewport on interactive terminals. Arrow keys or `j`/`k` scroll,
-`g`/`G` jump to either end, `f` resumes following live output, and Ctrl+C
-cancels while it is still safe to stop. Redirected and JSON output remain
-line-oriented and non-interactive; `mimir update --check` stays concise.
+Stateful human commands use one top-left-anchored 80x20 application frame
+(48x12 minimum). Session browsing, deploy, update, setup, install, and login
+share its header, scrollable body, and contextual footer. Arrow keys or `j`/`k`
+scroll, `g`/`G` jump to either end, `f` resumes following live output, and
+Ctrl+C cancels while it is still safe to stop. Redirected and JSON output
+remain line-oriented and non-interactive; `mimir update --check` stays concise.
+
+The OpenCode integration renders authoritative status and outcome tool results
+as compact Mimir receipts in the agent transcript. Agents still consume the
+canonical machine APIs; the compact receipt is the human-visible tool result.
 
 Generic errors in JSON mode are written to stderr as:
 

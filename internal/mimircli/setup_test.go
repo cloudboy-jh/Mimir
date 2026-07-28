@@ -17,7 +17,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
@@ -293,7 +293,7 @@ func useStableTestExecutable(t *testing.T) {
 
 func TestSetupProgressStopIsIdempotent(t *testing.T) {
 	var output bytes.Buffer
-	progress := startSetupProgress(&output, []string{"testing"})
+	progress := startOperationProgress(context.Background(), IO{Out: &output}, "Mimir setup", []string{"testing"}, func() {})
 	progress.Stop()
 	first := output.String()
 	progress.Stop()

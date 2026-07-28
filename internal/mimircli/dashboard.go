@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 

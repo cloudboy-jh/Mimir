@@ -449,6 +449,43 @@ async function sessionRequest(conn: Connection, sessionID: string, path: "status
   return text;
 }
 
+function formatSessionReceipt(text: string): string {
+  let status: Record<string, unknown>;
+  try {
+    status = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return text;
+  }
+  const capture = typeof status.capture === "object" && status.capture ? status.capture as Record<string, unknown> : {};
+  const receipt = typeof status.receipt === "object" && status.receipt ? status.receipt as Record<string, unknown> : {};
+  const saved = typeof capture.saved_exchanges === "number" ? capture.saved_exchanges : 0;
+  const failed = typeof capture.failed_exchanges === "number" ? capture.failed_exchanges : 0;
+  const pending = typeof capture.pending_exchanges === "number" ? capture.pending_exchanges : 0;
+  const captureStatus = typeof capture.status === "string" ? capture.status : "";
+  let state = typeof receipt.label === "string" && receipt.label ? receipt.label : "Mimir status";
+  let detail = typeof receipt.detail === "string" ? receipt.detail : "";
+  if ((failed > 0 && (saved > 0 || pending > 0)) || captureStatus === "partial") {
+    state = "Partial";
+    detail = `${saved} saved · ${failed} failed${pending > 0 ? ` · ${pending} pending` : ""}`;
+  } else if (captureStatus === "saved") {
+    state = "Saved";
+    detail = `${saved} ${saved === 1 ? "exchange" : "exchanges"}`;
+  } else if (captureStatus === "pending" || pending > 0) {
+    state = "Saving…";
+    detail = pending > 0 ? `${pending} pending` : detail;
+  } else if (captureStatus === "failed") {
+    state = "Couldn’t save this session";
+    detail = failed > 0 ? `${failed} failed` : detail;
+  }
+  const outcome = typeof status.outcome === "string" && status.outcome ? status.outcome.toUpperCase() : "";
+  const parts = [`◆ Mimir  ${state}`];
+  if (detail) parts.push(detail);
+  if (outcome) parts.push(outcome);
+  let result = parts.join(" · ");
+  if (typeof status.dashboard_url === "string" && status.dashboard_url) result += `\nView session: ${status.dashboard_url}`;
+  return result;
+}
+
 function createDirectExchangeReporter(
   load: (sessionID: string) => Promise<unknown>,
   send: (sessionID: string, exchange: DirectExchange) => Promise<boolean>,
@@ -520,7 +557,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         description: "Verify the current OpenCode session's durable Mimir capture status.",
         args: {},
         async execute(_args, context) {
-          return sessionRequest(conn, context.sessionID, "status");
+          context.metadata?.({ title: "Mimir receipt" });
+          return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
       }),
       mimir_session_outcome: tool({
@@ -531,8 +569,9 @@ const server: Plugin = async ({ client, directory, worktree }) => {
           evidence: tool.schema.string().max(32000).optional(),
         },
         async execute(args, context) {
+          context.metadata?.({ title: "Mimir receipt" });
           await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(args.evidence ? { evidence: args.evidence } : {}) });
-          return sessionRequest(conn, context.sessionID, "status");
+          return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
       }),
     },
@@ -579,4 +618,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

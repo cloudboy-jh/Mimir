@@ -16,7 +16,7 @@ import (
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 	searchpkg "github.com/cloudboy-jh/mimir/internal/search"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
@@ -147,7 +147,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "login":
 		return login(ctx, args[1:], ioctx)
 	case "install":
-		return cmdInstall(ctx, args[1:], ioctx.Out)
+		return cmdInstallIO(ctx, args[1:], ioctx)
 	case "uninstall":
 		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
@@ -230,6 +230,10 @@ func cmdVersion(args []string, out io.Writer) error {
 }
 
 func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
+	return cmdInstallIO(ctx, args, IO{Out: out})
+}
+
+func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 	jsonOutput, binDir := false, ""
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -251,20 +255,23 @@ func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 		return fmt.Errorf("--bin-dir requires a value")
 	}
 	var progress *setupProgress
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
+	ctx = operationCtx
 	if !jsonOutput {
-		progress = startProgress(out, "Mimir install", []string{"Installing CLI and managed artifacts", "Configuring OpenCode", "Checking Hermes"})
+		progress = startOperationProgress(ctx, ioctx, "Mimir install", []string{"Installing CLI and managed artifacts", "Configuring OpenCode", "Checking Hermes"}, cancelOperation)
 		defer progress.Stop()
 	}
-	report, err := installManaged(ctx, binDir, func(message string) { setupStep(progress, out, jsonOutput, message) })
+	report, err := installManaged(ctx, binDir, func(message string) { setupStep(progress, ioctx.Out, jsonOutput, message) })
 	if err != nil {
 		progress.Fail()
 		return err
 	}
 	if jsonOutput {
-		return json.NewEncoder(out).Encode(report)
+		return json.NewEncoder(ioctx.Out).Encode(report)
 	}
 	progress.Stop()
-	return renderInstall(out, report)
+	return renderInstall(ioctx.Out, report)
 }
 
 func containsBinDirArg(args []string) bool {

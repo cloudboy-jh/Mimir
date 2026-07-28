@@ -1,4 +1,4 @@
-package ui
+package sessionui
 
 import (
 	"context"
@@ -18,7 +18,7 @@ func TestSessionBrowserListFilterAndDetail(t *testing.T) {
 	screen := bentotui.Screen{Width: 80, Height: 24}
 
 	view := browser.View(screen)
-	for _, expected := range []string{"Sessions  2 results", "[LANDED] Fix capture", "session-2", "enter open"} {
+	for _, expected := range []string{"Mimir · Sessions", "2 results", "[LANDED] Fix capture", "session-2", "↵ Open"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("list missing %q:\n%s", expected, view)
 		}
@@ -29,17 +29,17 @@ func TestSessionBrowserListFilterAndDetail(t *testing.T) {
 		browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: value})
 	}
 	view = browser.View(screen)
-	if !strings.Contains(view, "Sessions  1 results") || strings.Contains(view, "Fix capture") {
+	if !strings.Contains(view, "1 results") || strings.Contains(view, "Fix capture") {
 		t.Fatalf("filter not applied:\n%s", view)
 	}
 	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
 	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
 	view = browser.View(screen)
-	if !strings.Contains(view, "Session detail") || !strings.Contains(view, "Index docs") || !strings.Contains(view, "session-2") {
+	if !strings.Contains(view, "Mimir · Session") || !strings.Contains(view, "Index docs") || !strings.Contains(view, "session-2") {
 		t.Fatalf("detail missing fields:\n%s", view)
 	}
 	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEscape})
-	if !strings.Contains(browser.View(screen), "Sessions  1 results") {
+	if !strings.Contains(browser.View(screen), "1 results") {
 		t.Fatal("escape did not preserve the filtered list")
 	}
 }
@@ -66,6 +66,23 @@ func TestSessionBrowserActionsAndRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestSessionDetailSupportsViewportBounds(t *testing.T) {
+	browser := NewSessionBrowser(SessionBrowserOptions{Items: []BrowserSession{{Title: strings.Repeat("Detail ", 10), ID: "s1", DashboardURL: "https://example.com/" + strings.Repeat("path/", 20)}}})
+	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
+	_ = browser.View(bentotui.Screen{Width: 48, Height: 12})
+	if browser.detailMax == 0 {
+		t.Fatal("expected scrollable detail")
+	}
+	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: 'G'})
+	if browser.detailTop != browser.detailMax {
+		t.Fatalf("detailTop=%d max=%d", browser.detailTop, browser.detailMax)
+	}
+	browser.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: 'g'})
+	if browser.detailTop != 0 {
+		t.Fatalf("detailTop=%d", browser.detailTop)
+	}
+}
+
 func TestSessionBrowserStaysWithinNarrowWidth(t *testing.T) {
 	browser := NewSessionBrowser(SessionBrowserOptions{Items: []BrowserSession{{
 		Title: strings.Repeat("wide title ", 20), Outcome: "abandoned", Capture: "10 saved · 2 failed",
@@ -75,6 +92,28 @@ func TestSessionBrowserStaysWithinNarrowWidth(t *testing.T) {
 	for _, line := range strings.Split(view, "\n") {
 		if bentotui.VisibleWidth(line) > 40 {
 			t.Fatalf("line width %d: %q", bentotui.VisibleWidth(line), line)
+		}
+	}
+}
+
+func TestSessionBrowserUsesGlobalAnchoredFrame(t *testing.T) {
+	browser := NewSessionBrowser(SessionBrowserOptions{Items: []BrowserSession{{Title: "One", ID: "s1"}}})
+	for _, test := range []struct {
+		screen        bentotui.Screen
+		width, height int
+	}{
+		{bentotui.Screen{Width: 140, Height: 40}, 80, 20},
+		{bentotui.Screen{Width: 48, Height: 12}, 48, 12},
+	} {
+		view := browser.View(test.screen)
+		lines := strings.Split(view, "\n")
+		if len(lines) != test.height {
+			t.Fatalf("height %d", len(lines))
+		}
+		for _, line := range lines {
+			if bentotui.VisibleWidth(line) != test.width || strings.HasPrefix(line, " ") {
+				t.Fatalf("unanchored global frame line %q", line)
+			}
 		}
 	}
 }

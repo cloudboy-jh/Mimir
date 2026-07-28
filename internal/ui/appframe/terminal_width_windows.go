@@ -1,6 +1,6 @@
 //go:build windows
 
-package ui
+package appframe
 
 import (
 	"os"

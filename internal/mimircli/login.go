@@ -8,7 +8,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
@@ -41,9 +41,14 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		}
 		i++
 	}
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
+	ctx = operationCtx
 	if !opts.JSON {
-		printSetupBanner(ioctx.Out)
-		opts.Progress = startProgress(ioctx.Out, "Mimir login", []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"})
+		if !cliui.Interactive(ioctx.In, ioctx.Out) {
+			printSetupBanner(ioctx.Out)
+		}
+		opts.Progress = startOperationProgress(ctx, ioctx, "Mimir login", []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"}, cancelOperation)
 		defer opts.Progress.Stop()
 	}
 	if !forceDiscovery {

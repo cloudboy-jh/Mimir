@@ -10,8 +10,9 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	operationui "github.com/cloudboy-jh/mimir/internal/ui/operations"
 )
 
 var runLifecycleUpdate = func(ctx context.Context, check, force bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -44,12 +45,15 @@ func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
 	}
 	operationCtx, cancelOperation := context.WithCancel(ctx)
 	defer cancelOperation()
-	var operation *cliui.Operation
+	var operation *operationui.Progress
 	if !check && !jsonOutput {
-		operation = cliui.StartOperation(operationCtx, ioctx.In, ioctx.Out, "Mimir update", nil, cancelOperation)
+		operation = operationui.Start(operationCtx, ioctx.In, ioctx.Out, "Mimir update", nil, cancelOperation)
 	}
 	progress := func(message string) {
 		if operation != nil {
+			if message == "Replacing Mimir executable" {
+				operation.Commit()
+			}
 			operation.Status(message)
 		}
 	}

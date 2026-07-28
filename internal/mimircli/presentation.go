@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	doctorpkg "github.com/cloudboy-jh/mimir/internal/doctor"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
@@ -50,57 +49,6 @@ func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
 	if len(rows) > 0 {
 		_, err := fmt.Fprintf(out, "\n%s\n", render.StatusItems(rows))
 		return err
-	}
-	return nil
-}
-
-func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error {
-	if limit > 0 && len(receipts) > limit {
-		receipts = receipts[:limit]
-	}
-	if len(receipts) == 0 {
-		render := cliui.New(out)
-		_, err := fmt.Fprintln(out, render.EmptyState("No sessions found", "Captured model traffic will appear here as work sessions."))
-		return err
-	}
-	render := cliui.New(out)
-	if _, err := fmt.Fprintf(out, "%s\n\n", render.Heading("Sessions")); err != nil {
-		return err
-	}
-	for i, receipt := range receipts {
-		outcome := receipt.Outcome
-		if outcome == "" {
-			outcome = "unresolved"
-		}
-		title := receipt.ID
-		if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
-			title = strings.TrimSpace(*receipt.Intent)
-		}
-		repo := "No repository"
-		if receipt.Repo != nil && *receipt.Repo != "" {
-			repo = *receipt.Repo
-		}
-		model := "unknown model"
-		if receipt.Model != nil && *receipt.Model != "" {
-			model = *receipt.Model
-		}
-		started := receipt.StartedAt
-		if parsed, err := time.Parse(time.RFC3339, started); err == nil {
-			started = parsed.Local().Format("2006-01-02 15:04")
-		}
-		capture := sessions.ExchangeCount(receipt.Capture.SavedExchanges) + " saved"
-		if receipt.Capture.PendingExchanges > 0 {
-			capture = "saving"
-		} else if receipt.Capture.FailedExchanges > 0 {
-			capture = fmt.Sprintf("%d saved · %d failed", receipt.Capture.SavedExchanges, receipt.Capture.FailedExchanges)
-		}
-		fmt.Fprintln(out, render.Session(cliui.SessionItem{
-			Title: title, Outcome: outcome, Capture: capture,
-			Metadata: strings.Join([]string{started, repo, model}, " · "), ID: receipt.ID,
-		}))
-		if i < len(receipts)-1 {
-			fmt.Fprintln(out)
-		}
 	}
 	return nil
 }

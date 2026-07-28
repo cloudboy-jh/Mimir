@@ -9,7 +9,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 

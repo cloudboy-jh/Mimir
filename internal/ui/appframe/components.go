@@ -1,4 +1,4 @@
-package ui
+package appframe
 
 import (
 	"strings"
@@ -119,7 +119,7 @@ func (r Renderer) Session(item SessionItem) string {
 	prefix := "  " + r.OutcomeBadge(item.Outcome) + " "
 	stat := strings.TrimSpace(item.Capture)
 	contentWidth := max(1, r.Width-bentotui.VisibleWidth(prefix))
-	stat = bentotui.Truncate(stat, max(1, min(contentWidth/3, 24)))
+	stat = bentotui.Truncate(stat, max(1, min(contentWidth-12, 36)))
 	titleWidth := contentWidth
 	if stat != "" {
 		titleWidth = max(1, contentWidth-bentotui.VisibleWidth(stat)-2)

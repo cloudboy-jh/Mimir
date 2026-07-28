@@ -12,7 +12,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 )
 
 type setupOptions struct {
@@ -97,13 +97,18 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 			return fmt.Errorf("unknown setup option %q", args[i])
 		}
 	}
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	defer cancelOperation()
+	ctx = operationCtx
 	if !opts.JSON {
-		printSetupBanner(ioctx.Out)
+		if !cliui.Interactive(ioctx.In, ioctx.Out) {
+			printSetupBanner(ioctx.Out)
+		}
 		phases := []string{"Preparing Worker", "Authenticating Cloudflare", "Provisioning database", "Provisioning archive", "Applying schema", "Configuring credentials", "Connecting OpenRouter", "Deploying Worker", "Verifying connection"}
 		if opts.URL != "" {
 			phases = []string{"Verifying connection"}
 		}
-		opts.Progress = startSetupProgress(ioctx.Out, phases)
+		opts.Progress = startOperationProgress(ctx, ioctx, "Mimir setup", phases, cancelOperation)
 		defer func() {
 			if resultErr != nil {
 				opts.Progress.Fail()

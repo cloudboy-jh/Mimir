@@ -5,15 +5,15 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cloudboy-jh/mimir/internal/sessions"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	receiptui "github.com/cloudboy-jh/mimir/internal/ui/receipts"
+	sessionui "github.com/cloudboy-jh/mimir/internal/ui/sessions"
 )
 
 func cmdList(ctx context.Context, args []string, out io.Writer) error {
@@ -71,7 +71,7 @@ func cmdListIO(ctx context.Context, args []string, in io.Reader, out io.Writer) 
 		}
 		return printRemoteData(out, data)
 	}
-	interactiveTerminal := bentotui.Interactive(in, out)
+	interactiveTerminal := appframe.Interactive(in, out)
 	if interactive == "always" && !interactiveTerminal {
 		return fmt.Errorf("interactive list requires terminal input and output")
 	}
@@ -99,34 +99,12 @@ func runSessionBrowser(ctx context.Context, in, out *os.File, receipts []session
 		filters = append(filters, "outcome="+outcome)
 	}
 	pointer, _ := loadPointer()
-	toItems := func(values []sessions.Receipt) []cliui.BrowserSession {
-		if limit > 0 && len(values) > limit {
-			values = values[:limit]
-		}
-		items := make([]cliui.BrowserSession, 0, len(values))
-		for _, receipt := range values {
-			title := receipt.ID
-			if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
-				title = strings.TrimSpace(*receipt.Intent)
-			}
-			started := receipt.StartedAt
-			if parsed, err := time.Parse(time.RFC3339, started); err == nil {
-				started = parsed.Local().Format("2006-01-02 15:04")
-			}
-			dashboardURL := ""
-			if pointer.URL != "" {
-				dashboardURL = strings.TrimRight(pointer.URL, "/") + "/dashboard/sessions/" + url.PathEscape(receipt.ID)
-			}
-			items = append(items, cliui.BrowserSession{
-				Title: title, Outcome: emptyFallback(receipt.Outcome, "unresolved"), Capture: receiptCaptureLabel(receipt),
-				Started: started, Repo: pointerValue(receipt.Repo), Model: pointerValue(receipt.Model), ID: receipt.ID, DashboardURL: dashboardURL,
-			})
-		}
-		return items
+	toItems := func(values []sessions.Receipt) []sessionui.BrowserSession {
+		return sessionui.Items(values, pointer.URL, limit)
 	}
-	browser := cliui.NewSessionBrowser(cliui.SessionBrowserOptions{
+	browser := sessionui.NewSessionBrowser(sessionui.SessionBrowserOptions{
 		Out: out, Items: toItems(receipts), Filters: strings.Join(filters, " · "),
-		Refresh: func(ctx context.Context) ([]cliui.BrowserSession, error) {
+		Refresh: func(ctx context.Context) ([]sessionui.BrowserSession, error) {
 			values, err := currentSessionService().FetchReceipts(ctx, repo, outcome)
 			if err != nil {
 				return nil, err
@@ -142,24 +120,6 @@ func runSessionBrowser(ctx context.Context, in, out *os.File, receipts []session
 	return bentotui.Run(ctx, in, out, browser)
 }
 
-func pointerValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return strings.TrimSpace(*value)
-}
-
-func receiptCaptureLabel(receipt sessions.Receipt) string {
-	switch {
-	case receipt.Capture.PendingExchanges > 0:
-		return "saving"
-	case receipt.Capture.SavedExchanges > 0 && receipt.Capture.FailedExchanges > 0:
-		return fmt.Sprintf("%d saved · %d failed", receipt.Capture.SavedExchanges, receipt.Capture.FailedExchanges)
-	case receipt.Capture.FailedExchanges > 0:
-		return "capture failed"
-	case receipt.Capture.SavedExchanges > 0:
-		return sessions.ExchangeCount(receipt.Capture.SavedExchanges) + " saved"
-	default:
-		return "not captured"
-	}
+func renderReceipts(out io.Writer, receipts []sessions.Receipt, limit int) error {
+	return receiptui.Render(out, receipts, limit)
 }

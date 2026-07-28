@@ -1,6 +1,6 @@
 //go:build darwin
 
-package ui
+package appframe
 
 import (
 	"os"

@@ -1,6 +1,6 @@
 //go:build linux
 
-package ui
+package appframe
 
 import (
 	"os"

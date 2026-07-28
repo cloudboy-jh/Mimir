@@ -1,4 +1,4 @@
-package ui
+package operations
 
 import (
 	"context"
@@ -14,10 +14,10 @@ func TestOperationViewportTracksPhasesAndNavigation(t *testing.T) {
 	app := &operationApp{
 		title: "Mimir deploy", started: time.Now(), active: 0, follow: true, status: "running", updates: make(chan struct{}, 1),
 		entries: []operationEntry{{label: "Preparing Worker", state: StepComplete}, {label: "Deploying Worker", state: StepActive}},
-		cancel:  func() { cancelled = true },
+		cancel:  func() { cancelled = true }, cancellable: true,
 	}
 	view := app.View(bentotui.Screen{Width: 64, Height: 10})
-	for _, expected := range []string{"┌─ Mimir deploy", "[✓] Preparing Worker", "[›] Deploying Worker", "ctrl+c cancel", "└"} {
+	for _, expected := range []string{"┌─ Mimir · Deploy", "[✓] Preparing Worker", "[›] Deploying Worker", "^C Cancel", "└"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("missing %q:\n%s", expected, view)
 		}
@@ -58,6 +58,18 @@ func TestOperationUpdatesPreserveManualScroll(t *testing.T) {
 	}
 }
 
+func TestOperationCommitRemovesCancellationAction(t *testing.T) {
+	app := &operationApp{title: "Mimir update", started: time.Now(), active: -1, follow: true, status: "running", cancellable: true, updates: make(chan struct{}, 1)}
+	operation := &Operation{app: app}
+	if view := app.View(bentotui.Screen{Width: 80, Height: 20}); !strings.Contains(view, "^C Cancel") {
+		t.Fatalf("cancel action missing:\n%s", view)
+	}
+	operation.Commit()
+	if view := app.View(bentotui.Screen{Width: 80, Height: 20}); strings.Contains(view, "^C Cancel") {
+		t.Fatalf("cancel action remained after commit:\n%s", view)
+	}
+}
+
 func TestOperationOutputSanitizesAndBoundsLogs(t *testing.T) {
 	app := &operationApp{updates: make(chan struct{}, 1), active: -1}
 	writer := &operationLogWriter{app: app}
@@ -81,5 +93,27 @@ func TestOperationFollowUsesWrappedViewportLines(t *testing.T) {
 	view := app.View(bentotui.Screen{Width: 40, Height: 8})
 	if !strings.Contains(view, "TAIL") {
 		t.Fatalf("follow mode did not reach wrapped tail:\n%s", view)
+	}
+}
+
+func TestOperationUsesGlobalAnchoredFrame(t *testing.T) {
+	app := &operationApp{title: "Mimir deploy", started: time.Now(), active: -1, follow: true, status: "running", updates: make(chan struct{}, 1)}
+	for _, test := range []struct {
+		screen        bentotui.Screen
+		width, height int
+	}{
+		{bentotui.Screen{Width: 140, Height: 40}, 80, 20},
+		{bentotui.Screen{Width: 48, Height: 12}, 48, 12},
+	} {
+		view := app.View(test.screen)
+		lines := strings.Split(view, "\n")
+		if len(lines) != test.height {
+			t.Fatalf("height %d", len(lines))
+		}
+		for _, line := range lines {
+			if bentotui.VisibleWidth(line) != test.width || strings.HasPrefix(line, " ") {
+				t.Fatalf("unanchored global frame line %q", line)
+			}
+		}
 	}
 }

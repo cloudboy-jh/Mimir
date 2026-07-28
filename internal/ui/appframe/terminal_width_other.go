@@ -1,6 +1,6 @@
 //go:build !windows && !linux && !darwin
 
-package ui
+package appframe
 
 import "os"
 

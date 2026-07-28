@@ -12,8 +12,9 @@ import (
 	"strings"
 
 	mimirassets "github.com/cloudboy-jh/mimir"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui"
+	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	operationui "github.com/cloudboy-jh/mimir/internal/ui/operations"
 )
 
 func setupStep(progress *setupProgress, out io.Writer, jsonOutput bool, label string) {
@@ -22,77 +23,10 @@ func setupStep(progress *setupProgress, out io.Writer, jsonOutput bool, label st
 	}
 }
 
-type setupProgress struct {
-	stepper   *cliui.Stepper
-	operation *cliui.Operation
-}
-
-func startSetupProgress(out io.Writer, phases []string) *setupProgress {
-	return startProgress(out, "Mimir setup", phases)
-}
-
-func startProgress(out io.Writer, title string, phases []string) *setupProgress {
-	return &setupProgress{stepper: cliui.StartStepper(out, title, phases)}
-}
+type setupProgress = operationui.Progress
 
 func startOperationProgress(ctx context.Context, ioctx IO, title string, phases []string, cancel context.CancelFunc) *setupProgress {
-	if operation := cliui.StartOperation(ctx, ioctx.In, ioctx.Out, title, phases, cancel); operation != nil {
-		return &setupProgress{operation: operation}
-	}
-	return startProgress(ioctx.Out, title, phases)
-}
-
-func (progress *setupProgress) Pause() {
-	if progress == nil {
-		return
-	}
-	if progress.operation != nil {
-		progress.operation.Pause()
-	} else if progress.stepper != nil {
-		progress.stepper.Pause()
-	}
-}
-
-func (progress *setupProgress) Stop() { progress.Pause() }
-
-func (progress *setupProgress) Fail() {
-	if progress == nil {
-		return
-	}
-	if progress.operation != nil {
-		progress.operation.Fail()
-	} else if progress.stepper != nil {
-		progress.stepper.FailCurrent()
-	}
-}
-
-func (progress *setupProgress) Resume() {
-	if progress == nil {
-		return
-	}
-	if progress.operation != nil {
-		progress.operation.Resume()
-	} else if progress.stepper != nil {
-		progress.stepper.Resume()
-	}
-}
-
-func (progress *setupProgress) Complete(label string) {
-	if progress == nil {
-		return
-	}
-	if progress.operation != nil {
-		progress.operation.Complete(label)
-	} else if progress.stepper != nil {
-		progress.stepper.Complete(label)
-	}
-}
-
-func (progress *setupProgress) Output() io.Writer {
-	if progress == nil || progress.operation == nil {
-		return nil
-	}
-	return progress.operation.Output()
+	return operationui.Start(ctx, ioctx.In, ioctx.Out, title, phases, cancel)
 }
 
 const setupLogoWidth = 64

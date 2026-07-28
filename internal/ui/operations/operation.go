@@ -1,4 +1,4 @@
-package ui
+package operations
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
@@ -29,19 +30,22 @@ type Operation struct {
 }
 
 type operationApp struct {
-	mu        sync.Mutex
-	out       io.Writer
-	title     string
-	started   time.Time
-	entries   []operationEntry
-	logs      []string
-	active    int
-	offset    int
-	follow    bool
-	status    string
-	updates   chan struct{}
-	cancel    context.CancelFunc
-	cancelled bool
+	mu           sync.Mutex
+	out          io.Writer
+	title        string
+	started      time.Time
+	entries      []operationEntry
+	logs         []string
+	active       int
+	offset       int
+	follow       bool
+	status       string
+	updates      chan struct{}
+	cancel       context.CancelFunc
+	cancelled    bool
+	cancellable  bool
+	help         bool
+	tailAtScroll int
 }
 
 type operationLogWriter struct {
@@ -56,7 +60,7 @@ type operationLogWriter struct {
 func StartOperation(ctx context.Context, in io.Reader, out io.Writer, title string, phases []string, cancel context.CancelFunc) *Operation {
 	input, inputOK := in.(*os.File)
 	output, outputOK := out.(*os.File)
-	if !inputOK || !outputOK || !bentotui.Interactive(input, output) {
+	if !inputOK || !outputOK || !appframe.Interactive(input, output) {
 		return nil
 	}
 	entries := make([]operationEntry, len(phases))
@@ -70,7 +74,7 @@ func StartOperation(ctx context.Context, in io.Reader, out io.Writer, title stri
 	}
 	app := &operationApp{
 		out: output, title: title, started: time.Now(), entries: entries, active: active,
-		follow: true, status: "running", updates: make(chan struct{}, 1), cancel: cancel,
+		follow: true, status: "running", updates: make(chan struct{}, 1), cancel: cancel, cancellable: true,
 	}
 	operation := &Operation{ctx: ctx, in: input, out: output, app: app}
 	operation.Resume()
@@ -129,6 +133,16 @@ func (o *Operation) Fail() {
 		o.app.entries[o.app.active].state = StepFailed
 	}
 	o.app.status = "failed"
+	o.app.mu.Unlock()
+	o.app.notify()
+}
+
+func (o *Operation) Commit() {
+	if o == nil {
+		return
+	}
+	o.app.mu.Lock()
+	o.app.cancellable = false
 	o.app.mu.Unlock()
 	o.app.notify()
 }
@@ -192,14 +206,21 @@ func (a *operationApp) notify() {
 func (a *operationApp) Handle(_ context.Context, key bentotui.Key) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.help {
+		if key.Kind == bentotui.KeyEscape {
+			a.help = false
+		}
+		return false
+	}
 	switch key.Kind {
 	case bentotui.KeyUp:
 		a.follow = false
+		a.tailAtScroll = len(a.entries) + len(a.logs)
 		a.offset = max(0, a.offset-1)
 	case bentotui.KeyDown:
 		a.offset++
 	case bentotui.KeyInterrupt:
-		if !a.cancelled && a.cancel != nil {
+		if a.cancellable && !a.cancelled && a.cancel != nil {
 			a.cancelled = true
 			a.status = "cancelling"
 			a.cancel()
@@ -208,6 +229,7 @@ func (a *operationApp) Handle(_ context.Context, key bentotui.Key) bool {
 		switch key.Rune {
 		case 'k':
 			a.follow = false
+			a.tailAtScroll = len(a.entries) + len(a.logs)
 			a.offset = max(0, a.offset-1)
 		case 'j':
 			a.offset++
@@ -215,7 +237,11 @@ func (a *operationApp) Handle(_ context.Context, key bentotui.Key) bool {
 			a.follow, a.offset = false, 0
 		case 'G', 'f':
 			a.follow = true
+		case '?':
+			a.help = true
 		}
+	case bentotui.KeyEscape:
+		a.help = false
 	}
 	return false
 }
@@ -223,7 +249,12 @@ func (a *operationApp) Handle(_ context.Context, key bentotui.Key) bool {
 func (a *operationApp) View(screen bentotui.Screen) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	render := New(a.out).WithWidth(min(screen.Width, 110))
+	render := appframe.New(a.out).WithWidth(appframe.ForScreen(screen).Width)
+	if a.help {
+		footer := appframe.Footer(render.Context(), []appframe.Binding{{Key: "Esc", Label: "Back"}}, nil)
+		view, _ := (appframe.Frame{Surface: "Help", Lines: []string{"Keyboard", "", "↑/↓ or j/k  Scroll output", "g/G          Beginning or end", "f            Follow live output", "Ctrl+C       Cancel while safe"}, Footer: footer}).Render(render.Context(), screen)
+		return view
+	}
 	lines := make([]string, 0, len(a.entries))
 	for _, entry := range a.entries {
 		marker, variant := "·", bentotui.VariantNeutral
@@ -240,23 +271,41 @@ func (a *operationApp) View(screen bentotui.Screen) string {
 	for _, line := range a.logs {
 		lines = append(lines, "   "+line)
 	}
-	lineWidth := max(1, min(screen.Width, 110)-4)
+	layout := appframe.ForScreen(screen)
+	lineWidth := layout.BodyWidth
 	wrapped := make([]string, 0, len(lines))
 	for _, line := range lines {
 		wrapped = append(wrapped, bentotui.WrapPreserve(line, lineWidth)...)
 	}
 	lines = wrapped
-	bodyHeight := max(2, screen.Height-4)
+	bodyHeight := layout.BodyHeight
 	if a.follow {
 		a.offset = max(0, len(lines)-bodyHeight)
 	} else {
 		a.offset = min(a.offset, max(0, len(lines)-bodyHeight))
 	}
 	right := a.status + " · " + formatElapsed(time.Since(a.started))
-	footer := "↑/↓ scroll   g/G ends   f follow   ctrl+c cancel"
-	return bentotui.ViewportBox(render.Context(), bentotui.ViewportBoxOptions{
-		Title: a.title, Right: right, Footer: footer, Lines: lines, Offset: a.offset, Height: screen.Height,
-	})
+	newer := max(0, len(a.entries)+len(a.logs)-a.tailAtScroll)
+	followLabel := "Follow"
+	if !a.follow && newer > 0 {
+		followLabel = fmt.Sprintf("Jump live · %d newer", newer)
+	}
+	rightBindings := []appframe.Binding{{Key: "?", Label: "Help"}}
+	if a.cancellable {
+		rightBindings = append(rightBindings, appframe.Binding{Key: "^C", Label: "Cancel"})
+	}
+	footer := appframe.Footer(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Scroll"}, {Key: "f", Label: followLabel}}, rightBindings)
+	view, offset := (appframe.Frame{Surface: surfaceName(a.title), Status: right, Footer: footer, Lines: lines, Offset: a.offset, Follow: a.follow}).Render(render.Context(), screen)
+	a.offset = offset
+	return view
+}
+
+func surfaceName(title string) string {
+	title = strings.TrimSpace(strings.TrimPrefix(title, "Mimir "))
+	if title == "" {
+		return "Operation"
+	}
+	return strings.ToUpper(title[:1]) + title[1:]
 }
 
 func (w *operationLogWriter) Write(data []byte) (int, error) {

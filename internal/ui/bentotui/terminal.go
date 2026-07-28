@@ -261,3 +261,12 @@ func terminalScreen(file *os.File) Screen {
 	}
 	return Screen{Width: width, Height: height}
 }
+
+// ScreenFor returns the current terminal dimensions with stable fallbacks.
+func ScreenFor(file *os.File) Screen { return terminalScreen(file) }
+
+// Dimensions returns measured terminal dimensions without fallbacks.
+func Dimensions(file *os.File) Screen {
+	width, height := terminalSize(file)
+	return Screen{Width: width, Height: height}
+}

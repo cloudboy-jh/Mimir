@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -68,13 +68,16 @@ describe("session outcome tools", () => {
     globalThis.fetch = async (input, init) => {
       const url = String(input);
       requests.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
-      if (url.endsWith("/status")) return Response.json({ session_id: "child/session", outcome: "landed", capture: { status: "saved" } });
+      if (url.endsWith("/status")) return Response.json({ session_id: "child/session", outcome: "landed", capture: { status: "saved", saved_exchanges: 3 }, dashboard_url: "https://mimir.example/dashboard/sessions/child" });
       return Response.json({ ok: true });
     };
     try {
       const hooks = await plugin.server({ directory: "/repo/mimir" } as never);
-      const output = await hooks.tool!.mimir_session_outcome.execute({ outcome: "landed", reason: "tests passed", evidence: "commit abc123" }, { sessionID: "child/session" } as never);
-      expect(JSON.parse(output)).toMatchObject({ session_id: "child/session", outcome: "landed" });
+      let title = "";
+      const output = await hooks.tool!.mimir_session_outcome.execute({ outcome: "landed", reason: "tests passed", evidence: "commit abc123" }, { sessionID: "child/session", metadata(input: { title?: string }) { title = input.title ?? ""; } } as never);
+      expect(output).toContain("◆ Mimir  Saved · 3 exchanges · LANDED");
+      expect(output).toContain("View session: https://mimir.example/dashboard/sessions/child");
+      expect(title).toBe("Mimir receipt");
       expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/outcome", method: "POST" }));
       expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/status", method: "GET" }));
     } finally {
@@ -82,6 +85,15 @@ describe("session outcome tools", () => {
       if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
       if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
     }
+  });
+});
+
+describe("session receipt formatting", () => {
+  it("preserves authoritative capture states", () => {
+    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "pending", pending_exchanges: 2 }, outcome: "unresolved" }))).toBe("◆ Mimir  Saving… · 2 pending · UNRESOLVED");
+    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "partial", saved_exchanges: 12, failed_exchanges: 2 } }))).toBe("◆ Mimir  Partial · 12 saved · 2 failed");
+    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "pending", saved_exchanges: 12, failed_exchanges: 2, pending_exchanges: 1 } }))).toBe("◆ Mimir  Partial · 12 saved · 2 failed · 1 pending");
+    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "failed", failed_exchanges: 1 } }))).toBe("◆ Mimir  Couldn’t save this session · 1 failed");
   });
 });
 
