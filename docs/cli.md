@@ -23,7 +23,14 @@ Worker response rather than hiding new fields behind a CLI-specific model.
 `session status` and `session end` normalize the receipt while retaining future
 Worker fields. `mimir access --json` without an API token returns a structured
 manual action with the exact dashboard destinations and does not print an
-interactive checklist. Generic errors in JSON mode are written to stderr as:
+interactive checklist.
+
+`mimir list` opens a lightweight session browser when both stdin and stdout are
+terminals. Redirected output and `--no-interactive` retain the static text
+format. Agents and scripts should use `mimir list --json`; JSON mode never emits
+terminal control sequences.
+
+Generic errors in JSON mode are written to stderr as:
 
 ```json
 {"error":"description","exit_code":4}

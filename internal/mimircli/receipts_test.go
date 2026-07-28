@@ -48,4 +48,50 @@ func TestCmdListRejectsBadInput(t *testing.T) {
 	if err := cmdList(context.Background(), []string{"--bogus"}, &out); err == nil {
 		t.Fatal("expected usage error")
 	}
+	if err := cmdList(context.Background(), []string{"--limit", "2x"}, &out); err == nil {
+		t.Fatal("expected strict invalid limit error")
+	}
+	if err := cmdList(context.Background(), []string{"--json", "--interactive"}, &out); err == nil {
+		t.Fatal("expected conflicting output mode error")
+	}
+	if err := cmdList(context.Background(), []string{"--interactive"}, &out); err == nil || !strings.Contains(err.Error(), "requires terminal") {
+		t.Fatalf("expected terminal requirement, got %v", err)
+	}
+}
+
+func TestCmdListJSONRemainsMachineReadable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"s1","future":{"exact":9007199254740993}},{"id":"s2"}],"next_cursor":"next"}`))
+	}))
+	defer server.Close()
+	t.Setenv(envMimirHome, t.TempDir())
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := cmdListIO(context.Background(), []string{"--json", "--limit=1"}, strings.NewReader("q"), &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(text, "\x1b") || !strings.Contains(text, `"next_cursor": "next"`) || !strings.Contains(text, "9007199254740993") || strings.Contains(text, `"id": "s2"`) {
+		t.Fatalf("unexpected JSON output %q", text)
+	}
+}
+
+func TestCmdListNoInteractivePreservesStaticOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"s1","started_at":"2026-07-12T18:06:00Z","outcome":"landed","capture":{"saved_exchanges":1}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv(envMimirHome, t.TempDir())
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "test-token"}); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := cmdListIO(context.Background(), []string{"--no-interactive"}, strings.NewReader("q"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "\x1b") || !strings.Contains(out.String(), "[LANDED] s1") {
+		t.Fatalf("unexpected static output %q", out.String())
+	}
 }

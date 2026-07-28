@@ -151,7 +151,7 @@ mimir setup [--quick]                 provision and deploy Mimir
 mimir login                           connect another machine
 mimir deploy [--worker-dir DIR]       deploy packaged Worker and dashboard changes
 mimir dashboard                       open the private dashboard
-mimir list [--repo NAME] [--json]     list recent sessions
+mimir list [filters] [--json]         browse recent sessions (interactive on a TTY)
 mimir search <query> [--json]         search saved session memory
 mimir session get <id> [--json]       inspect one session
 mimir session status <id> [--json]    verify durable capture

@@ -99,7 +99,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		}
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
 	case "list":
-		return cmdList(ctx, args[1:], ioctx.Out)
+		return cmdListIO(ctx, args[1:], ioctx.In, ioctx.Out)
 	case "sessions":
 		if !onlyJSONFlag(args[1:]) {
 			return fmt.Errorf("usage: mimir sessions [--json]")
@@ -598,7 +598,7 @@ func usage(out io.Writer) error {
 		{Usage: "mimir access [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
 		{Usage: "mimir login [--json]", Description: "Authenticate and register this machine."},
 		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
-		{Usage: "mimir list [filters] [--json]", Description: "List captured work sessions."},
+		{Usage: "mimir list [filters] [--no-interactive] [--json]", Description: "Browse captured work sessions."},
 		{Usage: "mimir search <query> [--json]", Description: "Search session evidence and local code."},
 		{Usage: "mimir session status <id> [--json]", Description: "Inspect capture and outcome state."},
 		{Usage: "mimir session end <id> [options]", Description: "Finalize capture and optionally record an outcome."},
