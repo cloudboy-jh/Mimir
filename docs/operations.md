@@ -52,9 +52,11 @@ the update immediately.
 mimir access
 ```
 
-The Access application must protect exactly `/dashboard` and `/dashboard/*`.
-Dashboard APIs verify Access JWTs. Machine APIs remain on independent bearer
-tokens and browser code never receives them.
+The Access application must protect exactly `/dashboard/auth`,
+`/dashboard/api/*`, and `/dashboard/log-objects/*`. The public `/login` route
+provides the branded handoff, while dashboard APIs and redacted objects verify
+Access JWTs. Machine APIs remain on independent bearer tokens and browser code
+never receives them.
 
 When `--email` is supplied, automation accepts only one exact Allow policy for
 that email. Existing conflicting, permissive, additional, or Bypass policies

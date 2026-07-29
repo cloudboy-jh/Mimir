@@ -28,7 +28,7 @@ func TestDashboardOpensDeploymentURL(t *testing.T) {
 	if err := dashboard(context.Background(), IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(opened, "/dashboard") {
+	if !strings.Contains(opened, "/login?returnTo=%2Fdashboard%2Fsessions") {
 		t.Fatalf("opened %q", opened)
 	}
 	if strings.Contains(opened, "test-token") {

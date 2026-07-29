@@ -162,12 +162,14 @@ Session-list filters include repository, model, outcome, and date range.
 
 | Method | Route | Behavior |
 | --- | --- | --- |
+| `GET` | `/dashboard/api/identity` | Return safe Cloudflare Access identity fields or the local-development identity. |
 | `GET` | `/dashboard/api/bootstrap` | Return basic request/session totals. |
 | `GET` | `/dashboard/api/log` | Cursor-paginated exchange metadata. |
 | `GET` | `/dashboard/api/log/:id` | Return one exchange and its log-object URL. |
 | `GET` | `/dashboard/log-objects/*` | Return one redacted R2 object. |
-| `GET` | `/dashboard/api/sessions` | List recent sessions. |
-| `GET` | `/dashboard/api/sessions/:id` | Return session evidence and timeline. |
+| `GET` | `/dashboard/api/sessions` | Filter and cursor-paginate root sessions. |
+| `GET` | `/dashboard/api/sessions/:id` | Return session metadata, capture, files, aggregated errors, and outcome history. |
+| `GET` | `/dashboard/api/sessions/:id/exchanges` | Filter, sort, and cursor-paginate the session subtree timeline. |
 | `GET` | `/dashboard/api/sessions/:id/status` | Return the derived capture summary. |
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
@@ -176,6 +178,24 @@ Session-list filters include repository, model, outcome, and date range.
 The Vue client reads live Access-protected dashboard APIs for Sessions,
 Requests, Overview, details, R2 payload retrieval, capture status, and outcome
 mutation.
+
+Dashboard session errors are aggregated at read time from `exchange_errors`
+joined to saved exchanges: each signature carries an occurrence count, first
+and last seen timestamps, and the newest matching exchange ID. Signatures that
+only exist in `session_errors` (recorded before facet projection) render with
+count 1 and no timing data.
+
+Outcome events may carry structured evidence in `evidence_json`:
+`{ commit, base_commit?, patch?, provenance?, url?, note? }`. The OpenCode
+plugin attaches the HEAD commit, its parent, and a bounded redacted unified
+patch (20 KB cap) when an outcome is recorded from the harness; the dashboard
+outcome form accepts a single commit, URL, or note entry. Commit values are
+never inferred from refs. The dashboard renders a conditional per-file diff
+viewer from stored patches; it never contacts Git hosts.
+
+`Download as Markdown` is a transient client-side export generated from the
+session detail and timeline responses (capped at 500 exchanges). Nothing is
+persisted, and exports contain excerpts and metadata, not raw R2 payloads.
 
 ## 5. Capture Lifecycle
 
@@ -389,8 +409,10 @@ byte count beside searchable metadata.
 D1 first records an accepted exchange, then R2 receives the envelope, then D1
 finalizes it as saved and updates session aggregates. A bounded reconcile pass
 checks accepted and saved rows with R2 `HEAD` requests. Accepted rows with an
-object are finalized idempotently; accepted rows without one remain pending and
-are reported as stale after 15 minutes. Saved rows missing their object become
+object are finalized idempotently. Accepted rows without one stay pending for
+15 minutes; after that they can never finish, so reconcile marks them failed
+with `r2_object_missing` and reports them as swept instead of leaving sessions
+permanently pending. Saved rows missing their object become
 failed with `r2_object_missing`, and affected session aggregates are rebuilt
 from saved rows. Schema-v1 file and error facets are retained per exchange, so
 that rebuild excludes facets belonging only to missing objects. Sessions that
@@ -542,15 +564,17 @@ path and command, and optional session metadata header names. For harnesses
 without a bundled integration, the setup skill or user applies that manifest
 using the harness's own secure configuration system.
 
-Cloudflare Access protects the dashboard with one self-hosted application
-covering exactly `/dashboard` and `/dashboard/*`. Access paths are exact
-matches, so both destinations are required; a `/dashboard`-only application
-authenticates the page but not its API fetches, and a bare-hostname
-application blocks the machine API (`/v1`, `/sessions`, ...) that the proxy and
-CLI use. Machine routes stay outside Access and are authenticated by
-the Worker with bearer tokens. Setup prompts for an optional Cloudflare API
-token and automates the application when provided; `mimir access` runs the
-same automation later (correcting wrong destinations in place), or applies a
+Cloudflare Access protects the dashboard's authentication handoff, API, and
+redacted objects with one self-hosted application covering exactly
+`/dashboard/auth`, `/dashboard/api/*`, and `/dashboard/log-objects/*`. The
+public `/login` route contains no private data; it sends the browser through
+the protected handoff before returning to the dashboard. Access paths are exact
+matches, so all three destinations are required. A bare-hostname application
+would block the machine API (`/v1`, `/sessions`, ...) that the proxy and CLI
+use. Machine routes stay outside Access and are authenticated by the Worker
+with bearer tokens. Setup prompts for an optional Cloudflare API token and
+automates the application when provided; `mimir access` runs the same
+automation later (correcting wrong destinations in place), or applies a
 manually created application's AUD tag and team domain via `--aud` and
 `--team-domain`.
 
@@ -565,7 +589,8 @@ reserved for the canonical machine API. Direct loads and receipt links use
 `/dashboard/sessions/:id`. Sessions, request metadata, overview aggregates, and
 outcome mutation read the Access-protected dashboard API. Full redacted request
 and response payloads are loaded from R2 through `/dashboard/log-objects/*`.
-`mimir dashboard` opens `<worker-url>/dashboard`.
+`mimir dashboard` opens the branded `/login` handoff and returns to
+`/dashboard/sessions` after Access authentication.
 
 ## 13. Observability
 

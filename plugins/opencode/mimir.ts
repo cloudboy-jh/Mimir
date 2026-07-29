@@ -16,6 +16,7 @@
 // server-side silence timer (~10 minutes without a heartbeat).
 
 import { tool, type Plugin } from "@opencode-ai/plugin";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -30,6 +31,9 @@ const MAX_EXCHANGE_BYTES = 512 * 1024;
 const MAX_JSON_DEPTH = 8;
 const MAX_JSON_ENTRIES = 256;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+const MAX_PATCH_BYTES = 20 * 1024;
+const MAX_EVIDENCE_NOTE_BYTES = 8 * 1024;
 
 type Connection = { url: string; token: string };
 
@@ -365,6 +369,76 @@ function repoName(directory: string | undefined): string | null {
   return parts[parts.length - 1] || null;
 }
 
+type GitRunner = (command: string, args: string[], cwd: string) => { status: number | null; stdout: string };
+
+type GitEvidence = {
+  commit: string;
+  base_commit?: string;
+  patch?: string;
+  provenance: "opencode-plugin";
+};
+
+const spawnGit: GitRunner = (command, args, cwd) => {
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+  return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
+};
+
+function runGit(run: GitRunner, cwd: string, args: string[]): string | null {
+  try {
+    const result = run("git", args, cwd);
+    if (result.status !== 0) return null;
+    return result.stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// redactEvidenceText mirrors the Worker's builtin redaction so captured
+// patches never retain common credential shapes before transport.
+function redactEvidenceText(text: string): string {
+  return text
+    .replace(/(?:sk|pk|rk)_[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
+    .replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1[REDACTED]");
+}
+
+function boundedBytes(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maxBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (encoder.encode(value.slice(0, middle)).byteLength <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  return value.slice(0, low);
+}
+
+// gitEvidence captures the canonical commit contract for outcome events: the
+// HEAD commit, its parent when present, and a bounded redacted patch of that
+// commit. Missing git data is not an error; evidence is simply omitted.
+function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit): GitEvidence | null {
+  if (!cwd) return null;
+  const commit = runGit(run, cwd, ["rev-parse", "HEAD"]);
+  if (!commit || !COMMIT_SHA.test(commit)) return null;
+  const evidence: GitEvidence = { commit, provenance: "opencode-plugin" };
+  const base = runGit(run, cwd, ["rev-parse", "HEAD~1"]);
+  if (base && COMMIT_SHA.test(base)) evidence.base_commit = base;
+  const patch = runGit(run, cwd, ["show", "--format=", "--patch", "--unified=3", "HEAD"]);
+  if (patch) evidence.patch = boundedBytes(redactEvidenceText(patch), MAX_PATCH_BYTES);
+  return evidence;
+}
+
+// mergeOutcomeEvidence attaches commit provenance to agent-supplied evidence
+// without rewriting its meaning. A bare string remains a note.
+function mergeOutcomeEvidence(agentEvidence: string | undefined, git: GitEvidence | null): unknown {
+  const note = agentEvidence?.trim();
+  if (note && git) return { note: boundedBytes(note, MAX_EVIDENCE_NOTE_BYTES), ...git };
+  if (note) return note;
+  return git ?? undefined;
+}
+
 function createDeliveryQueue(
   send: (event: SessionEvent) => Promise<boolean>,
   schedule: (callback: () => void, delay: number) => unknown = setTimeout,
@@ -570,7 +644,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         },
         async execute(args, context) {
           context.metadata?.({ title: "Mimir receipt" });
-          await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(args.evidence ? { evidence: args.evidence } : {}) });
+          const evidence = mergeOutcomeEvidence(args.evidence, gitEvidence(worktree ?? directory));
+          await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
       }),
@@ -618,4 +693,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, redactEvidenceText, boundedBytes };

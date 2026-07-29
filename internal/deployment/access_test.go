@@ -18,7 +18,7 @@ func TestAccessAPIEnsureAppIsIdempotent(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": apps})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access/apps"):
 			created++
-			app := AccessApp{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example.workers.dev")}
+			app := AccessApp{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example.workers.dev")}
 			apps = append(apps, app)
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": app})
 		default:
@@ -46,7 +46,7 @@ func TestAccessAPIEnsureAppCorrectsBareHostApp(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []AccessApp{{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example.workers.dev"}}})
 		case http.MethodPut:
 			updated++
-			app := AccessApp{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example.workers.dev")}
+			app := AccessApp{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example.workers.dev/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example.workers.dev")}
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": app})
 		default:
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
@@ -64,10 +64,10 @@ func TestAccessAPIEnsureAppDoesNotRewriteSameNameOnAnotherDomain(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []AccessApp{{UID: "other", Name: DashboardAccessAppName, Domain: "other.example/dashboard", SelfHostedDomains: DashboardAccessDomains("other.example")}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []AccessApp{{UID: "other", Name: DashboardAccessAppName, Domain: "other.example/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("other.example")}}})
 		case http.MethodPost:
 			created++
-			app := AccessApp{UID: "intended", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example")}
+			app := AccessApp{UID: "intended", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example")}
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": app})
 		case http.MethodPut:
 			updated++
@@ -151,7 +151,7 @@ func TestConfigureDashboardAccessReportsPolicyActionRequired(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/access/organizations"):
 			result = map[string]any{"auth_domain": "team.cloudflareaccess.com"}
 		case strings.HasSuffix(r.URL.Path, "/access/apps"):
-			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
+			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
 		case strings.HasSuffix(r.URL.Path, "/policies"):
 			result = []map[string]any{{"uid": "bypass", "name": "bypass", "decision": "bypass", "include": []map[string]any{{"everyone": map[string]any{}}}}}
 		default:
@@ -174,7 +174,7 @@ func TestConfigureDashboardAccessRequiresEmailPolicy(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/access/organizations"):
 			result = map[string]any{"auth_domain": "team.cloudflareaccess.com"}
 		case strings.HasSuffix(r.URL.Path, "/access/apps"):
-			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
+			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Name: DashboardAccessAppName, Domain: "mimir.example/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
 		case strings.HasSuffix(r.URL.Path, "/policies"):
 			policyRequests++
 			result = []any{}

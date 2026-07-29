@@ -1,11 +1,32 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import logo from "../../../../assets/images/mimir-readme.png";
+import { getIdentity, type DashboardIdentity } from "@/lib/api";
 import ThemeToggle from "./ThemeToggle.vue";
 
 const route = useRoute();
 const links = [{ to: "/sessions", label: "Sessions" }, { to: "/requests", label: "Requests" }, { to: "/overview", label: "Overview" }];
 const active = (path: string) => route.path === path || route.path.startsWith(`${path}/`);
+const identity = ref<DashboardIdentity | null>(null);
+let controller: AbortController | null = null;
+
+const identityLabel = computed(() => identity.value?.name || identity.value?.email || "Mimir user");
+const initials = computed(() => {
+  if (identity.value?.source === "local-development") return "DEV";
+  const source = identity.value?.name || identity.value?.email?.split("@")[0] || "M";
+  return source.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "M";
+});
+
+onMounted(async () => {
+  controller = new AbortController();
+  try {
+    identity.value = await getIdentity(controller.signal);
+  } catch {
+    // The shared API handler routes authentication failures to the login page.
+  }
+});
+onBeforeUnmount(() => controller?.abort());
 </script>
 
 <template>
@@ -18,7 +39,13 @@ const active = (path: string) => route.path === path || route.path.startsWith(`$
           {{ link.label }}
         </RouterLink>
       </nav>
-      <div class="ml-auto"><ThemeToggle /></div>
+      <div class="ml-auto flex items-center gap-2">
+        <div v-if="identity" class="flex h-8.5 min-w-0 items-center gap-2 rounded-[5px] border border-zinc-200 bg-stone-50 px-2 pr-2.5 dark:border-zinc-800 dark:bg-zinc-900" :title="identity.email || identityLabel">
+          <span class="flex h-5 min-w-5 items-center justify-center rounded-[3px] bg-zinc-900 px-1 font-mono text-[9px] font-medium text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900">{{ initials }}</span>
+          <span class="hidden max-w-40 truncate text-xs font-medium text-zinc-700 md:block dark:text-zinc-300">{{ identityLabel }}</span>
+        </div>
+        <ThemeToggle />
+      </div>
     </div>
   </header>
 </template>

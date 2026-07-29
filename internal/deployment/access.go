@@ -129,7 +129,7 @@ func (api AccessClient) ListApps(ctx context.Context, accountID string) ([]Acces
 }
 
 func DashboardAccessDomains(host string) []string {
-	return []string{host + "/dashboard", host + "/dashboard/*"}
+	return []string{host + "/dashboard/auth", host + "/dashboard/api/*", host + "/dashboard/log-objects/*"}
 }
 
 func (api AccessClient) EnsureApp(ctx context.Context, accountID, host string) (AccessApp, error) {
@@ -141,7 +141,7 @@ func (api AccessClient) EnsureApp(ctx context.Context, accountID, host string) (
 	body := map[string]any{"name": DashboardAccessAppName, "domain": desired[0], "type": "self_hosted", "session_duration": "24h", "app_launcher_visible": false, "self_hosted_domains": desired}
 	for _, app := range apps {
 		primary := strings.TrimRight(app.Domain, "/")
-		if primary != host && primary != desired[0] {
+		if primary != host && primary != desired[0] && primary != host+"/dashboard" {
 			continue
 		}
 		if sameStrings(app.SelfHostedDomains, desired) {

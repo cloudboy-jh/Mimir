@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --cwd=worker/web run dev",
+    "dev": "bun scripts/dev-dashboard.ts",
+    "dev:web": "bun --cwd=worker/web run dev",
+    "dev:api": "bun --cwd=worker run dev:api",
     "build": "bun --cwd=worker/web run build",
     "typecheck": "bun --cwd=worker/web run typecheck",
     "typecheck:plugins": "tsc -p plugins/opencode/tsconfig.json",

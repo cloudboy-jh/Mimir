@@ -17,6 +17,9 @@ type reconcilePage struct {
 		ExchangeIDs      []string `json:"exchange_ids"`
 		StaleExchangeIDs []string `json:"stale_exchange_ids"`
 	} `json:"pending"`
+	Swept struct {
+		ExchangeIDs []string `json:"exchange_ids"`
+	} `json:"swept"`
 	MissingSaved struct {
 		ExchangeIDs []string `json:"exchange_ids"`
 		SessionIDs  []string `json:"session_ids"`
@@ -33,6 +36,7 @@ type ReconcileReport struct {
 	Finalized    []string `json:"finalized_exchange_ids"`
 	Pending      []string `json:"pending_exchange_ids"`
 	StalePending []string `json:"stale_pending_exchange_ids"`
+	Swept        []string `json:"swept_exchange_ids"`
 	MissingSaved []string `json:"missing_saved_exchange_ids"`
 	Affected     []string `json:"affected_session_ids"`
 	Orphans      []string `json:"orphan_r2_keys"`
@@ -40,7 +44,7 @@ type ReconcileReport struct {
 
 func (s Service) Reconcile(ctx context.Context) ([]byte, error) {
 	const pageLimit = 100
-	report := ReconcileReport{Finalized: []string{}, Pending: []string{}, StalePending: []string{}, MissingSaved: []string{}, Affected: []string{}, Orphans: []string{}}
+	report := ReconcileReport{Finalized: []string{}, Pending: []string{}, StalePending: []string{}, Swept: []string{}, MissingSaved: []string{}, Affected: []string{}, Orphans: []string{}}
 	databaseCursor, r2Cursor := "", ""
 	scanDatabase, scanR2 := true, true
 	for scanDatabase || scanR2 {
@@ -73,6 +77,7 @@ func (s Service) Reconcile(ctx context.Context) ([]byte, error) {
 		report.Finalized = appendUnique(report.Finalized, page.Finalized.ExchangeIDs...)
 		report.Pending = appendUnique(report.Pending, page.Pending.ExchangeIDs...)
 		report.StalePending = appendUnique(report.StalePending, page.Pending.StaleExchangeIDs...)
+		report.Swept = appendUnique(report.Swept, page.Swept.ExchangeIDs...)
 		report.MissingSaved = appendUnique(report.MissingSaved, page.MissingSaved.ExchangeIDs...)
 		report.Affected = appendUnique(report.Affected, page.MissingSaved.SessionIDs...)
 		report.Orphans = appendUnique(report.Orphans, page.Orphans.R2Keys...)

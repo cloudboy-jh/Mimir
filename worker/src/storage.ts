@@ -25,6 +25,7 @@ export type ReconcileResponse = {
   database_cursor: string | null;
   finalized: { count: number; exchange_ids: string[] };
   pending: { count: number; exchange_ids: string[]; stale_exchange_ids: string[] };
+  swept: { count: number; exchange_ids: string[] };
   missing_saved: { count: number; exchange_ids: string[]; session_ids: string[] };
   orphans: { count: number; r2_keys: string[]; cursor: string | null };
   limit: number;
@@ -122,6 +123,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
   const finalized: string[] = [];
   const pending: string[] = [];
   const stalePending: string[] = [];
+  const swept: string[] = [];
   const missingSaved: string[] = [];
   const affectedSessions = new Set<string>();
   const now = new Date().toISOString();
@@ -131,8 +133,20 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
     const object = await env.LOGS.head(row.r2_key);
     if (row.capture_status === "accepted") {
       if (!object) {
+        // A stale accepted row with no R2 object can never finish: the
+        // finalize write was lost. Mark it failed so sessions stop reporting
+        // permanent pending state. Recent rows stay pending; their write may
+        // still be in flight.
+        const stale = !row.accepted_at || Date.parse(row.accepted_at) < staleCutoff;
+        if (stale) {
+          const update = await env.DB.prepare("UPDATE exchanges SET capture_status = 'failed', capture_reason = 'reconciliation', failed_at = ?, failure_code = 'r2_object_missing' WHERE id = ? AND capture_status = 'accepted'").bind(now, row.id).run();
+          if (update.meta.changes > 0) {
+            swept.push(row.id);
+            continue;
+          }
+        }
         pending.push(row.id);
-        if (row.accepted_at && Date.parse(row.accepted_at) < staleCutoff) stalePending.push(row.id);
+        if (stale) stalePending.push(row.id);
         continue;
       }
       const recent = !!row.accepted_at && Date.parse(row.accepted_at) >= staleCutoff;
@@ -182,6 +196,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
     database_cursor: queried.results.length > limit && lastDatabaseRow ? encodeDatabaseCursor(lastDatabaseRow.id) : null,
     finalized: { count: finalized.length, exchange_ids: finalized },
     pending: { count: pending.length, exchange_ids: pending, stale_exchange_ids: stalePending },
+    swept: { count: swept.length, exchange_ids: swept },
     missing_saved: { count: missingSaved.length, exchange_ids: missingSaved, session_ids: [...affectedSessions] },
     orphans: { count: orphans.length, r2_keys: orphans, cursor: listed.truncated ? listed.cursor ?? null : null },
     limit,

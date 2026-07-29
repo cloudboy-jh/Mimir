@@ -20,7 +20,9 @@ async function load(silent = false) {
   if (!silent) loading.value = true;
   error.value = "";
   try {
-    [overview.value, sessions.value] = await Promise.all([getOverview(active.signal), listSessions(active.signal)]);
+    const [overviewResult, sessionResult] = await Promise.all([getOverview(active.signal), listSessions({ limit: 4 }, active.signal)]);
+    overview.value = overviewResult;
+    sessions.value = sessionResult.sessions;
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "Overview data could not be loaded.");
   } finally {

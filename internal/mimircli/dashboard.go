@@ -29,7 +29,7 @@ func dashboard(ctx context.Context, ioctx IO) error {
 	if err != nil {
 		return err
 	}
-	target := pointer.URL + "/dashboard"
+	target := pointer.URL + "/login?returnTo=%2Fdashboard%2Fsessions"
 	if err := openBrowser(ctx, target); err != nil {
 		render := cliui.New(ioctx.Out)
 		_, writeErr := fmt.Fprintln(ioctx.Out, render.Callout(bentotui.ToneWarn, "Could not open the dashboard", target))

@@ -1,6 +1,12 @@
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
 
+export type DashboardIdentity = {
+  email: string | null;
+  name: string | null;
+  source: "cloudflare-access" | "local-development";
+};
+
 export type CaptureSummary = {
   status: CaptureStatus;
   saved_exchanges: number;
@@ -58,14 +64,79 @@ export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model
   failure_code: string | null;
 };
 
+export type SessionError = {
+  signature: string;
+  count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  latest_exchange_id: string | null;
+};
+
+export type OutcomeEvent = {
+  id: string;
+  outcome: Outcome;
+  source: string;
+  reason: string | null;
+  evidence_json: string | null;
+  created_at: string;
+};
+
+export type OutcomeEvidence = {
+  commit?: string;
+  base_commit?: string;
+  patch?: string;
+  provenance?: string;
+  url?: string;
+  note?: string;
+};
+
+export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed === "string") return { note: parsed };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const evidence: OutcomeEvidence = {};
+    for (const key of ["commit", "base_commit", "patch", "provenance", "url", "note"] as const) {
+      if (typeof record[key] === "string" && record[key]) evidence[key] = record[key] as string;
+    }
+    return Object.keys(evidence).length ? evidence : null;
+  } catch {
+    return null;
+  }
+}
+
 export type SessionDetail = {
   session: Omit<Session, "capture">;
   capture: CaptureSummary;
   supporting_sessions: Array<Omit<Session, "capture" | "child_session_count">>;
-  outcome_events: Array<{ id: string; outcome: Outcome; source: string; reason: string | null; evidence_json: string | null; created_at: string }>;
-  exchanges: SessionExchange[];
+  outcome_events: OutcomeEvent[];
   files: string[];
-  errors: string[];
+  errors: SessionError[];
+};
+
+export type SessionFilters = {
+  q?: string;
+  repo?: string;
+  outcome?: Outcome;
+  app?: string;
+  model?: string;
+  from?: string;
+  to?: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type SessionExchangeFilters = {
+  q?: string;
+  model?: string;
+  provider?: string;
+  app?: string;
+  finishReason?: string;
+  order?: "asc" | "desc";
+  cursor?: string;
+  limit?: number;
 };
 
 export type Overview = {
@@ -95,12 +166,20 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     cache: "no-store",
     credentials: "same-origin",
+    redirect: "manual",
     ...init,
     headers: { accept: "application/json", ...init.headers },
   });
+  if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400) || (response.ok && !response.headers.get("content-type")?.includes("application/json"))) {
+    notifyAuthRequired();
+    throw new ApiError("Cloudflare Access authentication required.", 403);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
     const fallback = response.status === 403 ? "Cloudflare Access denied this request." : `Request failed (${response.status}).`;
+    if ((response.status === 401 || response.status === 403) && typeof window !== "undefined") {
+      notifyAuthRequired();
+    }
     throw new ApiError(body?.error ?? fallback, response.status);
   }
   return response.json() as Promise<T>;
@@ -110,21 +189,46 @@ export function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-export async function listSessions(signal?: AbortSignal) {
-  return (await request<{ sessions: Session[] }>("/dashboard/api/sessions", { signal })).sessions;
+export async function getIdentity(signal?: AbortSignal) {
+  return request<DashboardIdentity>("/dashboard/api/identity", { signal });
+}
+
+function notifyAuthRequired() {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("mimir:auth-required"));
+}
+
+export async function listSessions(filters: SessionFilters = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  }
+  return request<{ sessions: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
 }
 
 export async function getSession(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/dashboard/api/sessions/${encodeURIComponent(id)}`, { signal });
 }
 
-export async function setSessionOutcome(id: string, outcome: Outcome, reason: string, signal?: AbortSignal) {
+export async function setSessionOutcome(id: string, outcome: Outcome, reason: string, evidence?: OutcomeEvidence, signal?: AbortSignal) {
   return request<{ id: string; outcome: Outcome }>(`/dashboard/api/sessions/${encodeURIComponent(id)}/outcome`, {
     method: "POST",
     signal,
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ outcome, reason: reason.trim() || undefined }),
+    body: JSON.stringify({ outcome, reason: reason.trim() || undefined, ...(evidence ? { evidence } : {}) }),
   });
+}
+
+export async function listSessionExchanges(id: string, filters: SessionExchangeFilters = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  if (filters.q) query.set("q", filters.q);
+  if (filters.model) query.set("model", filters.model);
+  if (filters.provider) query.set("provider", filters.provider);
+  if (filters.app) query.set("app", filters.app);
+  if (filters.finishReason) query.set("finish_reason", filters.finishReason);
+  if (filters.order) query.set("order", filters.order);
+  if (filters.cursor) query.set("cursor", filters.cursor);
+  query.set("limit", String(filters.limit ?? 25));
+  return request<{ exchanges: SessionExchange[]; next_cursor: string | null }>(`/dashboard/api/sessions/${encodeURIComponent(id)}/exchanges?${query}`, { signal });
 }
 
 export async function listExchanges(filters: { cursor?: string; provider?: string; app?: string; limit?: number } = {}, signal?: AbortSignal) {

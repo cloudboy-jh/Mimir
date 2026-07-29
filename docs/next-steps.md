@@ -69,8 +69,9 @@ the Hermes plugin. Remaining build order:
 
 - Live Access-protected dashboard data, request-log cursor pagination, R2
   payload detail, and outcome updates.
-- Exact Cloudflare Access destinations at `/dashboard` and `/dashboard/*`;
-  machine API routes remain outside Access.
+- Exact Cloudflare Access destinations for `/dashboard/auth`,
+  `/dashboard/api/*`, and `/dashboard/log-objects/*`; machine API routes remain
+  outside Access.
 - Tagged GoReleaser delivery with checksummed cross-platform assets and GitHub
   build provenance, exercised successfully through `v0.3.2`.
 - Windows setup-test portability and installed-version reporting.

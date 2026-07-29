@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:api": "wrangler d1 migrations apply mimir --local && wrangler dev --port 8787",
     "build:dashboard": "bun --cwd=web run build",
     "deploy": "bun run build:dashboard && wrangler deploy",
     "test": "vitest run",

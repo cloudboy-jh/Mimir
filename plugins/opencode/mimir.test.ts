@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, redactEvidenceText, boundedBytes } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -411,5 +411,92 @@ describe("postDirectExchange", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe("gitEvidence", () => {
+  const head = "a".repeat(40);
+  const base = "b".repeat(40);
+
+  function runner(outputs: Record<string, string | null>) {
+    const calls: string[][] = [];
+    return {
+      calls,
+      run: (_command: string, args: string[]) => {
+        calls.push(args);
+        const key = args.join(" ");
+        const stdout = outputs[key];
+        return { status: stdout == null ? 1 : 0, stdout: stdout ?? "" };
+      },
+    };
+  }
+
+  it("captures commit, base, and a redacted bounded patch", () => {
+    const { run } = runner({
+      "rev-parse HEAD": `${head}\n`,
+      "rev-parse HEAD~1": `${base}\n`,
+      "show --format= --patch --unified=3 HEAD": "diff --git a/a.ts b/a.ts\n+const token = \"sk_live_1234567890abcdef\";\n",
+    });
+    const evidence = gitEvidence("/repo", run)!;
+    expect(evidence.commit).toBe(head);
+    expect(evidence.base_commit).toBe(base);
+    expect(evidence.provenance).toBe("opencode-plugin");
+    expect(evidence.patch).toContain("diff --git");
+    expect(evidence.patch).not.toContain("sk_live_1234567890abcdef");
+    expect(evidence.patch).toContain("[REDACTED]");
+  });
+
+  it("omits base and patch when git has no parent or fails", () => {
+    const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": null });
+    const evidence = gitEvidence("/repo", run)!;
+    expect(evidence).toEqual({ commit: head, provenance: "opencode-plugin" });
+  });
+
+  it("returns null outside a git work tree", () => {
+    const { run } = runner({ "rev-parse HEAD": null });
+    expect(gitEvidence("/repo", run)).toBeNull();
+    expect(gitEvidence(undefined, run)).toBeNull();
+  });
+
+  it("caps oversized patches", () => {
+    const huge = `+${"x".repeat(64 * 1024)}\n`;
+    const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": huge });
+    const patch = gitEvidence("/repo", run)!.patch!;
+    expect(new TextEncoder().encode(patch).byteLength).toBeLessThanOrEqual(20 * 1024);
+  });
+});
+
+describe("mergeOutcomeEvidence", () => {
+  const git = { commit: "a".repeat(40), provenance: "opencode-plugin" as const };
+
+  it("keeps a bare agent string as-is without git data", () => {
+    expect(mergeOutcomeEvidence("merged in PR 42", null)).toBe("merged in PR 42");
+  });
+
+  it("wraps agent text as a note when commit evidence exists", () => {
+    expect(mergeOutcomeEvidence("merged in PR 42", git)).toEqual({ note: "merged in PR 42", ...git });
+  });
+
+  it("uses git evidence alone when the agent supplied nothing", () => {
+    expect(mergeOutcomeEvidence(undefined, git)).toEqual(git);
+    expect(mergeOutcomeEvidence("   ", git)).toEqual(git);
+  });
+
+  it("stays undefined with no evidence at all", () => {
+    expect(mergeOutcomeEvidence(undefined, null)).toBeUndefined();
+  });
+});
+
+describe("redactEvidenceText and boundedBytes", () => {
+  it("redacts builtin credential shapes", () => {
+    const text = redactEvidenceText("Bearer abc.def.ghi\napi_key: supersecretvalue\npassword=hunter2value");
+    expect(text).toContain("Bearer [REDACTED]");
+    expect(text).not.toContain("supersecretvalue");
+    expect(text).not.toContain("hunter2value");
+  });
+
+  it("bounds by bytes without splitting multibyte characters", () => {
+    const bounded = boundedBytes("é".repeat(100), 50);
+    expect(new TextEncoder().encode(bounded).byteLength).toBeLessThanOrEqual(50);
   });
 });

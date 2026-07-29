@@ -286,7 +286,7 @@ func TestConfigureAccessWithoutEmailReturnsActionRequiredWithoutDeploy(t *testin
 		case strings.HasSuffix(r.URL.Path, "/access/organizations"):
 			result = map[string]any{"auth_domain": "team.cloudflareaccess.com"}
 		case strings.HasSuffix(r.URL.Path, "/access/apps"):
-			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Domain: "mimir.example/dashboard", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
+			result = []AccessApp{{UID: "uid-1", Aud: "aud-1", Domain: "mimir.example/dashboard/auth", SelfHostedDomains: DashboardAccessDomains("mimir.example")}}
 		default:
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
 		}

@@ -72,9 +72,11 @@ describe("Worker integration", () => {
     expect(listed.sessions).toHaveLength(1);
     expect(listed.sessions[0]).toMatchObject({ id: "root-session", child_session_count: 1, request_count: 2, tokens_in: 30, tokens_out: 12, capture: { saved_exchanges: 2 } });
 
-    const detail = await (await dashboardRequest("/dashboard/api/sessions/root-session")).json() as { supporting_sessions: Array<{ id: string }>; exchanges: Array<{ id: string }> };
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/root-session")).json() as { supporting_sessions: Array<{ id: string }> } & Record<string, unknown>;
     expect(detail.supporting_sessions).toContainEqual(expect.objectContaining({ id: "child-session" }));
-    expect(detail.exchanges.map((exchange) => exchange.id)).toEqual(["root-exchange", "child-exchange"]);
+    expect(detail).not.toHaveProperty("exchanges");
+    const timeline = await (await dashboardRequest("/dashboard/api/sessions/root-session/exchanges?order=asc")).json() as { exchanges: Array<{ id: string }> };
+    expect(timeline.exchanges.map((exchange) => exchange.id)).toEqual(["root-exchange", "child-exchange"]);
 
     const outcome = await request("/sessions/child-session/outcome", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ outcome: "landed", reason: "kept by parent" }) });
     expect(await outcome.json()).toMatchObject({ id: "root-session", outcome: "landed" });
@@ -619,6 +621,21 @@ describe("Worker integration", () => {
     expect(await env.LOGS.get("log/accepted-object.json")).not.toBeNull();
   });
 
+  it("sweeps stale accepted exchanges with no R2 object to failed", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, boundary) VALUES ('sweep-session', '2026-01-01T00:00:00Z', 'inactive', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, capture_reason, accepted_at, schema_version) VALUES ('stale-accepted', 'sweep-session', '2026-01-01T00:00:00Z', 'chat', 'openai/test', 1, 'log/stale-accepted.json', 'accepted', 'enabled', '2026-01-01T00:00:01Z', 1)").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, capture_reason, accepted_at, schema_version) VALUES ('fresh-accepted', 'sweep-session', ?, 'chat', 'openai/test', 1, 'log/fresh-accepted.json', 'accepted', 'enabled', ?, 1)").bind(new Date().toISOString(), new Date().toISOString()).run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, capture_reason, schema_version) VALUES ('ageless-accepted', 'sweep-session', '2026-01-01T00:00:00Z', 'chat', 'openai/test', 1, 'log/ageless-accepted.json', 'accepted', 'enabled', 1)").run();
+
+    const response = await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+    const result = await response.json() as { swept: { exchange_ids: string[] }; pending: { exchange_ids: string[]; stale_exchange_ids: string[] } };
+    expect(result.swept.exchange_ids).toEqual(expect.arrayContaining(["stale-accepted", "ageless-accepted"]));
+    expect(result.pending.exchange_ids).toContain("fresh-accepted");
+    expect(result.pending.stale_exchange_ids).toEqual([]);
+    expect(await env.DB.prepare("SELECT capture_status, capture_reason, failure_code, failed_at FROM exchanges WHERE id = 'stale-accepted'").first()).toMatchObject({ capture_status: "failed", capture_reason: "reconciliation", failure_code: "r2_object_missing", failed_at: expect.any(String) });
+    expect(await env.DB.prepare("SELECT capture_status FROM exchanges WHERE id = 'fresh-accepted'").first()).toEqual({ capture_status: "accepted" });
+  });
+
   it("coalesces concurrent headerless requests into one heuristic session", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [] }))));
     const init = { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ model: "openai/test", messages: [] }) };
@@ -629,6 +646,94 @@ describe("Worker integration", () => {
   it("requires Cloudflare Access for dashboard APIs", async () => {
     const response = await request("/dashboard/api/bootstrap");
     expect(response.status).toBe(403);
+    expect((await request("/dashboard/auth?returnTo=%2Fdashboard%2Fsessions")).status).toBe(403);
+  });
+
+  it("exposes a clearly marked local dashboard identity", async () => {
+    const response = await dashboardRequest("/dashboard/api/identity");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ email: null, name: "Local development", source: "local-development" });
+    const handoff = await dashboardRequest("/dashboard/auth?returnTo=%2Fdashboard%2Fsessions%2Fsession-1");
+    expect(handoff.status).toBe(302);
+    expect(handoff.headers.get("location")).toBe("/dashboard/sessions/session-1");
+  });
+
+  it("filters and paginates root dashboard sessions", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('match-new', '2026-07-27T10:03:00Z', 'inactive', 'opencode', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
+      INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('match-old', '2026-07-27T10:02:00Z', 'inactive', 'opencode', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Review dashboard needle');
+      INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('wrong-outcome', '2026-07-27T10:01:00Z', 'inactive', 'opencode', 'header', 'discarded', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
+      INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('wrong-app', '2026-07-27T10:00:00Z', 'inactive', 'hermes', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('supporting-match', 'match-new', '2026-07-27T10:04:00Z', 'inactive', 'opencode', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
+    `);
+    const filters = "q=NEEDLE&repo=mimir&outcome=landed&app=opencode&model=openai%2Fgpt-5&from=2026-07-27T10%3A02%3A00Z&to=2026-07-27T10%3A03%3A00Z&limit=1";
+    const firstResponse = await dashboardRequest(`/dashboard/api/sessions?${filters}`);
+    expect(firstResponse.status).toBe(200);
+    const first = await firstResponse.json() as { sessions: Array<{ id: string; child_session_count: number }>; next_cursor: string | null };
+    expect(first.sessions).toEqual([expect.objectContaining({ id: "match-new", child_session_count: 1 })]);
+    expect(first.next_cursor).toEqual(expect.any(String));
+
+    const second = await (await dashboardRequest(`/dashboard/api/sessions?${filters}&cursor=${encodeURIComponent(first.next_cursor!)}`)).json() as { sessions: Array<{ id: string }>; next_cursor: string | null };
+    expect(second.sessions.map((session) => session.id)).toEqual(["match-old"]);
+    expect(second.next_cursor).toBeNull();
+    expect((await dashboardRequest("/dashboard/api/sessions?outcome=not-real")).status).toBe(400);
+    expect((await dashboardRequest("/dashboard/api/sessions?cursor=not-a-cursor")).status).toBe(400);
+    expect((await dashboardRequest("/dashboard/api/log?cursor=not-a-cursor")).status).toBe(400);
+  });
+
+  it("paginates and filters session timelines in either order", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('timeline-root', '2026-07-27T10:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary) VALUES ('timeline-child', 'timeline-root', '2026-07-27T10:01:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('timeline-other', '2026-07-27T10:00:00Z', 'inactive', 'header');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, latency_ms, harness, r2_key, provider, finish_reason, capture_status) VALUES ('exchange-1', 'timeline-root', '2026-07-27T10:00:00Z', 'chat', 'model-a', 'first matching request', 1, 'opencode', 'log/1.json', 'provider-a', 'stop', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, latency_ms, harness, r2_key, provider, finish_reason, capture_status) VALUES ('exchange-2a', 'timeline-child', '2026-07-27T10:01:00Z', 'chat', 'model-a', 'second matching request', 1, 'opencode', 'log/2a.json', 'provider-a', 'stop', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, latency_ms, harness, r2_key, provider, finish_reason, capture_status) VALUES ('exchange-2b', 'timeline-child', '2026-07-27T10:01:00Z', 'chat', 'model-b', 'different request', 1, 'hermes', 'log/2b.json', 'provider-b', 'length', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, latency_ms, harness, r2_key, provider, finish_reason, capture_status) VALUES ('exchange-3', 'timeline-root', '2026-07-27T10:02:00Z', 'chat', 'model-a', 'third matching request', 1, 'opencode', 'log/3.json', 'provider-a', 'stop', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, latency_ms, harness, r2_key, provider, finish_reason, capture_status) VALUES ('other-exchange', 'timeline-other', '2026-07-27T10:03:00Z', 'chat', 'model-a', 'outside subtree', 1, 'opencode', 'log/other.json', 'provider-a', 'stop', 'saved');
+    `);
+
+    const first = await (await dashboardRequest("/dashboard/api/sessions/timeline-root/exchanges?limit=2")).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
+    expect(first.exchanges.map((exchange) => exchange.id)).toEqual(["exchange-3", "exchange-2b"]);
+    expect(first.next_cursor).toEqual(expect.any(String));
+    const second = await (await dashboardRequest(`/dashboard/api/sessions/timeline-root/exchanges?limit=2&cursor=${encodeURIComponent(first.next_cursor!)}`)).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
+    expect(second.exchanges.map((exchange) => exchange.id)).toEqual(["exchange-2a", "exchange-1"]);
+    expect(second.next_cursor).toBeNull();
+
+    const ascending = await (await dashboardRequest("/dashboard/api/sessions/timeline-root/exchanges?order=asc&limit=2")).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
+    expect(ascending.exchanges.map((exchange) => exchange.id)).toEqual(["exchange-1", "exchange-2a"]);
+    expect((await dashboardRequest(`/dashboard/api/sessions/timeline-root/exchanges?cursor=${encodeURIComponent(ascending.next_cursor!)}`)).status).toBe(400);
+    const filtered = await (await dashboardRequest("/dashboard/api/sessions/timeline-root/exchanges?q=matching&model=model-a&provider=provider-a&app=opencode&finish_reason=stop&limit=1")).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
+    expect(filtered.exchanges.map((exchange) => exchange.id)).toEqual(["exchange-3"]);
+    expect(filtered.next_cursor).toEqual(expect.any(String));
+    expect((await dashboardRequest("/dashboard/api/sessions/timeline-root/exchanges?order=sideways")).status).toBe(400);
+    expect((await dashboardRequest("/dashboard/api/sessions/timeline-root/exchanges?cursor=not-a-cursor")).status).toBe(400);
+  });
+
+  it("aggregates session error counts, recency, and request links from saved exchanges", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('errors-root', '2026-07-27T10:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary) VALUES ('errors-child', 'errors-root', '2026-07-27T10:01:00Z', 'inactive', 'header');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('err-1', 'errors-root', '2026-07-27T10:00:30Z', 'chat', 1, 'log/err-1.json', 'saved', '2026-07-27T10:00:31Z');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('err-2', 'errors-child', '2026-07-27T10:01:30Z', 'chat', 1, 'log/err-2.json', 'saved', '2026-07-27T10:01:31Z');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, accepted_at) VALUES ('err-3', 'errors-root', '2026-07-27T10:02:30Z', 'chat', 1, 'log/err-3.json', 'accepted', '2026-07-27T10:02:30Z');
+      INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES ('err-1', 'errors-root', 'token expired');
+      INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES ('err-2', 'errors-child', 'token expired');
+      INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES ('err-2', 'errors-child', 'disk full');
+      INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES ('err-3', 'errors-root', 'pending only');
+      INSERT INTO session_errors(session_id, signature) VALUES ('errors-root', 'token expired');
+      INSERT INTO session_errors(session_id, signature) VALUES ('errors-child', 'token expired');
+      INSERT INTO session_errors(session_id, signature) VALUES ('errors-child', 'disk full');
+      INSERT INTO session_errors(session_id, signature) VALUES ('errors-root', 'legacy signature');
+    `);
+
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/errors-root")).json() as { errors: Array<{ signature: string; count: number; first_seen_at: string | null; last_seen_at: string | null; latest_exchange_id: string | null }> };
+    expect(detail.errors).toEqual([
+      { signature: "disk full", count: 1, first_seen_at: "2026-07-27T10:01:30Z", last_seen_at: "2026-07-27T10:01:30Z", latest_exchange_id: "err-2" },
+      { signature: "legacy signature", count: 1, first_seen_at: null, last_seen_at: null, latest_exchange_id: null },
+      { signature: "token expired", count: 2, first_seen_at: "2026-07-27T10:00:30Z", last_seen_at: "2026-07-27T10:01:30Z", latest_exchange_id: "err-2" },
+    ]);
+    expect(detail.errors.map((error) => error.signature)).not.toContain("pending only");
   });
 
   it("serves live dashboard sessions, requests, objects, overview, and outcome updates", async () => {
@@ -642,10 +747,12 @@ describe("Worker integration", () => {
     const sessions = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; capture: { status: string } }> };
     expect(sessions.sessions).toContainEqual(expect.objectContaining({ id: "dashboard-session", capture: expect.objectContaining({ status: "saved" }) }));
 
-    const session = await (await dashboardRequest("/dashboard/api/sessions/dashboard-session")).json() as { files: string[]; errors: string[]; exchanges: Array<{ id: string }> };
+    const session = await (await dashboardRequest("/dashboard/api/sessions/dashboard-session")).json() as { files: string[]; errors: Array<{ signature: string; count: number; latest_exchange_id: string | null }> } & Record<string, unknown>;
     expect(session.files).toEqual(["worker/web/src/lib/api.ts"]);
-    expect(session.errors).toEqual(["example failure"]);
-    expect(session.exchanges).toContainEqual(expect.objectContaining({ id: "dashboard-exchange" }));
+    expect(session.errors).toEqual([{ signature: "example failure", count: 1, first_seen_at: null, last_seen_at: null, latest_exchange_id: null }]);
+    expect(session).not.toHaveProperty("exchanges");
+    const timeline = await (await dashboardRequest("/dashboard/api/sessions/dashboard-session/exchanges")).json() as { exchanges: Array<{ id: string }> };
+    expect(timeline.exchanges).toContainEqual(expect.objectContaining({ id: "dashboard-exchange" }));
 
     const log = await (await dashboardRequest("/dashboard/api/log?limit=50")).json() as { exchanges: Array<{ id: string }>; next_cursor: string | null };
     expect(log.exchanges).toContainEqual(expect.objectContaining({ id: "dashboard-exchange" }));
@@ -717,7 +824,7 @@ describe("Worker integration", () => {
     bindings.DASHBOARD_ACCESS_AUD = "test-aud";
     bindings.DASHBOARD_ACCESS_TEAM_DOMAIN = teamDomain;
     const sign = (init: { audience?: string; issuer?: string; expiration?: number } = {}) =>
-      new SignJWT({})
+      new SignJWT({ email: " dashboard@example.com ", name: "Dashboard User", unsafe: "not exposed" })
         .setProtectedHeader({ alg: "RS256", kid: "test-key" })
         .setIssuer(init.issuer ?? teamDomain)
         .setAudience(init.audience ?? "test-aud")
@@ -727,6 +834,8 @@ describe("Worker integration", () => {
     try {
       const valid = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign() } });
       expect(valid.status).toBe(200);
+      const identity = await request("/dashboard/api/identity", { headers: { "cf-access-jwt-assertion": await sign() } });
+      expect(await identity.json()).toEqual({ email: "dashboard@example.com", name: "Dashboard User", source: "cloudflare-access" });
       const wrongAudience = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign({ audience: "other-aud" }) } });
       expect(wrongAudience.status).toBe(403);
       const wrongIssuer = await request("/dashboard/api/bootstrap", { headers: { "cf-access-jwt-assertion": await sign({ issuer: "https://evil.example.com" }) } });

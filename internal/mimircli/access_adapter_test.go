@@ -12,8 +12,10 @@ import (
 
 func TestAccessChecklistScopesToDashboard(t *testing.T) {
 	checklist := accessChecklist("https://mimir.example.workers.dev")
-	if !strings.Contains(checklist, "mimir.example.workers.dev/dashboard and mimir.example.workers.dev/dashboard/*") {
-		t.Fatalf("checklist is missing exact destinations:\n%s", checklist)
+	for _, destination := range []string{"mimir.example.workers.dev/dashboard/auth", "mimir.example.workers.dev/dashboard/api/*", "mimir.example.workers.dev/dashboard/log-objects/*"} {
+		if !strings.Contains(checklist, destination) {
+			t.Fatalf("checklist is missing %s:\n%s", destination, checklist)
+		}
 	}
 	if strings.Contains(checklist, "leave the path blank") || strings.Contains(checklist, "Bypass") || strings.Contains(checklist, "wrangler deploy") {
 		t.Fatalf("checklist carries a broken manual flow:\n%s", checklist)
@@ -48,7 +50,7 @@ func TestAccessJSONWithoutTokenReturnsManualAction(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "manual" || result.Action == "" || len(result.Destinations) != 2 {
+	if result.State != "manual" || result.Action == "" || len(result.Destinations) != 3 {
 		t.Fatalf("result = %#v", result)
 	}
 	if strings.Contains(output.String(), "Manual steps") || strings.Contains(output.String(), "Recommended:") {

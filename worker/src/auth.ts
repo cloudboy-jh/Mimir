@@ -1,10 +1,12 @@
 import type { Context, Next } from "hono";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import type { AppEnv, Bindings } from "./types";
+import type { AppEnv, Bindings, DashboardIdentity } from "./types";
 
 export async function authenticate(c: Context<AppEnv>, next: Next) {
-  if (c.req.path.startsWith("/dashboard/api/") || c.req.path.startsWith("/dashboard/log-objects/")) {
-    if (!(await validDashboardAccess(c.req.raw, c.env))) return c.json({ error: "Cloudflare Access authentication required" }, 403);
+  if (c.req.path === "/dashboard/auth" || c.req.path.startsWith("/dashboard/api/") || c.req.path.startsWith("/dashboard/log-objects/")) {
+    const identity = await dashboardAccessIdentity(c.req.raw, c.env);
+    if (!identity) return c.json({ error: "Cloudflare Access authentication required" }, 403);
+    c.set("dashboardIdentity", identity);
     return next();
   }
   const token = requestToken(c.req.raw.headers);
@@ -29,19 +31,31 @@ async function validToken(db: D1Database, token: string) {
   return db.prepare("SELECT token_hash, label FROM access_tokens WHERE token_hash = ? AND revoked_at IS NULL").bind(hash).first<{ token_hash: string; label: string }>();
 }
 
-async function validDashboardAccess(request: Request, env: Bindings) {
+async function dashboardAccessIdentity(request: Request, env: Bindings): Promise<DashboardIdentity | null> {
   const hostname = new URL(request.url).hostname;
-  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
-  if (!env.DASHBOARD_ACCESS_AUD || !env.DASHBOARD_ACCESS_TEAM_DOMAIN) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return { email: null, name: "Local development", source: "local-development" };
+  }
+  if (!env.DASHBOARD_ACCESS_AUD || !env.DASHBOARD_ACCESS_TEAM_DOMAIN) return null;
   const token = request.headers.get("cf-access-jwt-assertion");
-  if (!token) return false;
+  if (!token) return null;
   try {
     const teamDomain = env.DASHBOARD_ACCESS_TEAM_DOMAIN.replace(/\/$/, "");
-    await jwtVerify(token, createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`)), { issuer: teamDomain, audience: env.DASHBOARD_ACCESS_AUD });
-    return true;
+    const { payload } = await jwtVerify(token, createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`)), { issuer: teamDomain, audience: env.DASHBOARD_ACCESS_AUD });
+    return {
+      email: identityClaim(payload.email, 320),
+      name: identityClaim(payload.name, 200),
+      source: "cloudflare-access",
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+function identityClaim(value: unknown, maxLength: number) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, maxLength) : null;
 }
 
 async function sha256(value: string) {

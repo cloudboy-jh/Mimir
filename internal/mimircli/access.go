@@ -30,12 +30,12 @@ Recommended: mimir access --token <cloudflare-api-token>  (does all of this)
 Manual steps in Zero Trust → Access → Applications:
   1. Add a self-hosted application
        Name: %s
-       Destinations: %s and %s
-       (both are required; Access paths are exact matches)
+       Destinations: %s
+       (all are required; Access paths are exact matches)
   2. Add an Allow policy for your email
 
 Machine API routes (/v1, /sessions, ...) stay outside Access; the Worker
-authenticates them with bearer tokens.`, dashboardAccessAppName, domains[0], domains[1])
+authenticates them with bearer tokens.`, dashboardAccessAppName, strings.Join(domains, ", "))
 }
 
 func renderAccessChecklist(out io.Writer, workerURL string) string {

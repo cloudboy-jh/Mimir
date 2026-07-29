@@ -6,7 +6,13 @@ export type Bindings = Env & {
   MIMIR_BUNDLE_SHA256?: string;
 };
 
+export type DashboardIdentity = {
+  email: string | null;
+  name: string | null;
+  source: "cloudflare-access" | "local-development";
+};
+
 export type AppEnv = {
   Bindings: Bindings;
-  Variables: { tokenHash: string; tokenLabel: string; upstreamOpenRouterKey?: string };
+  Variables: { tokenHash: string; tokenLabel: string; upstreamOpenRouterKey?: string; dashboardIdentity: DashboardIdentity };
 };

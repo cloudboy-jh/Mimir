@@ -4,11 +4,13 @@ import SessionDetailPage from "@/pages/SessionDetailPage.vue";
 import RequestsPage from "@/pages/RequestsPage.vue";
 import RequestDetailPage from "@/pages/RequestDetailPage.vue";
 import OverviewPage from "@/pages/OverviewPage.vue";
+import LoginPage from "@/pages/LoginPage.vue";
 
 export const router = createRouter({
-  history: createWebHistory("/dashboard/"),
+  history: createWebHistory(window.location.pathname.startsWith("/dashboard") ? "/dashboard/" : "/"),
   routes: [
     { path: "/", redirect: { name: "sessions" } },
+    { path: "/login", name: "login", component: LoginPage, meta: { standalone: true } },
     { path: "/sessions", name: "sessions", component: SessionsPage },
     { path: "/sessions/:id", name: "session-detail", component: SessionDetailPage },
     { path: "/requests", name: "requests", component: RequestsPage },
