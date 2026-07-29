@@ -3,6 +3,40 @@ import { canonicalOutcome, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS
 import { attachCaptureSummary, captureSummary, captureTreeSummary, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import type { AppEnv } from "../types";
 
+const FACET_LIMIT = 50;
+
+type SessionModel = {
+  name: string;
+  request_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+};
+
+async function attachSessionModels(db: D1Database, rows: Array<Record<string, unknown>>) {
+  if (!rows.length) return rows;
+  const ids = rows.map((row) => String(row.id));
+  const placeholders = ids.map(() => "?").join(", ");
+  const grouped = await db.prepare(`SELECT session_id, model AS name, COUNT(*) AS request_count, MIN(ts) AS first_seen_at, MAX(ts) AS last_seen_at FROM exchanges WHERE capture_status = 'saved' AND model IS NOT NULL AND model <> '' AND session_id IN (${placeholders}) GROUP BY session_id, model ORDER BY first_seen_at ASC, name ASC`)
+    .bind(...ids)
+    .all<SessionModel & { session_id: string }>();
+  const bySession = new Map<string, SessionModel[]>();
+  for (const { session_id, ...model } of grouped.results) {
+    const models = bySession.get(session_id) ?? [];
+    models.push(model);
+    bySession.set(session_id, models);
+  }
+  return rows.map((row) => {
+    const primary = typeof row.model_primary === "string" && row.model_primary ? row.model_primary : null;
+    const models = bySession.get(String(row.id)) ?? [];
+    if (primary && !models.some((model) => model.name === primary)) {
+      models.unshift({ name: primary, request_count: 0, first_seen_at: null, last_seen_at: null });
+    } else if (primary) {
+      models.sort((left, right) => left.name === primary ? -1 : right.name === primary ? 1 : (left.first_seen_at ?? "").localeCompare(right.first_seen_at ?? "") || left.name.localeCompare(right.name));
+    }
+    return { ...row, models };
+  });
+}
+
 export function registerDashboardRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/auth", (c) => {
     const returnTo = c.req.query("returnTo") ?? "/dashboard/sessions";
@@ -83,15 +117,20 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const values: Array<string | number> = [];
     const q = c.req.query("q");
     if (q) {
-      where.push("(instr(lower(COALESCE(sessions.intent, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.model_primary, '')), lower(?)) > 0 OR instr(lower(sessions.id), lower(?)) > 0)");
-      values.push(q, q, q, q, q);
+      where.push("(instr(lower(COALESCE(sessions.intent, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = sessions.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(sessions.id), lower(?)) > 0)");
+      values.push(q, q, q, q, q, q);
     }
-    for (const [parameter, column] of [["repo", "repo"], ["app", "harness"], ["model", "model_primary"]] as const) {
+    for (const [parameter, column] of [["repo", "repo"], ["app", "harness"]] as const) {
       const value = c.req.query(parameter);
       if (value) {
         where.push(`sessions.${column} = ?`);
         values.push(value);
       }
+    }
+    const model = c.req.query("model");
+    if (model) {
+      where.push("(sessions.model_primary = ? OR EXISTS (SELECT 1 FROM exchanges model_filter WHERE model_filter.session_id = sessions.id AND model_filter.capture_status = 'saved' AND model_filter.model = ?))");
+      values.push(model, model);
     }
     const outcome = c.req.query("outcome");
     if (outcome) {
@@ -117,7 +156,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const limit = boundedLimit(c.req.query("limit"));
     const result = await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY sessions.started_at DESC, sessions.id DESC LIMIT ?`).bind(...values, limit + 1).all<Record<string, unknown>>();
     const hasMore = result.results.length > limit;
-    const sessions = result.results.slice(0, limit).map(attachCaptureSummary);
+    const sessions = await attachSessionModels(c.env.DB, result.results.slice(0, limit).map(attachCaptureSummary));
     const last = sessions.at(-1) as { started_at?: string; id?: string } | undefined;
     return c.json({ sessions, next_cursor: hasMore && last?.started_at && last.id ? encodeCursor(last.started_at, last.id) : null });
   });
@@ -191,7 +230,8 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
         latest_exchange_id: latestBySignature.get(signature) ?? null,
       };
     });
-    return c.json({ session, capture, outcome_events: outcomeEvents.results, supporting_sessions: children.results, files: files.results.map((row) => row.file), errors });
+    const modeled = await attachSessionModels(c.env.DB, [session as Record<string, unknown>, ...children.results]);
+    return c.json({ session: modeled[0], capture, outcome_events: outcomeEvents.results, supporting_sessions: modeled.slice(1), files: files.results.map((row) => row.file), errors });
   });
 
   app.get("/dashboard/api/sessions/:id/status", async (c) => {
@@ -210,6 +250,31 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
   app.post("/dashboard/api/sessions/:id/outcome", async (c) => {
     const body = await c.req.json<{ outcome?: string; source?: string; reason?: unknown; evidence?: unknown }>();
     return updateOutcome(c, { ...body, source: "user" }, "user");
+  });
+
+  // Facets back the dashboard's filter dropdowns. Values come from real stored
+  // traffic ordered by frequency so the common choice is first, and each list is
+  // bounded so a long-lived deployment cannot return an unusable payload.
+  app.get("/dashboard/api/facets", async (c) => {
+    const sessionId = c.req.query("session");
+    const scope = sessionId
+      ? { cte: "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id) ", where: "AND session_id IN (SELECT id FROM subtree)", values: [sessionId] }
+      : { cte: "", where: "", values: [] as string[] };
+    const exchangeFacet = (column: string) =>
+      c.env.DB.prepare(`${scope.cte}SELECT ${column} AS value, COUNT(*) AS requests FROM exchanges WHERE capture_status = 'saved' AND ${column} IS NOT NULL AND ${column} <> '' ${scope.where} GROUP BY ${column} ORDER BY requests DESC, value ASC LIMIT ${FACET_LIMIT}`)
+        .bind(...scope.values)
+        .all<{ value: string }>();
+    const sessionFacet = (column: string) =>
+      c.env.DB.prepare(`SELECT ${column} AS value, COUNT(*) AS sessions FROM sessions WHERE ${column} IS NOT NULL AND ${column} <> '' GROUP BY ${column} ORDER BY sessions DESC, value ASC LIMIT ${FACET_LIMIT}`).all<{ value: string }>();
+    const [repos, apps, models, providers, finishReasons] = await Promise.all([
+      sessionId ? Promise.resolve({ results: [] as Array<{ value: string }> }) : sessionFacet("repo"),
+      exchangeFacet("harness"),
+      exchangeFacet("model"),
+      exchangeFacet("provider"),
+      exchangeFacet("finish_reason"),
+    ]);
+    const values = (rows: { results: Array<{ value: string }> }) => rows.results.map((row) => row.value);
+    return c.json({ repos: values(repos), apps: values(apps), models: values(models), providers: values(providers), finish_reasons: values(finishReasons) });
   });
 
   app.get("/dashboard/api/overview", async (c) => {

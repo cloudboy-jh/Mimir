@@ -7,15 +7,16 @@ import Button from "@/components/ui/Button.vue";
 import Dialog from "@/components/ui/Dialog.vue";
 import Select from "@/components/ui/Select.vue";
 import { errorMessage, listSessionExchanges, type SessionExchange, type SessionExchangeFilters } from "@/lib/api";
+import { facetSelectOptions, useFacets } from "@/lib/facets";
 import { shortDate } from "@/lib/format";
 import { orderOptions, pageSizeOptions } from "@/lib/options";
 
 const SEARCH_DEBOUNCE_MS = 350;
 const facets = [
-  { key: "rmodel", label: "Model", placeholder: "Exact model" },
-  { key: "rprovider", label: "Provider", placeholder: "Exact provider" },
-  { key: "rapp", label: "App", placeholder: "Exact app" },
-  { key: "rfinish", label: "Finish reason", placeholder: "Exact finish reason" },
+  { key: "rmodel", label: "Model", field: "models", allLabel: "All models" },
+  { key: "rprovider", label: "Provider", field: "providers", allLabel: "All providers" },
+  { key: "rapp", label: "App", field: "apps", allLabel: "All apps" },
+  { key: "rfinish", label: "Finish reason", field: "finish_reasons", allLabel: "All finish reasons" },
 ] as const;
 
 const props = defineProps<{ sessionId: string }>();
@@ -29,8 +30,13 @@ const error = ref("");
 const filtersOpen = ref(false);
 const search = ref("");
 const draft = reactive<Record<string, string>>({ rmodel: "", rprovider: "", rapp: "", rfinish: "" });
+const { facets: facetValues } = useFacets(computed(() => props.sessionId));
 let controller: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function optionsFor(facet: (typeof facets)[number]) {
+  return facetSelectOptions(facetValues.value[facet.field], draft[facet.key] ?? "", facet.allLabel);
+}
 
 function queryValue(key: string) {
   const value = route.query[key];
@@ -176,7 +182,10 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 
     <Dialog v-model:open="filtersOpen" title="Filter requests" description="Exact matches within this session and its supporting runs.">
       <form id="timeline-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-        <label v-for="facet in facets" :key="facet.key" class="text-xs font-medium text-zinc-600 dark:text-zinc-400">{{ facet.label }}<input v-model="draft[facet.key]" :placeholder="facet.placeholder" class="mt-1 h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" /></label>
+        <div v-for="facet in facets" :key="facet.key" class="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+          <span class="mb-1 block">{{ facet.label }}</span>
+          <Select v-model="draft[facet.key]" :label="facet.label" :options="optionsFor(facet)" :placeholder="facet.allLabel" class="w-full font-normal" />
+        </div>
       </form>
       <template #footer>
         <Button variant="ghost" @click="clearAll">Clear all</Button>

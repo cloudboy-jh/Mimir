@@ -5,8 +5,8 @@ import IdentityBadge from "@/components/IdentityBadge.vue";
 import Select from "@/components/ui/Select.vue";
 import { errorMessage, listExchanges, type Exchange } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
+import { facetSelectOptions, useFacets } from "@/lib/facets";
 import { compactNumber, outputSpeed, shortDate } from "@/lib/format";
-import { facetOptions } from "@/lib/options";
 
 const exchanges = ref<Exchange[]>([]);
 const query = ref("");
@@ -16,23 +16,19 @@ const nextCursor = ref<string | null>(null);
 const loading = ref(true);
 const loadingMore = ref(false);
 const error = ref("");
-const providers = ref<string[]>([]);
-const apps = ref<string[]>([]);
 let controller: AbortController | null = null;
 
-const providerOptions = computed(() => facetOptions(providers.value, "All providers"));
-const appOptions = computed(() => facetOptions(apps.value, "All apps"));
+// Filter vocabulary comes from stored traffic, not the rows already loaded, so
+// a value on page three is still selectable from page one.
+const { facets } = useFacets();
+const providerOptions = computed(() => facetSelectOptions(facets.value.providers, provider.value, "All providers"));
+const appOptions = computed(() => facetSelectOptions(facets.value.apps, app.value, "All apps"));
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase();
   if (!needle) return exchanges.value;
   return exchanges.value.filter((exchange) => [exchange.model, exchange.repo, exchange.provider, exchange.harness, exchange.session_id].filter(Boolean).join(" ").toLowerCase().includes(needle));
 });
-
-function captureFacets(rows: Exchange[]) {
-  providers.value = [...new Set([...providers.value, ...rows.flatMap((row) => row.provider ? [row.provider] : [])])].sort();
-  apps.value = [...new Set([...apps.value, ...rows.flatMap((row) => row.harness ? [row.harness] : [])])].sort();
-}
 
 async function load(reset = true) {
   if (reset) {
@@ -48,7 +44,6 @@ async function load(reset = true) {
   try {
     const result = await listExchanges({ cursor: reset ? undefined : nextCursor.value ?? undefined, provider: provider.value, app: app.value }, active.signal);
     exchanges.value = reset ? result.exchanges : [...exchanges.value, ...result.exchanges];
-    captureFacets(result.exchanges);
     nextCursor.value = result.next_cursor;
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "Requests could not be loaded.");
@@ -69,7 +64,6 @@ async function refreshLatest() {
     const latestIds = new Set(result.exchanges.map((exchange) => exchange.id));
     const hadMultiplePages = exchanges.value.length > 50;
     exchanges.value = [...result.exchanges, ...exchanges.value.filter((exchange) => !latestIds.has(exchange.id))];
-    captureFacets(result.exchanges);
     if (!hadMultiplePages) nextCursor.value = result.next_cursor;
     error.value = "";
   } catch (cause) {

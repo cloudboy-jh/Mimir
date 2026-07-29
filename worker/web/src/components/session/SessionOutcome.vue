@@ -9,6 +9,7 @@ import { errorMessage, parseOutcomeEvidence, setSessionOutcome, type Outcome, ty
 import { shortDate } from "@/lib/format";
 import { commitUrl, shortCommit } from "@/lib/git";
 import { evidenceKindOptions } from "@/lib/options";
+import { outcomeMeta, outcomeOrder } from "@/lib/outcomes";
 
 const props = defineProps<{ detail: SessionDetail }>();
 const emit = defineEmits<{ saved: [] }>();
@@ -26,13 +27,6 @@ const saveError = ref("");
 const savedFlash = ref(false);
 let saveVersion = 0;
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
-
-const outcomeDescriptions: Record<Outcome, string> = {
-  landed: "The result was kept or shipped.",
-  discarded: "The result was deliberately rejected or reverted.",
-  abandoned: "Work stopped without a result.",
-  unresolved: "No evidenced result has been recorded yet.",
-};
 
 const dirty = computed(() =>
   outcome.value !== initial.value.outcome
@@ -147,7 +141,7 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
           <template v-else>Not recorded yet</template>
         </span>
       </div>
-      <p class="max-w-prose text-[13px] leading-5 text-zinc-700 dark:text-zinc-300">{{ detail.session.outcome_reason || outcomeDescriptions[detail.session.outcome] }}</p>
+      <p class="max-w-prose text-[13px] leading-5 text-zinc-700 dark:text-zinc-300">{{ detail.session.outcome_reason || outcomeMeta[detail.session.outcome].description }}</p>
       <p v-if="recordedEvidence?.commit" class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
         <GitCommitHorizontal class="size-3.5" aria-hidden="true" />
         <a v-if="recordedCommitUrl" :href="recordedCommitUrl" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(recordedEvidence.commit) }}<ExternalLink class="size-3" aria-hidden="true" /></a>
@@ -164,11 +158,15 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
     </div>
 
     <form v-else class="mt-3 space-y-3" @submit.prevent="saveOutcome">
-      <fieldset class="grid gap-1.5 sm:grid-cols-2">
+      <fieldset class="overflow-hidden rounded-[5px] border border-zinc-300 dark:border-zinc-700">
         <legend class="sr-only">Outcome</legend>
-        <label v-for="option in (['landed', 'discarded', 'abandoned', 'unresolved'] as Outcome[])" :key="option" class="flex cursor-pointer items-start gap-2 rounded-[5px] border px-2.5 py-2 text-[13px]" :class="outcome === option ? 'border-zinc-900 bg-stone-50 dark:border-zinc-300 dark:bg-zinc-900' : 'border-zinc-300 dark:border-zinc-700'">
-          <input v-model="outcome" type="radio" name="outcome" :value="option" class="mt-1 accent-teal-700" />
-          <span><span class="block font-medium capitalize text-zinc-900 dark:text-zinc-100">{{ option }}</span><span class="mt-0.5 block text-xs leading-4 text-zinc-500">{{ outcomeDescriptions[option] }}</span></span>
+        <label v-for="option in outcomeOrder" :key="option" class="flex cursor-pointer items-center gap-2.5 border-b border-zinc-200 px-2.5 py-2 text-[13px] transition-colors duration-150 ease-out last:border-b-0 has-focus-visible:outline-2 has-focus-visible:-outline-offset-2 has-focus-visible:outline-teal-600 dark:border-zinc-800" :class="outcome === option ? outcomeMeta[option].selected : 'text-zinc-700 hover:bg-stone-50 dark:text-zinc-300 dark:hover:bg-zinc-800/60'">
+          <input v-model="outcome" type="radio" name="outcome" :value="option" class="sr-only" />
+          <component :is="outcomeMeta[option].icon" class="size-4 shrink-0" :class="outcome === option ? '' : outcomeMeta[option].accent" aria-hidden="true" />
+          <span class="min-w-0">
+            <span class="block font-medium">{{ outcomeMeta[option].label }}</span>
+            <span v-if="outcome === option" class="mt-0.5 block text-xs leading-4 opacity-90">{{ outcomeMeta[option].description }}</span>
+          </span>
         </label>
       </fieldset>
       <label class="block"><span class="sr-only">Outcome reason</span><textarea v-model="reason" maxlength="2000" rows="2" placeholder="Why did this work land or stop?" class="w-full resize-y rounded-[5px] border border-zinc-300 bg-white px-2.5 py-2 text-[13px] leading-5 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" /></label>

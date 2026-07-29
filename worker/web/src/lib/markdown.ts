@@ -15,6 +15,7 @@ function bullet(label: string, value: string): string {
 // contains metadata and excerpts only; raw redacted payloads stay in R2.
 export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchange[]): string {
   const session = detail.session;
+  const models = session.models?.length ? session.models.map((model) => model.name) : session.model_primary ? [session.model_primary] : [];
   const lines: string[] = [];
   lines.push(`# ${session.intent || "Untitled session"}`, "");
   lines.push(heading("Session"));
@@ -23,7 +24,7 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
     bullet("Repository", session.repo || "None"),
     bullet("Reference", session.source_ref || "None"),
     bullet("App", session.harness || "Unknown"),
-    bullet("Model", session.model_primary || "Unknown"),
+    bullet(models.length === 1 ? "Model" : "Models", models.length ? models.join(", ") : "Unknown"),
     bullet("Started", shortDate(session.started_at)),
     bullet("Duration", duration(session.started_at, session.ended_at)),
     bullet("Requests", String(session.request_count)),

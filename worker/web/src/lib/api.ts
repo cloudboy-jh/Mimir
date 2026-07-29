@@ -32,12 +32,20 @@ export type Session = {
   repo: string | null;
   source_ref: string | null;
   model_primary: string | null;
+  models: SessionModel[];
   request_count: number;
   tokens_in: number;
   tokens_out: number;
   intent: string | null;
   child_session_count: number;
   capture: CaptureSummary;
+};
+
+export type SessionModel = {
+  name: string;
+  request_count: number;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
 };
 
 export type Exchange = {
@@ -142,6 +150,14 @@ export type SessionExchangeFilters = {
   order?: "asc" | "desc";
   cursor?: string;
   limit?: number;
+};
+
+export type Facets = {
+  repos: string[];
+  apps: string[];
+  models: string[];
+  providers: string[];
+  finish_reasons: string[];
 };
 
 export type Overview = {
@@ -249,6 +265,11 @@ export async function getExchange(id: string, signal?: AbortSignal) {
   const detail = await request<{ exchange: Exchange; log_url: string }>(`/dashboard/api/log/${encodeURIComponent(id)}`, { signal });
   const envelope = await request<LogEnvelope>(detail.log_url, { signal });
   return { exchange: detail.exchange, envelope };
+}
+
+export async function getFacets(sessionId?: string, signal?: AbortSignal) {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
+  return request<Facets>(`/dashboard/api/facets${query}`, { signal });
 }
 
 export async function getOverview(signal?: AbortSignal) {

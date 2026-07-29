@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ArrowRight, Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-next";
-import IdentityBadge from "@/components/IdentityBadge.vue";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
+import SessionModelStack from "@/components/session/SessionModelStack.vue";
 import Button from "@/components/ui/Button.vue";
 import Dialog from "@/components/ui/Dialog.vue";
 import Select from "@/components/ui/Select.vue";
 import { errorMessage, listSessions, type Outcome, type Session, type SessionFilters } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
+import { facetSelectOptions, useFacets } from "@/lib/facets";
 import { compactNumber, duration, relativeDate } from "@/lib/format";
 import { outcomeOptions, pageSizeOptions } from "@/lib/options";
 
@@ -26,6 +27,10 @@ const error = ref("");
 const filtersOpen = ref(false);
 const search = ref("");
 const draft = reactive<Record<string, string>>({ repo: "", outcome: "", app: "", model: "", from: "", to: "" });
+const { facets } = useFacets();
+const repoOptions = computed(() => facetSelectOptions(facets.value.repos, draft.repo, "All repositories"));
+const appOptions = computed(() => facetSelectOptions(facets.value.apps, draft.app, "All apps"));
+const modelOptions = computed(() => facetSelectOptions(facets.value.models, draft.model, "All models"));
 let controller: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -168,10 +173,10 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 
     <Dialog v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
       <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Repository<input v-model="draft.repo" placeholder="Exact repository" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">App<input v-model="draft.app" placeholder="Exact app" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Model<input v-model="draft.model" placeholder="Exact model" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" class="w-full font-normal" /></div>
+        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Repository</span><Select v-model="draft.repo" label="Repository" :options="repoOptions" placeholder="All repositories" class="w-full font-normal" /></div>
+        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.app" label="App" :options="appOptions" placeholder="All apps" class="w-full font-normal" /></div>
+        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Model</span><Select v-model="draft.model" label="Model" :options="modelOptions" placeholder="All models" class="w-full font-normal" /></div>
+        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" placeholder="All outcomes" class="w-full font-normal" /></div>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
       </form>
@@ -189,7 +194,7 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
       <template v-else>
         <RouterLink v-for="session in sessions" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
           <div class="min-w-0"><div class="flex items-center gap-2"><span v-if="session.state === 'active'" class="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label="Active session" /><h2 class="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ session.intent || "Untitled session" }}</h2></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span v-if="session.child_session_count">{{ session.child_session_count }} supporting {{ session.child_session_count === 1 ? "run" : "runs" }}</span><span class="font-mono">{{ session.id }}</span></div></div>
-          <div class="min-w-0 space-y-1.5"><IdentityBadge :label="session.harness || 'Unknown app'" /><IdentityBadge :label="session.model_primary || 'Unknown model'" /></div>
+          <SessionModelStack :app="session.harness" :primary="session.model_primary" :models="session.models" />
           <div><OutcomeBadge :outcome="session.outcome" /></div>
           <div class="text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} {{ session.capture.saved_exchanges === 1 ? "exchange" : "exchanges" }}<span v-if="session.capture.failed_exchanges"> · {{ session.capture.failed_exchanges }} failed</span></div>
           <div class="text-left font-mono text-xs text-zinc-700 lg:text-right dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Tokens</span>{{ compactNumber(session.tokens_in + session.tokens_out) }}</div><ArrowRight class="hidden size-4 text-zinc-400 transition-transform group-hover:translate-x-0.5 lg:block" />

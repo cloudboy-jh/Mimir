@@ -4,89 +4,97 @@
 
 # Private memory for coding agents
 
-Mimir records what your agents tried, what failed, and what actually shipped.
-It runs entirely inside your Cloudflare account.
+Mimir records what your coding agents attempted, which models and files were
+involved, what failed, and whether the work actually landed. The Worker,
+storage, and private dashboard run inside your Cloudflare account.
 
 ```bash
 go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
 mimir setup
 ```
 
-Setup builds and deploys the Worker and dashboard, provisions D1 and R2, stores
+Setup provisions D1 and R2, builds and deploys the Worker and dashboard, stores
 your OpenRouter key through a masked prompt, and connects the current machine.
 
 Requirements: a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
 with npm, and Bun. To connect another machine to the same deployment, install
 the CLI there and run `mimir login`.
 
-## Stop Repeating Failed Work
+## What Mimir remembers
 
-Coding agents lose the context that matters between sessions: the approach that
-failed, the error that explained it, the files involved, and whether the final
-change survived.
+A session is one episode of agent work, not a bag of disconnected requests.
+Mimir reconstructs the session so you can see:
+
+- the task, repository, app, models, duration, and token use;
+- full redacted exchanges captured through the model proxy;
+- supporting runs, tool-touched files, real error signals, and model switches;
+- whether durable capture succeeded;
+- whether the work landed, was discarded, was abandoned, or remains unresolved.
+
+That makes prior work useful before the next attempt:
 
 ```text
-Before changing authentication, an agent searches Mimir.
+Search: "token validation"
 
-It finds a previous session with:
-  token-validation error
-  auth.ts · proxy.ts · two captured exchanges
-  outcome: discarded
+Previous session
+  outcome     discarded
+  models      gpt-5.6-sol, claude-opus-5
+  files       auth.ts, proxy.ts
+  error       token validation failed
 
-The agent reads the evidence and avoids the same dead end.
+Result: the next agent avoids the same dead end.
 ```
 
-Mimir keeps two facts separate:
+Mimir deliberately keeps two facts separate:
 
-- **Capture state** says whether durable memory was saved: Empty, Pending,
-  Saved, Failed, or Partial.
-- **Work outcome** says what happened to the work: Landed, Discarded,
-  Abandoned, or Unresolved.
+- **Capture state** describes durable memory: Empty, Pending, Saved, Failed, or
+  Partial.
+- **Work outcome** describes the result: Landed, Discarded, Abandoned, or
+  Unresolved.
 
-## How Mimir Works
+## How Mimir works
 
-![Mimir system map. Agent harnesses send proxied model traffic and lifecycle events into a private Cloudflare deployment, where Mimir stores redacted memory for the CLI and dashboard.](assets/images/mimir-system-map.svg)
+![Coding agents send either complete proxied model traffic or lightweight harness events into a private Mimir Worker. The Worker redacts and organizes the data, stores full exchanges in R2 and session metadata in D1, and serves the CLI and private dashboard.](assets/images/mimir-system-map.svg)
 
-Mimir combines two capture paths around one session boundary:
+There are two inputs to one session record:
 
-- **Worker proxy:** redirected OpenRouter traffic is streamed upstream, redacted,
-  and persisted as complete request and response objects in R2. Searchable
-  metadata and R2 references go to D1.
-- **Harness plugins:** OpenCode and Hermes report heartbeats, completed-turn
-  summaries, and supported lifecycle events for provider traffic the harness
-  can observe. These summaries support live session state; they are not complete
-  transport archives or searchable proxy exchanges.
+1. **Proxied model traffic** carries complete OpenRouter requests and streaming
+   responses. The Worker preserves streaming, redacts the exchange, writes the
+   full object to R2, and indexes searchable metadata in D1.
+2. **Harness events** carry turns, heartbeats, session ends, and evidenced work
+   outcomes from OpenCode and Hermes. They keep sessions live and cover provider
+   traffic that does not pass through the proxy, but they are not full transport
+   archives.
 
-When supplied, `x-mimir-session` is the authoritative session boundary. Proxied
-traffic without an exact session ID falls back to bounded inactivity-based
-grouping.
+`x-mimir-session` is the authoritative session boundary when available. Traffic
+without an exact session ID uses bounded inactivity grouping.
 
-| Traffic path | Complete redacted exchange | Session reporting | Durable search metadata |
+| Traffic path | Full redacted exchange | Session lifecycle | Searchable exchange metadata |
 | --- | --- | --- | --- |
-| Redirected OpenRouter | Yes, after persistence succeeds | Saved-exchange event; lifecycle when a plugin reports it | Yes |
-| OpenCode OAuth, subscription, or direct provider | No | Plugin summaries and lifecycle | No full-exchange index |
-| Hermes Nous portal, OAuth, or direct provider | No | Plugin summaries and lifecycle | No full-exchange index |
-| Other harness using Mimir proxy URLs | Yes, after persistence succeeds | Saved-exchange event; other lifecycle only if implemented | Yes |
+| Redirected OpenRouter | Yes, after persistence succeeds | Yes | Yes |
+| OpenCode OAuth, subscription, or direct provider | No | Plugin events | No |
+| Hermes Nous portal, OAuth, or direct provider | No | Plugin events | No |
+| Other tools using Mimir proxy URLs | Yes, after persistence succeeds | Capture events only | Yes |
 
-Hermes' managed OpenRouter route uses the proxy and suppresses duplicate plugin
-turns for known proxied requests. A scheduled capture response is not proof of
-persistence; `mimir session status` is the authority.
+Hermes' managed OpenRouter route suppresses duplicate plugin turns for known
+proxied requests. A scheduled capture response only means persistence was
+queued. `mimir session status` is the authority for durable capture.
 
-## Use The Memory
+## Use the memory
 
-Search before starting the next attempt:
+Search before starting another attempt:
 
 ```bash
 mimir search "token validation" --json
 ```
 
-Inspect the full session record:
+Inspect a complete session record:
 
 ```bash
 mimir session get <id> --json
 ```
 
-Verify that capture reached durable storage:
+Verify durable capture:
 
 ```bash
 mimir session status <id> --json
@@ -98,23 +106,29 @@ Record an evidenced result:
 mimir session outcome <id> landed --reason "merged in PR 42"
 ```
 
-The CLI is the primary agent surface for searching, inspecting, and controlling
-memory. Harness plugins handle capture and lifecycle events over HTTP.
+Open the private dashboard:
 
-## Connect An Agent
+```bash
+mimir dashboard
+```
+
+The dashboard leads with sessions. Requests remain supporting evidence, one
+click away when you need the raw record.
+
+## Connect an agent
 
 ### OpenCode
 
 The installer manages the Mimir plugin and skills without rewriting general
-OpenCode JSON or JSONC. The plugin reports turns and lifecycle events over
-HTTP. Restart OpenCode after installation or update. See
-[OpenCode capture setup](docs/opencode-capture-setup.md).
+OpenCode JSON or JSONC. The plugin reports turns, lifecycle events, model
+switches, and Git outcome evidence over HTTP. Restart OpenCode after an install
+or update. See [OpenCode capture setup](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
 Mimir redirects Hermes' built-in OpenRouter provider through `/v1/hermes` and
 enables a plugin for direct-provider turns and lifecycle events. Restart Hermes
-after installation or update. See [Hermes capture setup](docs/hermes-capture-setup.md).
+after an install or update. See [Hermes capture setup](docs/hermes-capture-setup.md).
 
 ### Other harnesses and tools
 
@@ -123,10 +137,10 @@ mimir connection
 ```
 
 The connection manifest supplies proxy base URLs, credential sources, and
-supported metadata-header names. The CLI inspects and controls memory; it does
-not capture unrelated model traffic.
+supported metadata headers. The CLI inspects and controls memory; it does not
+capture unrelated model traffic.
 
-## Your Account, Your Data
+## Your account, your data
 
 There is no Mimir account, hosted backend, shared memory service, or browser
 machine-token storage.
@@ -143,7 +157,7 @@ machine-token storage.
 Redaction runs before R2 persistence and excerpt generation. It reduces
 accidental retention, but it cannot guarantee removal of every secret.
 
-## Command Reference
+## Command reference
 
 ```text
 mimir install                         reconcile managed local artifacts
@@ -169,7 +183,7 @@ diagnostic commands.
 
 ## Dashboard development
 
-Run the dashboard and its local Worker bindings without deploying:
+Run the dashboard and local Worker bindings without deploying:
 
 ```bash
 npm --prefix worker ci
@@ -179,7 +193,7 @@ bun run dev
 
 The command applies D1 migrations to Wrangler's local database, starts the
 Worker on `127.0.0.1:8787`, and starts Vite with HMR on `127.0.0.1:5173`.
-Vite proxies the Access handoff, dashboard API, and log-object requests to the
+Vite proxies the Access handoff, dashboard APIs, and log-object requests to the
 Worker. Local requests use the clearly marked development identity and never
 require browser machine credentials.
 

@@ -174,10 +174,30 @@ Session-list filters include repository, model, outcome, and date range.
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
+| `GET` | `/dashboard/api/facets` | Return filter vocabulary, optionally scoped to one session subtree. |
 
 The Vue client reads live Access-protected dashboard APIs for Sessions,
 Requests, Overview, details, R2 payload retrieval, capture status, and outcome
 mutation.
+
+`/dashboard/api/facets` returns `repos`, `apps`, `models`, `providers`, and
+`finish_reasons` from saved exchanges, ordered by request frequency and bounded
+to 50 values each. A `session` parameter scopes exchange facets to that session
+subtree and returns no repositories. Every dashboard filter is a dropdown backed
+by this vocabulary rather than a free-text exact-match field; an active filter
+value outside the bounded list stays selectable so a URL filter never renders
+blank.
+
+Dashboard session records retain `model_primary` as the backward-compatible
+first-model projection and add `models`, an exact-session array ordered with the
+primary model first and all secondary models by first appearance. Each entry
+contains the exact model identifier, saved request count, and first/last seen
+timestamps. Root records never absorb models used only by supporting sessions;
+supporting runs receive their own arrays. Session model search and filtering
+match any saved model used by that exact session while retaining
+`model_primary` as a fallback for legacy rows. The sessions table renders the
+primary model with `+N models`; session detail renders the app as a parent with
+every model below it.
 
 Dashboard session errors are aggregated at read time from `exchange_errors`
 joined to saved exchanges: each signature carries an occurrence count, first
@@ -197,8 +217,20 @@ omitted. Commit values are never inferred from refs.
 The dashboard derives changed-file counts and per-file `+`/`−` totals from the
 stored patch and links a commit only from `commit_url` or a recorded
 `repository_url`; without a stored remote it shows the bare SHA. Commit-derived
-changed files stay separate from heuristically referenced files, and both lists
-are bounded with explicit disclosure. Session detail never contacts Git hosts.
+changed files stay separate from tool-touched files, and every session-detail
+list, including supporting runs, files, and errors, is bounded with explicit
+disclosure. Session detail never contacts Git hosts.
+
+File and error facets are projected from structured exchange content, not from a
+text scan of the payload. Files come only from tool-call arguments in either the
+OpenAI `function.arguments` or Anthropic `tool_use.input` shape, read from
+path-bearing keys, with dependency directories excluded and 40 kept per
+exchange. Errors come only from explicit failure signals: provider error
+envelopes, stream `error` events, and tool results flagged `is_error` or a
+non-zero exit code, with 10 kept per exchange. Detection reads the trailing
+messages of a request so a failure is not re-counted against every later
+exchange that replays the transcript. Prose that merely mentions a path or the
+word "error" is not a facet.
 
 `Download as Markdown` is a transient client-side export generated from the
 session detail and timeline responses (capped at 500 exchanges). Nothing is

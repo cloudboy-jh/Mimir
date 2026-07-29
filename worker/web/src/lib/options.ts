@@ -21,7 +21,3 @@ export const evidenceKindOptions: SelectOption[] = [
   { value: "url", label: "URL" },
   { value: "note", label: "Note" },
 ];
-
-export function facetOptions(values: string[], allLabel: string): SelectOption[] {
-  return [{ value: "", label: allLabel }, ...values.map((value) => ({ value, label: value }))];
-}

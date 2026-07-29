@@ -263,11 +263,144 @@ export function redact(value: unknown, patterns: string[]): unknown {
   return parseJSON(text);
 }
 
-export function deriveSessionFields(...values: unknown[]) {
-  const text = values.map((value) => JSON.stringify(value)).join("\n");
-  const files = text.match(/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:tsx|ts|jsx|js|cpp|hpp|json|yaml|yml|sql|java|go|py|rs|cs|md|c|h)(?![A-Za-z0-9_.-])/g) ?? [];
-  const errors = text.match(/(?:error|exception|panic|failed)[:\s][^\n"}]{1,160}/gi) ?? [];
-  return { files: unique(files, 100), errors: unique(errors, 20) };
+const MAX_FILES = 40;
+const MAX_ERRORS = 10;
+const MAX_WALK_DEPTH = 12;
+const TRAILING_MESSAGES = 3;
+const FILE_KEYS = new Set(["path", "file", "filepath", "file_path", "filename", "file_name", "notebook_path", "target_file", "abs_path", "absolute_path", "new_path", "old_path"]);
+const DEPENDENCY_PATH = /(?:^|\/)(?:node_modules|\.git|dist|build|out|vendor|\.venv|venv|__pycache__|\.next|\.nuxt|coverage|target)\//i;
+// Diagnostics are line-anchored and require punctuation a compiler or runtime
+// emits, so source code that merely contains the word "error" cannot match.
+const DIAGNOSTICS = [
+  /^[A-Z][A-Za-z.]*(?:Error|Exception)\b:[^\n]{1,180}/m,
+  /^Traceback \(most recent call last\)/m,
+  /^panic: [^\n]{1,180}/m,
+  /^error(?:\[[A-Z0-9]+\])?: [^\n]{1,180}/m,
+  /^[^\n]{0,90}error TS\d+: [^\n]{1,180}/m,
+  /^\s*at [^\n]{1,120}:\d+:\d+/m,
+];
+
+// deriveSessionFields projects searchable facets from one exchange. Files come
+// only from tool activity and errors only from explicit failure signals, so the
+// facets describe what the agent did rather than what its prompt contained.
+export function deriveSessionFields(request: unknown, response?: unknown) {
+  return { files: unique(deriveFiles(request, response), MAX_FILES), errors: unique(deriveErrors(request, response), MAX_ERRORS) };
+}
+
+function deriveFiles(request: unknown, response: unknown): string[] {
+  const files: string[] = [];
+  for (const input of toolInputs(request).concat(toolInputs(response))) {
+    for (const candidate of filePaths(input, 0)) {
+      const normalized = normalizeFilePath(candidate);
+      if (normalized) files.push(normalized);
+    }
+  }
+  return files;
+}
+
+// toolInputs collects the argument objects of tool calls in either the OpenAI
+// (function.arguments JSON string) or Anthropic (tool_use.input object) shape.
+function toolInputs(value: unknown, depth = 0): unknown[] {
+  if (depth > MAX_WALK_DEPTH || !value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((item) => toolInputs(item, depth + 1));
+  const record = value as Record<string, unknown>;
+  const found: unknown[] = [];
+  if (record.type === "tool_use" && record.input && typeof record.input === "object") found.push(record.input);
+  const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : null;
+  if (fn && typeof fn.arguments === "string") {
+    const parsed = parseJSON(fn.arguments);
+    if (parsed && typeof parsed === "object") found.push(parsed);
+  }
+  for (const nested of Object.values(record)) found.push(...toolInputs(nested, depth + 1));
+  return found;
+}
+
+function filePaths(value: unknown, depth: number): string[] {
+  if (depth > MAX_WALK_DEPTH || !value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((item) => filePaths(item, depth + 1));
+  const paths: string[] = [];
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof nested === "string") {
+      if (FILE_KEYS.has(key.toLowerCase())) paths.push(nested);
+      continue;
+    }
+    paths.push(...filePaths(nested, depth + 1));
+  }
+  return paths;
+}
+
+function normalizeFilePath(raw: string): string | null {
+  const value = raw.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!value || value.length > 240) return null;
+  if ((value.match(/ /g)?.length ?? 0) > 3) return null;
+  if (!value.includes("/") && !/\.[A-Za-z0-9]{1,10}$/.test(value)) return null;
+  if (DEPENDENCY_PATH.test(value)) return null;
+  return value;
+}
+
+function deriveErrors(request: unknown, response: unknown): string[] {
+  const errors: string[] = [];
+  pushEnvelopeError(response, errors);
+  const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+  if (Array.isArray(record.events)) {
+    for (const event of record.events) pushEnvelopeError(event, errors);
+  }
+  for (const message of trailingMessages(request)) pushToolFailure(message, errors);
+  return errors;
+}
+
+// pushEnvelopeError reads provider failure envelopes, which are the errors the
+// proxy is actually positioned to observe.
+function pushEnvelopeError(value: unknown, errors: string[]) {
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const error = record.error;
+  if (typeof error === "string") {
+    pushSignature(error, errors);
+    return;
+  }
+  if (!error || typeof error !== "object") return;
+  const detail = error as Record<string, unknown>;
+  const message = [detail.message, detail.type, detail.code].find((part) => typeof part === "string" && part) as string | undefined;
+  if (message) pushSignature(typeof detail.code === "string" && detail.code && detail.code !== message ? `${detail.code}: ${message}` : message, errors);
+}
+
+// pushToolFailure only trusts explicitly flagged tool failures. An unflagged
+// tool result is usually file content, and scanning it produced false errors.
+function pushToolFailure(message: unknown, errors: string[]) {
+  if (!message || typeof message !== "object") return;
+  const record = message as Record<string, unknown>;
+  const blocks = Array.isArray(record.content) ? record.content : [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const detail = block as Record<string, unknown>;
+    if (detail.type !== "tool_result" || detail.is_error !== true) continue;
+    pushSignature(firstDiagnostic(messageText(detail.content) || (typeof detail.content === "string" ? detail.content : "")), errors);
+  }
+  if (record.role !== "tool") return;
+  const flagged = record.is_error === true || (typeof record.exit_code === "number" && record.exit_code !== 0);
+  if (flagged) pushSignature(firstDiagnostic(messageText(record.content)), errors);
+}
+
+function firstDiagnostic(text: string): string {
+  if (!text) return "";
+  for (const pattern of DIAGNOSTICS) {
+    const match = pattern.exec(text);
+    if (match) return match[0];
+  }
+  return text.split("\n").find((line) => line.trim()) ?? "";
+}
+
+function pushSignature(raw: string, errors: string[]) {
+  const signature = raw.replace(/\s+/g, " ").trim().slice(0, 200);
+  if (signature && /[A-Za-z]/.test(signature)) errors.push(signature);
+}
+
+// trailingMessages limits error detection to the newest turn so a failure is
+// not re-counted against every later exchange that replays the transcript.
+function trailingMessages(request: unknown): unknown[] {
+  const messages = request && typeof request === "object" ? (request as Record<string, unknown>).messages : null;
+  return Array.isArray(messages) ? messages.slice(-TRAILING_MESSAGES) : [];
 }
 
 // deriveIntent summarizes the session's purpose from the first user message

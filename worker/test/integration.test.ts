@@ -210,7 +210,7 @@ describe("Worker integration", () => {
     const response = await request("/v1/chat/completions", {
       method: "POST",
       headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "session-1", "x-mimir-repo": "mimir", "x-mimir-harness": "test" },
-      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "token: private-value" }], stream: true }),
+      body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "token: private-value" }, { role: "assistant", content: [{ type: "tool_use", input: { file_path: "src/auth.ts" } }] }], stream: true }),
     });
     expect(response.headers.get("x-mimir-capture")).toBe("scheduled");
     expect(response.headers.get("x-mimir-capture-reason")).toBe("enabled");
@@ -243,8 +243,8 @@ describe("Worker integration", () => {
         ts: "2026-07-26T12:00:00Z",
         model: "openai/gpt-5",
         provider: "OpenAI",
-        request: { messages: [{ role: "user", content: "Fix src/reported.ts with token: private-value for customer-123" }] },
-        response: { choices: [{ message: { content: "src/reported.ts failed: compile error" }, finish_reason: "stop" }] },
+        request: { messages: [{ role: "user", content: "Fix src/reported.ts with token: private-value for customer-123" }, { role: "assistant", tool_calls: [{ function: { name: "edit", arguments: "{\"path\":\"src/reported.ts\"}" } }] }] },
+        response: { choices: [{ message: { content: "src/reported.ts failed: compile error" }, finish_reason: "stop" }], error: { code: "compile_failed", message: "compile error" } },
         usage: { input_tokens: 12, output_tokens: 4 },
         latency_ms: 321,
         request_kind: "primary",
@@ -257,7 +257,7 @@ describe("Worker integration", () => {
     expect(exchange).toMatchObject({ session_id: "reported-session", model: "openai/gpt-5", provider: "OpenAI", finish_reason: "stop", input_tokens: 12, output_tokens: 4, latency_ms: 321, request_kind: "primary", capture_status: "saved", capture_reason: "enabled" });
     expect(await env.DB.prepare("SELECT request_count, tokens_in, tokens_out, model_primary, intent FROM sessions WHERE id = 'reported-session'").first()).toEqual({ request_count: 1, tokens_in: 12, tokens_out: 4, model_primary: "openai/gpt-5", intent: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]" });
     expect(await env.DB.prepare("SELECT file FROM session_files WHERE session_id = 'reported-session'").first()).toEqual({ file: "src/reported.ts" });
-    expect(await env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = 'reported-session'").first()).toEqual({ signature: "failed: compile error" });
+    expect(await env.DB.prepare("SELECT signature FROM session_errors WHERE session_id = 'reported-session'").first()).toEqual({ signature: "compile_failed: compile error" });
 
     const objectText = await (await env.LOGS.get(exchange!.r2_key))!.text();
     expect(objectText).not.toContain("private-value");
@@ -268,7 +268,7 @@ describe("Worker integration", () => {
       exchange_id: "reported-exchange-1",
       session_id: "reported-session",
       endpoint: "harness",
-      request: { messages: [{ content: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]" }] },
+      request: { messages: [{ content: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]" }, { role: "assistant" }] },
       response: { format: "json", body: { choices: [{ finish_reason: "stop" }] } },
       usage: { input_tokens: 12, output_tokens: 4 },
       redaction: { version: 1 },
@@ -437,7 +437,7 @@ describe("Worker integration", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 6, completion_tokens: 2 } })));
     const batch = env.DB.batch.bind(env.DB);
     vi.spyOn(env.DB, "batch").mockImplementationOnce(batch).mockRejectedValueOnce(new Error("injected D1 finalization failure"));
-    await request("/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "accepted-session" }, body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Inspect src/recovered.ts" }] }) });
+    await request("/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "accepted-session" }, body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Inspect src/recovered.ts" }, { role: "assistant", content: [{ type: "tool_use", input: { path: "src/recovered.ts" } }] }] }) });
     const accepted = await env.DB.prepare("SELECT id, r2_key, capture_status FROM exchanges WHERE session_id = 'accepted-session'").first<{ id: string; r2_key: string; capture_status: string }>();
     expect(accepted?.capture_status).toBe("accepted");
     expect(await env.LOGS.get(accepted!.r2_key)).not.toBeNull();
@@ -665,6 +665,10 @@ describe("Worker integration", () => {
       INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('wrong-outcome', '2026-07-27T10:01:00Z', 'inactive', 'opencode', 'header', 'discarded', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
       INSERT INTO sessions(id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('wrong-app', '2026-07-27T10:00:00Z', 'inactive', 'hermes', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
       INSERT INTO sessions(id, parent_session_id, started_at, state, harness, boundary, work_outcome, repo, model_primary, intent) VALUES ('supporting-match', 'match-new', '2026-07-27T10:04:00Z', 'inactive', 'opencode', 'header', 'landed', 'mimir', 'openai/gpt-5', 'Fix dashboard needle');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('match-new-exchange', 'match-new', '2026-07-27T10:03:10Z', 'chat', 'openai/gpt-5', 1, 'log/match-new.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('match-old-exchange', 'match-old', '2026-07-27T10:02:10Z', 'chat', 'openai/gpt-5', 1, 'log/match-old.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('wrong-outcome-exchange', 'wrong-outcome', '2026-07-27T10:01:10Z', 'chat', 'openai/gpt-5', 1, 'log/wrong-outcome.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('wrong-app-exchange', 'wrong-app', '2026-07-27T10:00:10Z', 'chat', 'openai/gpt-5', 1, 'log/wrong-app.json', 'saved');
     `);
     const filters = "q=NEEDLE&repo=mimir&outcome=landed&app=opencode&model=openai%2Fgpt-5&from=2026-07-27T10%3A02%3A00Z&to=2026-07-27T10%3A03%3A00Z&limit=1";
     const firstResponse = await dashboardRequest(`/dashboard/api/sessions?${filters}`);
@@ -679,6 +683,32 @@ describe("Worker integration", () => {
     expect((await dashboardRequest("/dashboard/api/sessions?outcome=not-real")).status).toBe(400);
     expect((await dashboardRequest("/dashboard/api/sessions?cursor=not-a-cursor")).status).toBe(400);
     expect((await dashboardRequest("/dashboard/api/log?cursor=not-a-cursor")).status).toBe(400);
+  });
+
+  it("reports exact-session model usage and isolates supporting-run models", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, harness, boundary, repo, model_primary, intent) VALUES ('multi-root', '2026-07-27T11:00:00Z', 'inactive', 'opencode', 'header', 'mimir', 'gpt-5.6-sol', 'Swap models while coding');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, harness, boundary, repo, model_primary, intent) VALUES ('multi-child', 'multi-root', '2026-07-27T11:01:00Z', 'inactive', 'opencode', 'header', 'mimir', 'child-only-model', 'Supporting review');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('multi-1', 'multi-root', '2026-07-27T11:00:10Z', 'chat', 'gpt-5.6-sol', 1, 'log/multi-1.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('multi-2', 'multi-root', '2026-07-27T11:00:20Z', 'chat', 'claude-opus-5', 1, 'log/multi-2.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('multi-3', 'multi-root', '2026-07-27T11:00:30Z', 'chat', 'gpt-5.6-sol', 1, 'log/multi-3.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('multi-child-1', 'multi-child', '2026-07-27T11:01:10Z', 'chat', 'child-only-model', 1, 'log/multi-child.json', 'saved');
+    `);
+
+    type Model = { name: string; request_count: number; first_seen_at: string; last_seen_at: string };
+    const listed = await (await dashboardRequest("/dashboard/api/sessions?q=claude-opus-5&model=claude-opus-5")).json() as { sessions: Array<{ id: string; models: Model[] }> };
+    expect(listed.sessions).toHaveLength(1);
+    expect(listed.sessions[0]).toMatchObject({ id: "multi-root" });
+    expect(listed.sessions[0].models).toEqual([
+      { name: "gpt-5.6-sol", request_count: 2, first_seen_at: "2026-07-27T11:00:10Z", last_seen_at: "2026-07-27T11:00:30Z" },
+      { name: "claude-opus-5", request_count: 1, first_seen_at: "2026-07-27T11:00:20Z", last_seen_at: "2026-07-27T11:00:20Z" },
+    ]);
+    expect(listed.sessions[0].models.map((model) => model.name)).not.toContain("child-only-model");
+    expect((await (await dashboardRequest("/dashboard/api/sessions?model=child-only-model")).json() as { sessions: unknown[] }).sessions).toEqual([]);
+
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/multi-root")).json() as { session: { models: Model[] }; supporting_sessions: Array<{ id: string; models: Model[] }> };
+    expect(detail.session.models.map((model) => model.name)).toEqual(["gpt-5.6-sol", "claude-opus-5"]);
+    expect(detail.supporting_sessions).toEqual([expect.objectContaining({ id: "multi-child", models: [expect.objectContaining({ name: "child-only-model", request_count: 1 })] })]);
   });
 
   it("paginates and filters session timelines in either order", async () => {
@@ -770,6 +800,33 @@ describe("Worker integration", () => {
     expect(updated.status).toBe(200);
     expect(await updated.json()).toMatchObject({ id: "dashboard-session", outcome: "landed", outcome_src: "user", outcome_reason: "Live data verified" });
 
+  });
+
+  it("serves filter facets from saved traffic, ordered by frequency and scoped on request", async () => {
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary, repo, harness, model_primary) VALUES ('facet-root', '2026-05-01T00:00:00Z', 'inactive', '2026-05-01T00:00:00Z', 'header', 'mimir', 'OpenCode', 'anthropic/claude')"),
+      env.DB.prepare("INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary, repo) VALUES ('facet-child', 'facet-root', '2026-05-01T00:01:00Z', 'inactive', '2026-05-01T00:01:00Z', 'header', 'mimir')"),
+      env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary, repo, harness) VALUES ('facet-other', '2026-05-01T00:02:00Z', 'inactive', '2026-05-01T00:02:00Z', 'header', 'other-repo', 'Hermes')"),
+      env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status, saved_at) VALUES ('facet-1', 'facet-root', '2026-05-01T00:00:10Z', 'chat', 'anthropic/claude', 1, 'log/f1.json', 'anthropic', 'OpenCode', 'stop', 'saved', '2026-05-01T00:00:11Z')"),
+      env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status, saved_at) VALUES ('facet-2', 'facet-child', '2026-05-01T00:01:10Z', 'chat', 'anthropic/claude', 1, 'log/f2.json', 'anthropic', 'OpenCode', 'tool-calls', 'saved', '2026-05-01T00:01:11Z')"),
+      env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status, saved_at) VALUES ('facet-3', 'facet-other', '2026-05-01T00:02:10Z', 'chat', 'openai/gpt', 1, 'log/f3.json', 'openai', 'Hermes', 'stop', 'saved', '2026-05-01T00:02:11Z')"),
+      env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status) VALUES ('facet-pending', 'facet-other', '2026-05-01T00:03:10Z', 'chat', 'never/surfaced', 1, 'log/f4.json', 'ghost-provider', 'Ghost', 'length', 'pending')"),
+    ]);
+
+    type Facets = { repos: string[]; apps: string[]; models: string[]; providers: string[]; finish_reasons: string[] };
+    const facets = await (await dashboardRequest("/dashboard/api/facets")).json() as Facets;
+    expect(facets.models).toContain("anthropic/claude");
+    expect(facets.models).not.toContain("never/surfaced");
+    expect(facets.providers).not.toContain("ghost-provider");
+    expect(facets.repos).toContain("mimir");
+    expect(facets.repos).toContain("other-repo");
+    expect(facets.models.indexOf("anthropic/claude")).toBeLessThan(facets.models.indexOf("openai/gpt"));
+
+    const scoped = await (await dashboardRequest("/dashboard/api/facets?session=facet-root")).json() as Facets;
+    expect(scoped.models).toEqual(["anthropic/claude"]);
+    expect([...scoped.finish_reasons].sort()).toEqual(["stop", "tool-calls"]);
+    expect(scoped.apps).toEqual(["OpenCode"]);
+    expect(scoped.repos).toEqual([]);
   });
 
   it("derives session intent from the first user message and keeps it sticky", async () => {

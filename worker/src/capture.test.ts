@@ -24,9 +24,46 @@ describe("capture", () => {
     await expect(readBoundedText(stream, 3)).rejects.toThrow("capture limit exceeded");
   });
 
-  it("does not treat dotted protocol names as files", () => {
-    expect(deriveSessionFields({ object: "chat.completion.chunk", file: "src/auth.ts" }))
-      .toEqual({ files: ["src/auth.ts"], errors: [] });
+  it("derives files from tool activity in either provider shape", () => {
+    const request = {
+      messages: [
+        { role: "user", content: "look at worker/src/never-touched.ts and reference/craft.md" },
+        { role: "assistant", content: [{ type: "tool_use", input: { file_path: "worker/src/auth.ts" } }] },
+        { role: "assistant", tool_calls: [{ function: { name: "edit", arguments: JSON.stringify({ path: "worker/web/src/lib/api.ts", edits: [{ path: "docs/Spec.md" }] }) } }] },
+      ],
+    };
+    expect(deriveSessionFields(request, {}).files).toEqual(["worker/src/auth.ts", "worker/web/src/lib/api.ts", "docs/Spec.md"]);
+  });
+
+  it("ignores prose paths, dependency directories, and non-path values", () => {
+    const request = {
+      object: "chat.completion.chunk",
+      messages: [{ role: "assistant", content: [{ type: "tool_use", input: { path: "node_modules/reka-ui/dist/index.js" } }, { type: "tool_use", input: { pattern: "worker/src/leaked.ts" } }] }],
+    };
+    expect(deriveSessionFields(request, {}).files).toEqual([]);
+  });
+
+  it("derives errors from provider envelopes and stream events", () => {
+    expect(deriveSessionFields({}, { error: { code: "rate_limited", message: "slow down" } }).errors).toEqual(["rate_limited: slow down"]);
+    expect(deriveSessionFields({}, { error: "upstream unavailable" }).errors).toEqual(["upstream unavailable"]);
+    expect(deriveSessionFields({}, { events: [{ type: "error", error: { message: "overloaded" } }] }).errors).toEqual(["overloaded"]);
+  });
+
+  it("derives errors only from flagged tool failures", () => {
+    const failed = { messages: [{ role: "user", content: [{ type: "tool_result", is_error: true, content: "Traceback (most recent call last)\n  File \"a.py\"" }] }] };
+    expect(deriveSessionFields(failed, {}).errors).toEqual(["Traceback (most recent call last)"]);
+    const succeeded = { messages: [{ role: "user", content: [{ type: "tool_result", content: "const error = ref(\"\");\nError extends Error {" }] }] };
+    expect(deriveSessionFields(succeeded, {}).errors).toEqual([]);
+  });
+
+  it("does not treat source code containing the word error as an error", () => {
+    const request = {
+      messages: [
+        { role: "user", content: "const evidenceError = computed(() => {\n  if (error && !exchanges.length) return \"x\";\n});" },
+        { role: "assistant", content: "Error / Disabled: explicit text and icon state; never color alone." },
+      ],
+    };
+    expect(deriveSessionFields(request, { choices: [{ finish_reason: "stop" }] }).errors).toEqual([]);
   });
 
   it("classifies known title agents without suppressing ordinary title work", () => {

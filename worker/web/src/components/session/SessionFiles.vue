@@ -62,11 +62,12 @@ watch(() => props.evidence?.commit, () => { showAllChanged.value = false; showAl
     <button v-if="diffs.length > CHANGED_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllChanged = !showAllChanged">{{ showAllChanged ? "Show fewer changed files" : `Show all ${diffs.length} changed files` }}</button>
 
     <template v-if="referenced.length">
-      <h3 class="mb-2 mt-5 text-xs font-medium text-zinc-500">Referenced files ({{ referenced.length }})</h3>
+      <h3 class="mb-1 mt-5 text-xs font-medium text-zinc-500">Touched by tools ({{ referenced.length }})</h3>
+      <p class="mb-2 text-[11px] leading-4 text-zinc-500">Read or edited during the session. Not part of the commit above.</p>
       <ul class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
         <li v-for="file in visibleReferenced" :key="file" class="truncate py-2.5 font-mono text-xs text-zinc-600 dark:text-zinc-400" :title="file">{{ file }}</li>
       </ul>
-      <button v-if="referenced.length > REFERENCED_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllReferenced = !showAllReferenced">{{ showAllReferenced ? "Show fewer referenced files" : `Show all ${referenced.length} referenced files` }}</button>
+      <button v-if="referenced.length > REFERENCED_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllReferenced = !showAllReferenced">{{ showAllReferenced ? "Show fewer files" : `Show all ${referenced.length} files` }}</button>
     </template>
 
     <p v-if="!files.length && !diffs.length && !evidence?.commit" class="text-sm text-zinc-500">No files detected.</p>
