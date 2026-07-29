@@ -88,7 +88,12 @@ export type OutcomeEvidence = {
   provenance?: string;
   url?: string;
   note?: string;
+  repository_url?: string;
+  commit_url?: string;
+  ref?: string;
 };
+
+const evidenceKeys = ["commit", "base_commit", "patch", "provenance", "url", "note", "repository_url", "commit_url", "ref"] as const;
 
 export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | null {
   if (!json) return null;
@@ -98,7 +103,7 @@ export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | nul
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
     const evidence: OutcomeEvidence = {};
-    for (const key of ["commit", "base_commit", "patch", "provenance", "url", "note"] as const) {
+    for (const key of evidenceKeys) {
       if (typeof record[key] === "string" && record[key]) evidence[key] = record[key] as string;
     }
     return Object.keys(evidence).length ? evidence : null;

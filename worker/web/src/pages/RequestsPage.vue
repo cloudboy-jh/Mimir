@@ -2,9 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, RotateCw, Search } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
+import Select from "@/components/ui/Select.vue";
 import { errorMessage, listExchanges, type Exchange } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
 import { compactNumber, outputSpeed, shortDate } from "@/lib/format";
+import { facetOptions } from "@/lib/options";
 
 const exchanges = ref<Exchange[]>([]);
 const query = ref("");
@@ -17,6 +19,9 @@ const error = ref("");
 const providers = ref<string[]>([]);
 const apps = ref<string[]>([]);
 let controller: AbortController | null = null;
+
+const providerOptions = computed(() => facetOptions(providers.value, "All providers"));
+const appOptions = computed(() => facetOptions(apps.value, "All apps"));
 
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -81,7 +86,7 @@ onBeforeUnmount(() => controller?.abort());
 <template>
   <section>
     <div class="mb-7 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between"><div><h1 class="text-[28px] font-semibold tracking-[-0.025em] text-zinc-950 dark:text-zinc-50">Requests</h1><p class="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">Model traffic captured as evidence within Mimir sessions.</p></div><div v-if="!loading" class="font-mono text-xs text-zinc-500">{{ filtered.length }} loaded requests</div></div>
-    <div class="mb-4 flex flex-col gap-2 sm:flex-row"><label class="relative block min-w-0 flex-1 sm:max-w-sm"><span class="sr-only">Search loaded requests</span><Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" /><input v-model="query" type="search" placeholder="Search loaded requests..." class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" /></label><select v-model="provider" aria-label="Provider" class="h-8.5 rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"><option value="">All providers</option><option v-for="name in providers" :key="name" :value="name">{{ name }}</option></select><select v-model="app" aria-label="App" class="h-8.5 rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"><option value="">All apps</option><option v-for="name in apps" :key="name" :value="name">{{ name }}</option></select></div>
+    <div class="mb-4 flex flex-col gap-2 sm:flex-row"><label class="relative block min-w-0 flex-1 sm:max-w-sm"><span class="sr-only">Search loaded requests</span><Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" /><input v-model="query" type="search" placeholder="Search loaded requests..." class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" /></label><Select v-model="provider" label="Provider" :options="providerOptions" class="sm:w-44" /><Select v-model="app" label="App" :options="appOptions" class="sm:w-40" /></div>
     <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div class="overflow-x-auto"><table class="w-full min-w-[1050px] border-collapse text-left"><thead><tr class="border-b border-zinc-200 bg-zinc-50 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900"><th class="px-4 py-2.5 font-medium">Date</th><th class="px-4 py-2.5 font-medium">Model</th><th class="px-4 py-2.5 font-medium">Provider</th><th class="px-4 py-2.5 font-medium">App</th><th class="px-4 py-2.5 font-medium">Repo</th><th class="px-4 py-2.5 text-right font-medium">Input</th><th class="px-4 py-2.5 text-right font-medium">Output</th><th class="px-4 py-2.5 text-right font-medium">Speed</th><th class="px-4 py-2.5 font-medium">Finish</th><th class="w-10" /></tr></thead>
         <tbody v-if="!loading"><tr v-for="exchange in filtered" :key="exchange.id" class="group border-b border-zinc-200 text-[13px] last:border-b-0 hover:bg-stone-50 dark:border-zinc-800 dark:hover:bg-zinc-800/70"><td class="px-4 py-3.5 font-mono text-xs text-zinc-500">{{ shortDate(exchange.ts) }}</td><td class="px-4 py-3.5 font-medium text-zinc-900 dark:text-zinc-100"><IdentityBadge :label="exchange.model" /></td><td class="px-4 py-3.5"><IdentityBadge :label="exchange.provider || 'Unknown'" /></td><td class="px-4 py-3.5"><IdentityBadge :label="exchange.harness || 'Unknown'" /></td><td class="px-4 py-3.5 text-zinc-600 dark:text-zinc-400">{{ exchange.repo || "None" }}</td><td class="px-4 py-3.5 text-right font-mono text-xs">{{ compactNumber(exchange.input_tokens) }}</td><td class="px-4 py-3.5 text-right font-mono text-xs">{{ compactNumber(exchange.output_tokens) }}</td><td class="px-4 py-3.5 text-right font-mono text-xs text-zinc-500">{{ outputSpeed(exchange.output_tokens, exchange.latency_ms) }}</td><td class="px-4 py-3.5 font-mono text-xs text-zinc-500">{{ exchange.finish_reason || "Unknown" }}</td><td class="pr-3"><RouterLink :to="`/requests/${exchange.id}`" :aria-label="`Open ${exchange.model} request`" class="grid size-7 place-items-center rounded-[4px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600"><ArrowRight class="size-4 text-zinc-400 transition-transform group-hover:translate-x-0.5" /></RouterLink></td></tr></tbody>

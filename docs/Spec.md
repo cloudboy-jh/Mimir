@@ -186,12 +186,19 @@ only exist in `session_errors` (recorded before facet projection) render with
 count 1 and no timing data.
 
 Outcome events may carry structured evidence in `evidence_json`:
-`{ commit, base_commit?, patch?, provenance?, url?, note? }`. The OpenCode
-plugin attaches the HEAD commit, its parent, and a bounded redacted unified
-patch (20 KB cap) when an outcome is recorded from the harness; the dashboard
-outcome form accepts a single commit, URL, or note entry. Commit values are
-never inferred from refs. The dashboard renders a conditional per-file diff
-viewer from stored patches; it never contacts Git hosts.
+`{ commit, base_commit?, patch?, repository_url?, commit_url?, ref?,
+provenance?, url?, note? }`. The OpenCode plugin attaches the HEAD commit, its
+parent, the branch, the normalized `origin` remote, and a bounded redacted
+unified patch (20 KB cap) when an outcome is recorded from the harness; the
+dashboard outcome form accepts a single commit, URL, or note entry. Remotes are
+normalized to a credential-free `https` URL, and local-path remotes are
+omitted. Commit values are never inferred from refs.
+
+The dashboard derives changed-file counts and per-file `+`/`−` totals from the
+stored patch and links a commit only from `commit_url` or a recorded
+`repository_url`; without a stored remote it shows the bare SHA. Commit-derived
+changed files stay separate from heuristically referenced files, and both lists
+are bounded with explicit disclosure. Session detail never contacts Git hosts.
 
 `Download as Markdown` is a transient client-side export generated from the
 session detail and timeline responses (capped at 500 exchanges). Nothing is

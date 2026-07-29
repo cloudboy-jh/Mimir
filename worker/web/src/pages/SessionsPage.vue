@@ -4,9 +4,17 @@ import { useRoute, useRouter } from "vue-router";
 import { ArrowRight, Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-next";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
+import Button from "@/components/ui/Button.vue";
+import Dialog from "@/components/ui/Dialog.vue";
+import Select from "@/components/ui/Select.vue";
 import { errorMessage, listSessions, type Outcome, type Session, type SessionFilters } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
 import { compactNumber, duration, relativeDate } from "@/lib/format";
+import { outcomeOptions, pageSizeOptions } from "@/lib/options";
+
+const SEARCH_DEBOUNCE_MS = 350;
+const facetKeys = ["repo", "outcome", "app", "model", "from", "to"] as const;
+const facetLabels: Record<string, string> = { repo: "Repository", outcome: "Outcome", app: "App", model: "Model", from: "From", to: "To" };
 
 const route = useRoute();
 const router = useRouter();
@@ -16,27 +24,29 @@ const loading = ref(true);
 const loadingMore = ref(false);
 const error = ref("");
 const filtersOpen = ref(false);
-const draft = reactive({ q: "", repo: "", outcome: "", app: "", model: "", from: "", to: "", limit: "25" });
+const search = ref("");
+const draft = reactive<Record<string, string>>({ repo: "", outcome: "", app: "", model: "", from: "", to: "" });
 let controller: AbortController | null = null;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 function queryValue(key: string) {
   const value = route.query[key];
   return typeof value === "string" ? value : "";
 }
 
-function syncDraft() {
-  draft.q = queryValue("q");
-  draft.repo = queryValue("repo");
-  draft.outcome = queryValue("outcome");
-  draft.app = queryValue("app");
-  draft.model = queryValue("model");
-  draft.from = queryValue("from");
-  draft.to = queryValue("to");
-  draft.limit = queryValue("limit") || "25";
-  filtersOpen.value ||= activeFilterCount.value > 1;
-}
+const limit = computed(() => queryValue("limit") || "25");
+const activeFacets = computed(() => facetKeys.flatMap((key) => queryValue(key) ? [{ key, label: facetLabels[key], value: queryValue(key) }] : []));
+const activeFilterCount = computed(() => activeFacets.value.length + (queryValue("q") ? 1 : 0));
 
-const activeFilterCount = computed(() => ["q", "repo", "outcome", "app", "model", "from", "to"].filter((key) => queryValue(key)).length);
+function setParams(patch: Record<string, string>) {
+  const query = { ...route.query } as Record<string, string>;
+  for (const [key, raw] of Object.entries(patch)) {
+    const value = raw.trim();
+    if (!value || (key === "limit" && value === "25")) delete query[key];
+    else query[key] = value;
+  }
+  void router.push({ name: "sessions", query });
+}
 
 function currentFilters(cursor?: string): SessionFilters {
   const from = queryValue("from");
@@ -49,7 +59,7 @@ function currentFilters(cursor?: string): SessionFilters {
     model: queryValue("model") || undefined,
     from: from ? `${from}T00:00:00.000Z` : undefined,
     to: to ? `${to}T23:59:59.999Z` : undefined,
-    limit: Number(queryValue("limit") || 25),
+    limit: Number(limit.value),
     cursor,
   };
 }
@@ -90,26 +100,42 @@ async function loadMore() {
   }
 }
 
-function applyFilters() {
-  const query: Record<string, string> = {};
-  for (const key of ["q", "repo", "outcome", "app", "model", "from", "to", "limit"] as const) {
-    const value = draft[key].trim();
-    if (value && !(key === "limit" && value === "25")) query[key] = value;
-  }
-  void router.push({ name: "sessions", query });
+function commitSearch() {
+  clearTimeout(searchTimer);
+  if (search.value.trim() !== queryValue("q")) setParams({ q: search.value });
+}
+
+function openFilters() {
+  for (const key of facetKeys) draft[key] = queryValue(key);
+  filtersOpen.value = true;
+}
+
+function applyDraft() {
+  setParams({ ...draft });
+  filtersOpen.value = false;
 }
 
 function clearFilters() {
-  Object.assign(draft, { q: "", repo: "", outcome: "", app: "", model: "", from: "", to: "", limit: "25" });
-  void router.push({ name: "sessions" });
+  for (const key of facetKeys) draft[key] = "";
+  search.value = "";
+  clearTimeout(searchTimer);
+  setParams(Object.fromEntries([...facetKeys, "q"].map((key) => [key, ""])));
+  filtersOpen.value = false;
 }
 
+watch(search, (value) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    if (value.trim() !== queryValue("q")) setParams({ q: value });
+  }, SEARCH_DEBOUNCE_MS);
+});
+
 watch(() => route.fullPath, () => {
-  syncDraft();
+  if (queryValue("q") !== search.value.trim()) search.value = queryValue("q");
   void load();
 }, { immediate: true });
-useAutoRefresh(() => sessions.value.length <= Number(queryValue("limit") || 25) ? load(true) : undefined);
-onBeforeUnmount(() => controller?.abort());
+useAutoRefresh(() => sessions.value.length <= Number(limit.value) ? load(true) : undefined);
+onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 </script>
 
 <template>
@@ -119,23 +145,42 @@ onBeforeUnmount(() => controller?.abort());
       <div v-if="!loading" class="font-mono text-xs text-zinc-500 dark:text-zinc-400">{{ sessions.length }} loaded</div>
     </div>
 
-    <form class="mb-4 border-y border-zinc-200 py-3 dark:border-zinc-800" @submit.prevent="applyFilters">
+    <div class="mb-4 border-y border-zinc-200 py-3 dark:border-zinc-800">
       <div class="flex flex-col gap-2 sm:flex-row">
-        <label class="relative block min-w-0 flex-1 sm:max-w-lg"><span class="sr-only">Search sessions</span><Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" /><input v-model="draft.q" type="search" placeholder="Search intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <button type="button" class="inline-flex h-8.5 items-center justify-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium text-zinc-700 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900" :aria-expanded="filtersOpen" aria-controls="session-filters" @click="filtersOpen = !filtersOpen"><Filter class="size-3.5" />Filters<span v-if="activeFilterCount" class="font-mono text-[11px] text-zinc-500">{{ activeFilterCount }}</span></button>
-        <button type="submit" class="h-8.5 rounded-[5px] bg-zinc-900 px-3 text-[13px] font-medium text-zinc-50 hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300">Apply</button>
-        <button v-if="activeFilterCount" type="button" class="inline-flex h-8.5 items-center justify-center gap-1.5 px-2 text-[13px] font-medium text-zinc-500 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:hover:text-zinc-100" @click="clearFilters"><X class="size-3.5" />Clear</button>
+        <form class="relative min-w-0 flex-1 sm:max-w-lg" role="search" @submit.prevent="commitSearch">
+          <label class="sr-only" for="session-search">Search sessions</label>
+          <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
+          <input id="session-search" v-model="search" type="search" placeholder="Search intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+        </form>
+        <Button variant="outline" @click="openFilters"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button>
+        <Select :model-value="limit" label="Rows per page" :options="pageSizeOptions" class="sm:w-28" @update:model-value="setParams({ limit: $event })" />
       </div>
-      <div v-if="filtersOpen" id="session-filters" class="mt-3 grid gap-3 border-t border-zinc-200 pt-3 sm:grid-cols-2 lg:grid-cols-4 dark:border-zinc-800">
+      <ul v-if="activeFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
+        <li v-for="facet in activeFacets" :key="facet.key">
+          <button type="button" class="inline-flex items-center gap-1.5 rounded-[5px] border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 transition-colors duration-150 ease-out hover:border-zinc-400 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800" @click="setParams({ [facet.key]: '' })">
+            <span class="text-zinc-500">{{ facet.label }}</span><span class="font-mono">{{ facet.value }}</span><X class="size-3" aria-hidden="true" />
+            <span class="sr-only">Remove {{ facet.label }} filter</span>
+          </button>
+        </li>
+        <li><button type="button" class="text-[11px] font-medium text-zinc-500 hover:text-zinc-900 focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:hover:text-zinc-100" @click="clearFilters">Clear all</button></li>
+      </ul>
+    </div>
+
+    <Dialog v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
+      <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Repository<input v-model="draft.repo" placeholder="Exact repository" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">App<input v-model="draft.app" placeholder="Exact app" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Model<input v-model="draft.model" placeholder="Exact model" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Outcome<select v-model="draft.outcome" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"><option value="">All outcomes</option><option value="landed">Landed</option><option value="discarded">Discarded</option><option value="abandoned">Abandoned</option><option value="unresolved">Unresolved</option></select></label>
+        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" class="w-full font-normal" /></div>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
         <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">Rows per page<select v-model="draft.limit" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"><option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label>
-      </div>
-    </form>
+      </form>
+      <template #footer>
+        <Button variant="ghost" @click="clearFilters">Clear all</Button>
+        <Button variant="outline" @click="filtersOpen = false">Cancel</Button>
+        <Button type="submit" form="session-filters">Apply filters</Button>
+      </template>
+    </Dialog>
 
     <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div class="hidden grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] gap-4 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5 text-xs font-medium text-zinc-500 lg:grid dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"><span>Session</span><span>App / model</span><span>Outcome</span><span>Capture</span><span class="text-right">Tokens</span><span /></div>

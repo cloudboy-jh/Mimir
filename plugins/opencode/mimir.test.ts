@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -458,11 +458,51 @@ describe("gitEvidence", () => {
     expect(gitEvidence(undefined, run)).toBeNull();
   });
 
+  it("captures the origin remote and branch needed to link a commit", () => {
+    const { run } = runner({
+      "rev-parse HEAD": head,
+      "rev-parse HEAD~1": null,
+      "remote get-url origin": "git@github.com:owner/repo.git\n",
+      "rev-parse --abbrev-ref HEAD": "master\n",
+      "show --format= --patch --unified=3 HEAD": null,
+    });
+    const evidence = gitEvidence("/repo", run)!;
+    expect(evidence.repository_url).toBe("https://github.com/owner/repo");
+    expect(evidence.ref).toBe("master");
+  });
+
+  it("omits a detached HEAD ref and an unusable remote", () => {
+    const { run } = runner({
+      "rev-parse HEAD": head,
+      "rev-parse HEAD~1": null,
+      "remote get-url origin": "/srv/git/repo.git",
+      "rev-parse --abbrev-ref HEAD": "HEAD",
+      "show --format= --patch --unified=3 HEAD": null,
+    });
+    expect(gitEvidence("/repo", run)!).toEqual({ commit: head, provenance: "opencode-plugin" });
+  });
+
   it("caps oversized patches", () => {
     const huge = `+${"x".repeat(64 * 1024)}\n`;
     const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": huge });
     const patch = gitEvidence("/repo", run)!.patch!;
     expect(new TextEncoder().encode(patch).byteLength).toBeLessThanOrEqual(20 * 1024);
+  });
+});
+
+describe("normalizeRemoteUrl", () => {
+  it("normalizes every common remote form to a credential-free https URL", () => {
+    expect(normalizeRemoteUrl("git@github.com:owner/repo.git")).toBe("https://github.com/owner/repo");
+    expect(normalizeRemoteUrl("ssh://git@gitlab.example.com:2222/group/sub/repo.git")).toBe("https://gitlab.example.com/group/sub/repo");
+    expect(normalizeRemoteUrl("https://user:secret@github.com/owner/repo.git")).toBe("https://github.com/owner/repo");
+    expect(normalizeRemoteUrl("http://git.example.com/owner/repo/")).toBe("https://git.example.com/owner/repo");
+  });
+
+  it("rejects values that cannot be browsed", () => {
+    for (const value of ["", "   ", "/srv/git/repo.git", "C:\\repos\\repo", "git@localhost:repo.git", "https://github.com/"]) {
+      expect(normalizeRemoteUrl(value)).toBeNull();
+    }
+    expect(normalizeRemoteUrl(null)).toBeNull();
   });
 });
 

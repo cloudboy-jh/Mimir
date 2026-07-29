@@ -32,6 +32,7 @@ const MAX_JSON_DEPTH = 8;
 const MAX_JSON_ENTRIES = 256;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+const GIT_REF = /^[\w.\-/]{1,200}$/;
 const MAX_PATCH_BYTES = 20 * 1024;
 const MAX_EVIDENCE_NOTE_BYTES = 8 * 1024;
 
@@ -375,6 +376,8 @@ type GitEvidence = {
   commit: string;
   base_commit?: string;
   patch?: string;
+  repository_url?: string;
+  ref?: string;
   provenance: "opencode-plugin";
 };
 
@@ -415,9 +418,32 @@ function boundedBytes(value: string, maxBytes: number): string {
   return value.slice(0, low);
 }
 
+// normalizeRemoteUrl reshapes any origin form (SCP, ssh, git, http) into a
+// browsable https URL without credentials so the dashboard can link a commit.
+// Non-URL remotes such as local paths produce no value.
+function normalizeRemoteUrl(raw: string | null): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const scp = /^[A-Za-z0-9._-]+@([^:/]+):(?!\/)(.+)$/.exec(value);
+  const candidate = scp
+    ? `https://${scp[1]}/${scp[2]}`
+    : value.replace(/^ssh:\/\/(?:[^@/]+@)?/i, "https://").replace(/^git:\/\//i, "https://").replace(/^http:\/\//i, "https://");
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || !url.hostname.includes(".")) return null;
+  const path = url.pathname.replace(/\.git$/i, "").replace(/\/+$/, "");
+  if (!path || path === "/") return null;
+  return `https://${url.hostname}${path}`;
+}
+
 // gitEvidence captures the canonical commit contract for outcome events: the
-// HEAD commit, its parent when present, and a bounded redacted patch of that
-// commit. Missing git data is not an error; evidence is simply omitted.
+// HEAD commit, its parent when present, the branch and origin needed to link
+// that commit, and a bounded redacted patch. Missing git data is not an error;
+// evidence is simply omitted.
 function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit): GitEvidence | null {
   if (!cwd) return null;
   const commit = runGit(run, cwd, ["rev-parse", "HEAD"]);
@@ -425,6 +451,10 @@ function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit): GitEvi
   const evidence: GitEvidence = { commit, provenance: "opencode-plugin" };
   const base = runGit(run, cwd, ["rev-parse", "HEAD~1"]);
   if (base && COMMIT_SHA.test(base)) evidence.base_commit = base;
+  const repository = normalizeRemoteUrl(runGit(run, cwd, ["remote", "get-url", "origin"]));
+  if (repository) evidence.repository_url = repository;
+  const ref = runGit(run, cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (ref && ref !== "HEAD" && GIT_REF.test(ref)) evidence.ref = ref;
   const patch = runGit(run, cwd, ["show", "--format=", "--patch", "--unified=3", "HEAD"]);
   if (patch) evidence.patch = boundedBytes(redactEvidenceText(patch), MAX_PATCH_BYTES);
   return evidence;
@@ -693,4 +723,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

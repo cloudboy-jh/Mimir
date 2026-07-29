@@ -59,10 +59,12 @@ async function refreshDetail() {
   }
 }
 
+// Only the newest recorded evidence describes the current outcome. Falling back
+// to older commits would show a diff that no longer matches the session result.
 const commitEvidence = computed(() => {
   for (const event of detail.value?.outcome_events ?? []) {
     const parsed = parseOutcomeEvidence(event.evidence_json);
-    if (parsed?.commit) return parsed;
+    if (parsed) return parsed.commit ? parsed : null;
   }
   return null;
 });
