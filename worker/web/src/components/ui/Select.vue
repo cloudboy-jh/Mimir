@@ -26,7 +26,7 @@ const items = computed(() => props.options.map((option) => ({ label: option.labe
       <SelectIcon as-child><ChevronDown class="size-3.5 shrink-0 text-zinc-500" aria-hidden="true" /></SelectIcon>
     </SelectTrigger>
     <SelectPortal>
-      <SelectContent position="popper" :side-offset="5" class="z-50 max-h-64 min-w-(--reka-select-trigger-width) overflow-hidden rounded-[5px] border border-zinc-200 bg-white shadow-[0_18px_50px_rgba(0,0,0,0.18)] dark:border-zinc-700 dark:bg-zinc-900">
+      <SelectContent position="popper" :side-offset="5" class="z-50 max-h-64 min-w-(--reka-select-trigger-width) origin-(--reka-select-content-transform-origin) overflow-hidden rounded-[5px] border border-zinc-200 bg-white shadow-[0_18px_50px_rgba(0,0,0,0.18)] data-[state=closed]:animate-popover-out data-[state=open]:animate-popover-in motion-reduce:animate-none dark:border-zinc-700 dark:bg-zinc-900">
         <SelectViewport class="p-1">
           <SelectItem v-for="item in items" :key="item.value" :value="item.value" class="relative flex cursor-pointer items-center rounded-[4px] py-1.5 pl-7 pr-2.5 text-[13px] text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50">
             <SelectItemIndicator class="absolute left-2 inline-flex"><Check class="size-3.5 text-teal-700 dark:text-teal-400" aria-hidden="true" /></SelectItemIndicator>

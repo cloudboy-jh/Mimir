@@ -23,8 +23,9 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 ## Commands
 
 ```bash
-# Full-stack dashboard development from the repository root
+# Fixture and live dashboard development from the repository root
 bun run dev
+bun run dev:live
 bun run typecheck
 bun run build
 

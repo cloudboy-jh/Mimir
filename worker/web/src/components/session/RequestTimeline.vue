@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Filter, RotateCw, Search, X } from "lucide-vue-next
 import { useRoute, useRouter } from "vue-router";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import Button from "@/components/ui/Button.vue";
-import Dialog from "@/components/ui/Dialog.vue";
+import DropdownPanel from "@/components/ui/DropdownPanel.vue";
 import Select from "@/components/ui/Select.vue";
 import { errorMessage, listSessionExchanges, type SessionExchange, type SessionExchangeFilters } from "@/lib/api";
 import { facetSelectOptions, useFacets } from "@/lib/facets";
@@ -113,11 +113,6 @@ function commitSearch() {
   if (search.value.trim() !== queryValue("rq")) setParams({ rq: search.value });
 }
 
-function openFilters() {
-  for (const facet of facets) draft[facet.key] = queryValue(facet.key);
-  filtersOpen.value = true;
-}
-
 function applyDraft() {
   setParams({ ...draft });
   filtersOpen.value = false;
@@ -140,6 +135,9 @@ watch(search, (value) => {
   searchTimer = setTimeout(() => {
     if (value.trim() !== queryValue("rq")) setParams({ rq: value });
   }, SEARCH_DEBOUNCE_MS);
+});
+watch(filtersOpen, (open) => {
+  if (open) for (const facet of facets) draft[facet.key] = queryValue(facet.key);
 });
 
 watch([() => props.sessionId, () => route.fullPath], () => {
@@ -165,7 +163,20 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
           <input id="timeline-search" v-model="search" type="search" placeholder="Search request excerpt or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" />
         </form>
-        <Button variant="outline" @click="openFilters"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button>
+        <DropdownPanel v-model:open="filtersOpen" title="Filter requests" description="Exact matches within this session and its supporting runs.">
+          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button></template>
+          <form id="timeline-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
+            <div v-for="facet in facets" :key="facet.key" class="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+              <span class="mb-1 block">{{ facet.label }}</span>
+              <Select v-model="draft[facet.key]" :label="facet.label" :options="optionsFor(facet)" :placeholder="facet.allLabel" class="w-full font-normal" />
+            </div>
+          </form>
+          <template #footer>
+            <Button variant="ghost" @click="clearAll">Clear all</Button>
+            <Button variant="outline" @click="filtersOpen = false">Cancel</Button>
+            <Button type="submit" form="timeline-filters">Apply filters</Button>
+          </template>
+        </DropdownPanel>
         <Select :model-value="order" label="Timeline order" :options="orderOptions" class="sm:w-36" @update:model-value="setParams({ rorder: $event })" />
         <Select :model-value="limit" label="Requests per page" :options="pageSizeOptions" class="sm:w-28" @update:model-value="setParams({ rlimit: $event })" />
       </div>
@@ -179,20 +190,6 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
         <li><button type="button" class="text-[11px] font-medium text-zinc-500 hover:text-zinc-900 focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:hover:text-zinc-100" @click="clearAll">Clear all</button></li>
       </ul>
     </div>
-
-    <Dialog v-model:open="filtersOpen" title="Filter requests" description="Exact matches within this session and its supporting runs.">
-      <form id="timeline-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-        <div v-for="facet in facets" :key="facet.key" class="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-          <span class="mb-1 block">{{ facet.label }}</span>
-          <Select v-model="draft[facet.key]" :label="facet.label" :options="optionsFor(facet)" :placeholder="facet.allLabel" class="w-full font-normal" />
-        </div>
-      </form>
-      <template #footer>
-        <Button variant="ghost" @click="clearAll">Clear all</Button>
-        <Button variant="outline" @click="filtersOpen = false">Cancel</Button>
-        <Button type="submit" form="timeline-filters">Apply filters</Button>
-      </template>
-    </Dialog>
 
     <div class="border-t border-zinc-200 dark:border-zinc-800">
       <div v-if="loading" aria-busy="true" aria-label="Loading request timeline"><div v-for="index in 4" :key="index" class="grid gap-3 border-b border-zinc-200 py-4 sm:grid-cols-[120px_minmax(0,1fr)_100px] sm:px-3 dark:border-zinc-800"><div class="h-3 w-24 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-2/3 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div></div>

@@ -184,6 +184,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (import.meta.env.VITE_MIMIR_DATA_SOURCE === "fixtures") {
+    const { fixtureRequest } = await import("@/lib/dev-fixtures");
+    return fixtureRequest<T>(path, init);
+  }
   const response = await fetch(path, {
     cache: "no-store",
     credentials: "same-origin",

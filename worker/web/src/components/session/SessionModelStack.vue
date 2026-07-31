@@ -24,13 +24,13 @@ const modelSummary = computed(() => secondaryModels.value.map((model) => model.n
   </div>
 
   <div v-else class="min-w-0 text-[13px]">
-    <IdentityBadge :label="app || 'Unknown app'" />
-    <ul class="ml-2.5 mt-1.5 border-l border-zinc-300 dark:border-zinc-700">
-      <li v-for="model in orderedModels" :key="model.name" class="relative flex min-w-0 items-center justify-between gap-4 py-1 pl-5 before:absolute before:left-0 before:top-1/2 before:w-3 before:border-t before:border-zinc-300 dark:before:border-zinc-700">
-        <IdentityBadge :label="model.name" />
-        <span v-if="model.request_count" class="shrink-0 font-mono text-[11px] text-zinc-500">{{ model.request_count }} {{ model.request_count === 1 ? "request" : "requests" }}</span>
+    <IdentityBadge :label="app || 'Unknown app'" :truncate="false" />
+    <ul class="ml-2.5 mt-2 border-l border-zinc-300 dark:border-zinc-700">
+      <li v-for="model in orderedModels" :key="model.name" class="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-1.5 pl-5 before:absolute before:left-0 before:top-3.5 before:w-3 before:border-t before:border-zinc-300 dark:before:border-zinc-700">
+        <IdentityBadge :label="model.name" :truncate="false" />
+        <span v-if="model.request_count" class="shrink-0 pt-0.5 font-mono text-[11px] text-zinc-500">{{ model.request_count }} {{ model.request_count === 1 ? "request" : "requests" }}</span>
       </li>
-      <li v-if="!orderedModels.length" class="relative py-1 pl-5 before:absolute before:left-0 before:top-1/2 before:w-3 before:border-t before:border-zinc-300 dark:before:border-zinc-700"><IdentityBadge label="Unknown model" /></li>
+      <li v-if="!orderedModels.length" class="relative py-1.5 pl-5 before:absolute before:left-0 before:top-1/2 before:w-3 before:border-t before:border-zinc-300 dark:before:border-zinc-700"><IdentityBadge label="Unknown model" :truncate="false" /></li>
     </ul>
   </div>
 </template>

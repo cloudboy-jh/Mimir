@@ -7,6 +7,7 @@ import SessionCapture from "@/components/session/SessionCapture.vue";
 import SessionEvidenceSidebar from "@/components/session/SessionEvidenceSidebar.vue";
 import SessionHeader from "@/components/session/SessionHeader.vue";
 import SessionOutcome from "@/components/session/SessionOutcome.vue";
+import SessionChanges from "@/components/session/SessionChanges.vue";
 import { errorMessage, getSession, listSessionExchanges, parseOutcomeEvidence, type SessionDetail, type SessionExchange } from "@/lib/api";
 import { markdownExportLimit, sessionMarkdown } from "@/lib/markdown";
 
@@ -62,11 +63,9 @@ async function refreshDetail() {
 // Only the newest recorded evidence describes the current outcome. Falling back
 // to older commits would show a diff that no longer matches the session result.
 const commitEvidence = computed(() => {
-  for (const event of detail.value?.outcome_events ?? []) {
-    const parsed = parseOutcomeEvidence(event.evidence_json);
-    if (parsed) return parsed.commit ? parsed : null;
-  }
-  return null;
+  const event = detail.value?.outcome_events[0];
+  const parsed = parseOutcomeEvidence(event?.evidence_json ?? null);
+  return parsed?.commit ? parsed : null;
 });
 
 const exporting = ref(false);
@@ -112,13 +111,14 @@ watch(() => String(route.params.id), load, { immediate: true });
       </div>
     </div>
     <SessionHeader :session="detail.session" />
-    <div class="grid gap-6 border-b border-zinc-200 py-6 md:grid-cols-2 dark:border-zinc-800">
-      <SessionCapture :capture="detail.capture" />
+    <div class="grid gap-8 border-b border-zinc-200 py-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,.5fr)] dark:border-zinc-800">
       <SessionOutcome :detail="detail" @saved="refreshDetail" />
+      <SessionCapture :capture="detail.capture" />
     </div>
-    <div class="grid gap-8 pt-8 xl:grid-cols-[minmax(0,1fr)_320px]">
-      <RequestTimeline :session-id="detail.session.id" />
-      <SessionEvidenceSidebar :supporting-sessions="detail.supporting_sessions" :files="detail.files" :errors="detail.errors" :evidence="commitEvidence" />
+    <div class="grid gap-x-8 gap-y-7 pt-8 xl:grid-cols-[minmax(0,1fr)_360px] xl:grid-rows-[auto_1fr] xl:items-start">
+      <SessionChanges class="xl:col-start-2 xl:row-start-1" :evidence="parseOutcomeEvidence(detail.outcome_events[0]?.evidence_json ?? null)" :source-ref="detail.session.source_ref" />
+      <RequestTimeline class="xl:col-start-1 xl:row-span-2 xl:row-start-1" :session-id="detail.session.id" />
+      <SessionEvidenceSidebar class="xl:col-start-2 xl:row-start-2" :supporting-sessions="detail.supporting_sessions" :files="detail.files" :errors="detail.errors" :evidence="commitEvidence" />
     </div>
   </section>
   <section v-else-if="loading" aria-busy="true" class="mx-auto max-w-3xl py-16"><div class="h-4 w-28 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="mt-5 h-8 w-72 max-w-full animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="mt-8 h-28 animate-pulse border-y border-zinc-200 bg-zinc-100 motion-reduce:animate-none dark:border-zinc-800 dark:bg-zinc-900" /></section>

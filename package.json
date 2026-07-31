@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev-dashboard.ts",
+    "dev:live": "bun scripts/dev-dashboard.ts --live",
     "dev:web": "bun --cwd=worker/web run dev",
     "dev:api": "bun --cwd=worker run dev:api",
     "build": "bun --cwd=worker/web run build",

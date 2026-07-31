@@ -3,3 +3,7 @@ declare module "*.vue" {
   const component: DefineComponent<Record<string, never>, Record<string, never>, unknown>;
   export default component;
 }
+
+interface ImportMetaEnv {
+  readonly VITE_MIMIR_DATA_SOURCE?: "fixtures" | "live";
+}

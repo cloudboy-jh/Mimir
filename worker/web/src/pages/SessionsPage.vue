@@ -5,7 +5,7 @@ import { ArrowRight, Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-n
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
 import Button from "@/components/ui/Button.vue";
-import Dialog from "@/components/ui/Dialog.vue";
+import DropdownPanel from "@/components/ui/DropdownPanel.vue";
 import Select from "@/components/ui/Select.vue";
 import { errorMessage, listSessions, type Outcome, type Session, type SessionFilters } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
@@ -110,11 +110,6 @@ function commitSearch() {
   if (search.value.trim() !== queryValue("q")) setParams({ q: search.value });
 }
 
-function openFilters() {
-  for (const key of facetKeys) draft[key] = queryValue(key);
-  filtersOpen.value = true;
-}
-
 function applyDraft() {
   setParams({ ...draft });
   filtersOpen.value = false;
@@ -133,6 +128,9 @@ watch(search, (value) => {
   searchTimer = setTimeout(() => {
     if (value.trim() !== queryValue("q")) setParams({ q: value });
   }, SEARCH_DEBOUNCE_MS);
+});
+watch(filtersOpen, (open) => {
+  if (open) for (const key of facetKeys) draft[key] = queryValue(key);
 });
 
 watch(() => route.fullPath, () => {
@@ -157,7 +155,22 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
           <input id="session-search" v-model="search" type="search" placeholder="Search intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
         </form>
-        <Button variant="outline" @click="openFilters"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button>
+        <DropdownPanel v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
+          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button></template>
+          <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Repository</span><Select v-model="draft.repo" label="Repository" :options="repoOptions" placeholder="All repositories" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.app" label="App" :options="appOptions" placeholder="All apps" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Model</span><Select v-model="draft.model" label="Model" :options="modelOptions" placeholder="All models" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" placeholder="All outcomes" class="w-full font-normal" /></div>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
+          </form>
+          <template #footer>
+            <Button variant="ghost" @click="clearFilters">Clear all</Button>
+            <Button variant="outline" @click="filtersOpen = false">Cancel</Button>
+            <Button type="submit" form="session-filters">Apply filters</Button>
+          </template>
+        </DropdownPanel>
         <Select :model-value="limit" label="Rows per page" :options="pageSizeOptions" class="sm:w-28" @update:model-value="setParams({ limit: $event })" />
       </div>
       <ul v-if="activeFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
@@ -170,22 +183,6 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
         <li><button type="button" class="text-[11px] font-medium text-zinc-500 hover:text-zinc-900 focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:hover:text-zinc-100" @click="clearFilters">Clear all</button></li>
       </ul>
     </div>
-
-    <Dialog v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
-      <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Repository</span><Select v-model="draft.repo" label="Repository" :options="repoOptions" placeholder="All repositories" class="w-full font-normal" /></div>
-        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.app" label="App" :options="appOptions" placeholder="All apps" class="w-full font-normal" /></div>
-        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Model</span><Select v-model="draft.model" label="Model" :options="modelOptions" placeholder="All models" class="w-full font-normal" /></div>
-        <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" placeholder="All outcomes" class="w-full font-normal" /></div>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-        <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-      </form>
-      <template #footer>
-        <Button variant="ghost" @click="clearFilters">Clear all</Button>
-        <Button variant="outline" @click="filtersOpen = false">Cancel</Button>
-        <Button type="submit" form="session-filters">Apply filters</Button>
-      </template>
-    </Dialog>
 
     <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div class="hidden grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] gap-4 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5 text-xs font-medium text-zinc-500 lg:grid dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"><span>Session</span><span>App / model</span><span>Outcome</span><span>Capture</span><span class="text-right">Tokens</span><span /></div>

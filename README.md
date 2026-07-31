@@ -183,7 +183,7 @@ diagnostic commands.
 
 ## Dashboard development
 
-Run the dashboard and local Worker bindings without deploying:
+Run the dashboard against the deterministic development dataset:
 
 ```bash
 npm --prefix worker ci
@@ -191,11 +191,15 @@ bun --cwd=worker/web install --frozen-lockfile
 bun run dev
 ```
 
-The command applies D1 migrations to Wrangler's local database, starts the
-Worker on `127.0.0.1:8787`, and starts Vite with HMR on `127.0.0.1:5173`.
-Vite proxies the Access handoff, dashboard APIs, and log-object requests to the
-Worker. Local requests use the clearly marked development identity and never
-require browser machine credentials.
+The fixture dataset covers multi-model sessions, supporting runs, commits,
+diffs, errors, outcome history, and empty states. It runs Vite with HMR on
+`127.0.0.1:5173` without requiring local Cloudflare bindings.
+
+Use `bun run dev:live` to apply local D1 migrations and run the dashboard
+against the Worker on `127.0.0.1:8787`. Vite proxies the Access handoff,
+dashboard APIs, and log-object requests to the Worker. Local requests use the
+clearly marked development identity and never require browser machine
+credentials.
 
 ## Documentation
 
