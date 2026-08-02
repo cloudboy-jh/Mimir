@@ -10,18 +10,20 @@ import (
 )
 
 func doctor(ctx context.Context, args []string, out io.Writer) error {
-	jsonOutput := false
-	for _, arg := range args {
-		if arg != "--json" {
-			return fmt.Errorf("usage: mimir doctor [--json]")
-		}
-		jsonOutput = true
+	options, err := parseDoctorArgs(args)
+	if err != nil {
+		return err
 	}
 	configureInstall()
 	service := doctorpkg.New(apiRequester{})
 	service.Lifecycle = lifecycleService()
-	report := service.Run(ctx)
-	if jsonOutput {
+	var report doctorpkg.Report
+	if options.tui {
+		report = service.RunTUI(ctx)
+	} else {
+		report = service.Run(ctx)
+	}
+	if options.json {
 		data, err := json.Marshal(report.Structured())
 		if err != nil {
 			return err
@@ -30,4 +32,24 @@ func doctor(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	return renderDoctor(out, report)
+}
+
+type doctorOptions struct {
+	json bool
+	tui  bool
+}
+
+func parseDoctorArgs(args []string) (doctorOptions, error) {
+	var options doctorOptions
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			options.json = true
+		case "--tui":
+			options.tui = true
+		default:
+			return doctorOptions{}, fmt.Errorf("usage: mimir doctor [--json] [--tui]")
+		}
+	}
+	return options, nil
 }

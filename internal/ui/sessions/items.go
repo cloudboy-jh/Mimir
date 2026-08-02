@@ -25,7 +25,8 @@ func Items(values []domainsessions.Receipt, dashboardBaseURL string, limit int) 
 		}
 		items = append(items, BrowserSession{
 			Title: title, Outcome: fallbackValue(receipt.Outcome, "unresolved"), Capture: captureLabel(receipt), Started: displayTime(receipt.StartedAt),
-			Repo: pointerValue(receipt.Repo), Model: pointerValue(receipt.Model), ID: receipt.ID, DashboardURL: dashboardURL,
+			Repo: pointerValue(receipt.Repo), Model: pointerValue(receipt.Model), Harness: pointerValue(receipt.Harness), Tokens: receipt.TokensIn + receipt.TokensOut,
+			ID: receipt.ID, DashboardURL: dashboardURL,
 		})
 	}
 	return items

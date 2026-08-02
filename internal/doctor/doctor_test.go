@@ -28,6 +28,81 @@ func TestRunReportsArtifactsBeforeMissingConnection(t *testing.T) {
 	}
 }
 
+func TestRunTUIAddsReadinessChecksWithInjectedLookups(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
+	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
+	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
+	service.LookPath = func(name string) (string, error) {
+		if name != "pi" {
+			t.Fatalf("LookPath(%q)", name)
+		}
+		return "/usr/local/bin/pi", nil
+	}
+	service.LookupEnv = func(name string) (string, bool) {
+		return map[string]string{"OPENROUTER_API_KEY": "secret"}[name], name == "OPENROUTER_API_KEY"
+	}
+
+	report := service.RunTUI(context.Background())
+	if report.OK || len(report.Checks) != 3 {
+		t.Fatalf("report %#v", report)
+	}
+	if check := report.Checks[1]; check.Name != "pi" || check.Status != "ok" || check.Detail != "/usr/local/bin/pi" {
+		t.Fatalf("pi check %#v", check)
+	}
+	if check := report.Checks[2]; check.Name != "provider-credential" || check.Status != "ok" || check.Detail != "OPENROUTER_API_KEY is set" {
+		t.Fatalf("provider check %#v", check)
+	}
+}
+
+func TestRunTUIWarnsForMissingCredentialAndFailsForMissingPi(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
+	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
+	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
+	service.LookPath = func(string) (string, error) { return "", errors.New("missing") }
+	service.LookupEnv = func(string) (string, bool) { return "", false }
+
+	report := service.RunTUI(context.Background())
+	if len(report.Checks) != 3 {
+		t.Fatalf("report %#v", report)
+	}
+	pi := report.Checks[1]
+	if pi.Status != "failed" || pi.Detail == "" || pi.Repair == "" {
+		t.Fatalf("pi check %#v", pi)
+	}
+	provider := report.Checks[2]
+	if provider.Status != "warning" || provider.Repair == "" {
+		t.Fatalf("provider check %#v", provider)
+	}
+	for _, name := range providerCredentialEnvVars {
+		if !strings.Contains(provider.Detail, name) {
+			t.Fatalf("provider detail %q does not document %s", provider.Detail, name)
+		}
+	}
+}
+
+func TestTUIReadinessAllowsStoredPiAuthentication(t *testing.T) {
+	service := New(nil)
+	service.LookPath = func(string) (string, error) { return "/usr/local/bin/pi", nil }
+	service.LookupEnv = func(string) (string, bool) { return "", false }
+	report := service.TUIReadiness()
+	if !report.OK || len(report.Checks) != 2 || report.Checks[1].Status != "warning" {
+		t.Fatalf("report %#v", report)
+	}
+}
+
+func TestRunDoesNotAddTUIReadinessChecks(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
+	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
+	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
+	service.LookPath = func(string) (string, error) { t.Fatal("ordinary doctor checked PATH"); return "", nil }
+	service.LookupEnv = func(string) (string, bool) { t.Fatal("ordinary doctor checked credentials"); return "", false }
+
+	report := service.Run(context.Background())
+	if len(report.Checks) != 1 || report.Checks[0].Name != "connection" {
+		t.Fatalf("report %#v", report)
+	}
+}
+
 func TestStructuredReportGroupsOperationalState(t *testing.T) {
 	report := Report{OK: false, Checks: []Check{
 		{Name: "managed-artifact plugins/opencode/mimir.ts", Status: "failed", Detail: "outdated", Repair: "mimir update"},

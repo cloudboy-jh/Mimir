@@ -17,7 +17,10 @@ type Receipt struct {
 	Model        *string `json:"model_primary"`
 	Intent       *string `json:"intent"`
 	Repo         *string `json:"repo"`
+	Harness      *string `json:"harness"`
 	RequestCount int     `json:"request_count"`
+	TokensIn     int     `json:"tokens_in"`
+	TokensOut    int     `json:"tokens_out"`
 	Capture      struct {
 		Status           string `json:"status"`
 		SavedExchanges   int    `json:"saved_exchanges"`

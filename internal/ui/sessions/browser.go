@@ -12,7 +12,8 @@ import (
 )
 
 type BrowserSession struct {
-	Title, Outcome, Capture, Started, Repo, Model, ID, DashboardURL string
+	Title, Outcome, Capture, Started, Repo, Model, Harness, ID, DashboardURL string
+	Tokens                                                                   int
 }
 
 type SessionBrowserOptions struct {

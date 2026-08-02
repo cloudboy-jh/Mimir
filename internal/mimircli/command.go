@@ -100,6 +100,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
 	case "list":
 		return cmdListIO(ctx, args[1:], ioctx.In, ioctx.Out)
+	case "tui":
+		return cmdTUI(ctx, args[1:], ioctx)
 	case "sessions":
 		if !onlyJSONFlag(args[1:]) {
 			return fmt.Errorf("usage: mimir sessions [--json]")
@@ -606,11 +608,12 @@ func usage(out io.Writer) error {
 		{Usage: "mimir access [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
 		{Usage: "mimir login [--json]", Description: "Authenticate and register this machine."},
 		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
+		{Usage: "mimir tui", Description: "Open the persistent sessions and agent terminal."},
 		{Usage: "mimir list [filters] [--no-interactive] [--json]", Description: "Browse captured work sessions."},
 		{Usage: "mimir search <query> [--json]", Description: "Search session evidence and local code."},
 		{Usage: "mimir session status <id> [--json]", Description: "Inspect capture and outcome state."},
 		{Usage: "mimir session end <id> [options]", Description: "Finalize capture and optionally record an outcome."},
-		{Usage: "mimir doctor [--json]", Description: "Check the installation and connection."},
+		{Usage: "mimir doctor [--json] [--tui]", Description: "Check the installation and connection."},
 		{Usage: "mimir update [--check] [--force] [--json]", Description: "Check or apply CLI and harness updates."},
 		{Usage: "mimir version [--json]", Description: "Show CLI, bundle, and artifact versions."},
 	}

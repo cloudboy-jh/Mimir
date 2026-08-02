@@ -165,13 +165,14 @@ mimir setup [--quick]                 provision and deploy Mimir
 mimir login                           connect another machine
 mimir deploy [--worker-dir DIR]       deploy packaged Worker and dashboard changes
 mimir dashboard                       open the private dashboard
+mimir tui                             open the persistent sessions + agent terminal
 mimir list [filters] [--json]         browse recent sessions (interactive on a TTY)
 mimir search <query> [--json]         search saved session memory
 mimir session get <id> [--json]       inspect one session
 mimir session status <id> [--json]    verify durable capture
 mimir session end <id> [--json]       finalize the active generation
 mimir session outcome <id> <value>    record an evidenced work outcome
-mimir doctor [--json]                 validate the deployment and integrations
+mimir doctor [--json] [--tui]         validate deployment, integrations, and optional TUI prerequisites
 mimir update [--check]                update Mimir and managed integrations
 mimir uninstall [--keep-binary]       remove verified managed artifacts
 ```

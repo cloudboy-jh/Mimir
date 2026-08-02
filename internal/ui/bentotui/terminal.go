@@ -3,11 +3,13 @@ package bentotui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type KeyKind uint8
@@ -20,16 +22,35 @@ const (
 	KeyEscape
 	KeyBackspace
 	KeyInterrupt
+	KeyTab
+	KeyMouseUp
+	KeyMouseDown
+)
+
+type KeyModifier uint8
+
+const (
+	KeyModifierCtrl KeyModifier = 1 << iota
 )
 
 const (
-	terminalByteUp   byte = 0x11
-	terminalByteDown byte = 0x12
+	terminalByteUp        byte = 0x11
+	terminalByteDown      byte = 0x12
+	terminalByteCtrlUp    byte = 0x13
+	terminalByteCtrlDown  byte = 0x14
+	terminalByteMouseUp   byte = 0x15
+	terminalByteMouseDown byte = 0x16
 )
 
 type Key struct {
-	Kind KeyKind
-	Rune rune
+	Kind      KeyKind
+	Rune      rune
+	Modifiers KeyModifier
+}
+
+type RunOptions struct {
+	AlternateScreen bool
+	Mouse           bool
 }
 
 type Screen struct {
@@ -60,14 +81,27 @@ func Interactive(in io.Reader, out io.Writer) bool {
 
 // Run owns the alternate screen and terminal mode until the app exits.
 func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error {
+	return RunWithOptions(ctx, in, out, app, RunOptions{AlternateScreen: true})
+}
+
+// RunWithOptions owns the terminal mode until the app exits.
+func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app TerminalApp, options RunOptions) error {
 	state, err := enterRawMode(in, out)
 	if err != nil {
 		return err
 	}
 	defer state.restore()
-	defer io.WriteString(out, "\x1b[?25h\x1b[?1049l")
-	if _, err := io.WriteString(out, "\x1b[?1049h\x1b[?25l"); err != nil {
-		return err
+	start, cleanup := terminalControlSequences(options)
+	if cleanup != "" {
+		defer io.WriteString(out, cleanup)
+	}
+	if !options.AlternateScreen {
+		defer io.WriteString(out, "\r\n")
+	}
+	if start != "" {
+		if _, err := io.WriteString(out, start); err != nil {
+			return err
+		}
 	}
 
 	readCtx, cancelRead := context.WithCancel(ctx)
@@ -91,7 +125,7 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 	if live, ok := app.(LiveTerminalApp); ok {
 		updates = live.Updates()
 	}
-	renderer := terminalRenderer{out: out}
+	renderer := terminalRenderer{out: out, noClear: !options.AlternateScreen}
 	if err := drawApp(&renderer, app, screen); err != nil {
 		return err
 	}
@@ -130,6 +164,17 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 	}
 }
 
+func terminalControlSequences(options RunOptions) (start, cleanup string) {
+	if options.AlternateScreen {
+		start, cleanup = "\x1b[?1049h\x1b[?25l", "\x1b[?25h\x1b[?1049l"
+	}
+	if options.Mouse {
+		start += "\x1b[?1000h\x1b[?1006h"
+		cleanup = "\x1b[?1000l\x1b[?1006l" + cleanup
+	}
+	return start, cleanup
+}
+
 func drawApp(renderer *terminalRenderer, app TerminalApp, screen Screen) error {
 	if err := renderer.draw(app.View(screen)); err != nil {
 		return err
@@ -141,27 +186,47 @@ func drawApp(renderer *terminalRenderer, app TerminalApp, screen Screen) error {
 }
 
 type terminalRenderer struct {
-	out   io.Writer
-	frame string
-	drawn bool
+	out     io.Writer
+	frame   string
+	drawn   bool
+	noClear bool
+	lines   int
 }
 
-func (r *terminalRenderer) reset() { r.drawn = false }
+func (r *terminalRenderer) reset() {
+	if r.noClear {
+		r.frame = ""
+		return
+	}
+	r.drawn = false
+}
 
 func (r *terminalRenderer) draw(view string) error {
 	frame := strings.ReplaceAll(strings.TrimRight(view, "\n"), "\n", "\r\n")
 	if r.drawn && frame == r.frame {
 		return nil
 	}
-	prefix := "\x1b[H"
-	if !r.drawn {
-		prefix += "\x1b[2J"
+	prefix := ""
+	if r.noClear {
+		if r.drawn {
+			prefix = "\r"
+			if r.lines > 1 {
+				prefix += fmt.Sprintf("\x1b[%dA", r.lines-1)
+			}
+			prefix += "\x1b[J"
+		}
+	} else {
+		prefix = "\x1b[H"
+		if !r.drawn {
+			prefix += "\x1b[2J"
+		}
 	}
 	if _, err := io.WriteString(r.out, prefix+frame+"\x1b[0m"); err != nil {
 		return err
 	}
 	r.frame = frame
 	r.drawn = true
+	r.lines = strings.Count(frame, "\r\n") + 1
 	return nil
 }
 
@@ -197,8 +262,18 @@ func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
 		return Key{Kind: KeyUp}, true
 	case terminalByteDown:
 		return Key{Kind: KeyDown}, true
+	case terminalByteCtrlUp:
+		return Key{Kind: KeyUp, Modifiers: KeyModifierCtrl}, true
+	case terminalByteCtrlDown:
+		return Key{Kind: KeyDown, Modifiers: KeyModifierCtrl}, true
+	case terminalByteMouseUp:
+		return Key{Kind: KeyMouseUp}, true
+	case terminalByteMouseDown:
+		return Key{Kind: KeyMouseDown}, true
 	case 0x03:
 		return Key{Kind: KeyInterrupt}, true
+	case '\t':
+		return Key{Kind: KeyTab}, true
 	case '\r', '\n':
 		return Key{Kind: KeyEnter}, true
 	case 0x7f, 0x08:
@@ -214,20 +289,49 @@ func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
 		if err != nil || first != '[' {
 			return Key{Kind: KeyEscape}, true
 		}
-		switch second {
-		case 'A':
-			return Key{Kind: KeyUp}, true
-		case 'B':
-			return Key{Kind: KeyDown}, true
-		default:
-			return Key{Kind: KeyEscape}, true
+		sequence := []byte{first, second}
+		if second == '<' {
+			for len(sequence) < 32 {
+				next, err := readTerminalByte(sequenceCtx, in)
+				if err != nil {
+					break
+				}
+				sequence = append(sequence, next)
+				if next == 'M' || next == 'm' {
+					break
+				}
+			}
+		} else if second == '1' {
+			for len(sequence) < 5 {
+				next, err := readTerminalByte(sequenceCtx, in)
+				if err != nil {
+					break
+				}
+				sequence = append(sequence, next)
+			}
 		}
+		return escapeKey(sequence), true
 	default:
 		if value >= 0x20 {
-			return Key{Kind: KeyRune, Rune: rune(value)}, true
+			return terminalRune(ctx, in, value), true
 		}
 	}
 	return Key{}, false
+}
+
+func terminalRune(ctx context.Context, in *os.File, first byte) Key {
+	encoded := []byte{first}
+	runeCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	for !utf8.FullRune(encoded) && len(encoded) < utf8.UTFMax {
+		next, err := readTerminalByte(runeCtx, in)
+		if err != nil {
+			break
+		}
+		encoded = append(encoded, next)
+	}
+	value, _ := utf8.DecodeRune(encoded)
+	return Key{Kind: KeyRune, Rune: value}
 }
 
 func decodeKeys(ctx context.Context, bytes <-chan byte, keys chan<- Key) {
@@ -245,45 +349,96 @@ func decodeKeys(ctx context.Context, bytes <-chan byte, keys chan<- Key) {
 		switch value {
 		case 0x03:
 			keys <- Key{Kind: KeyInterrupt}
+		case '\t':
+			keys <- Key{Kind: KeyTab}
 		case '\r', '\n':
 			keys <- Key{Kind: KeyEnter}
 		case 0x7f, 0x08:
 			keys <- Key{Kind: KeyBackspace}
 		case 0x1b:
-			first, second, ok := readEscapeSequence(ctx, bytes)
-			if ok && first == '[' {
-				switch second {
-				case 'A':
-					keys <- Key{Kind: KeyUp}
-				case 'B':
-					keys <- Key{Kind: KeyDown}
-				default:
-					keys <- Key{Kind: KeyEscape}
-				}
-			} else {
-				keys <- Key{Kind: KeyEscape}
-			}
+			keys <- escapeKey(readEscapeSequence(ctx, bytes))
 		default:
 			if value >= 0x20 {
-				keys <- Key{Kind: KeyRune, Rune: rune(value)}
+				keys <- decodeRune(ctx, bytes, value)
 			}
 		}
 	}
 }
 
-func readEscapeSequence(ctx context.Context, bytes <-chan byte) (byte, byte, bool) {
-	select {
-	case first := <-bytes:
-		select {
-		case second := <-bytes:
-			return first, second, true
-		case <-ctx.Done():
-		case <-time.After(20 * time.Millisecond):
-		}
-	case <-ctx.Done():
-	case <-time.After(20 * time.Millisecond):
+func escapeKey(sequence []byte) Key {
+	if string(sequence) == "[A" {
+		return Key{Kind: KeyUp}
 	}
-	return 0, 0, false
+	if string(sequence) == "[B" {
+		return Key{Kind: KeyDown}
+	}
+	if string(sequence) == "[1;5A" {
+		return Key{Kind: KeyUp, Modifiers: KeyModifierCtrl}
+	}
+	if string(sequence) == "[1;5B" {
+		return Key{Kind: KeyDown, Modifiers: KeyModifierCtrl}
+	}
+	var button, x, y int
+	var final rune
+	if _, err := fmt.Sscanf(string(sequence), "[<%d;%d;%d%c", &button, &x, &y, &final); err == nil && final == 'M' {
+		switch button {
+		case 64:
+			return Key{Kind: KeyMouseUp}
+		case 65:
+			return Key{Kind: KeyMouseDown}
+		}
+	}
+	return Key{Kind: KeyEscape}
+}
+
+func readEscapeSequence(ctx context.Context, bytes <-chan byte) []byte {
+	sequence := make([]byte, 0, 5)
+	for len(sequence) < 2 || (len(sequence) < 5 && len(sequence) > 1 && sequence[1] == '1') {
+		next, ok := readDecoderByte(ctx, bytes, 20*time.Millisecond)
+		if !ok {
+			break
+		}
+		sequence = append(sequence, next)
+		if len(sequence) >= 2 && sequence[1] == '<' {
+			for len(sequence) < 32 {
+				next, ok := readDecoderByte(ctx, bytes, 20*time.Millisecond)
+				if !ok {
+					break
+				}
+				sequence = append(sequence, next)
+				if next == 'M' || next == 'm' {
+					break
+				}
+			}
+			break
+		}
+	}
+	return sequence
+}
+
+func decodeRune(ctx context.Context, bytes <-chan byte, first byte) Key {
+	encoded := []byte{first}
+	for !utf8.FullRune(encoded) && len(encoded) < utf8.UTFMax {
+		next, ok := readDecoderByte(ctx, bytes, 20*time.Millisecond)
+		if !ok {
+			break
+		}
+		encoded = append(encoded, next)
+	}
+	value, _ := utf8.DecodeRune(encoded)
+	return Key{Kind: KeyRune, Rune: value}
+}
+
+func readDecoderByte(ctx context.Context, bytes <-chan byte, timeout time.Duration) (byte, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case value, ok := <-bytes:
+		return value, ok
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+	return 0, false
 }
 
 func isCharacterDevice(file *os.File) bool {

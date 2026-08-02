@@ -6,12 +6,14 @@ The terminal UI has one-way dependencies:
 mimircli -> sessions / operations / receipts -> appframe -> bentotui
 ```
 
-- `bentotui/` owns dependency-free terminal input, alternate-screen lifecycle,
+- `bentotui/` owns dependency-free terminal input, configurable inline or alternate-screen lifecycle,
   ANSI-aware width handling, themes, and low-level rendering primitives.
 - `appframe/` owns Mimir's single interactive shell: an anchored frame with a
   preferred size of 80x20 and a minimum size of 48x12. It owns headers,
   footers, binding layout, viewport dimensions, and static product rendering.
 - `sessions/` owns session list, filtering, detail, and session key handling.
+- `terminal/` owns the persistent split sessions/agent surface, focus, agent
+  scrollback, outcome prompts, layout switching, and Pi event mapping.
 - `operations/` owns deploy, update, setup, install, and login progress,
   bounded command output, scrolling, follow mode, cancellation, and the stable
   line-oriented fallback.

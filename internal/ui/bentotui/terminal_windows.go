@@ -13,6 +13,9 @@ import (
 const (
 	enableEchoInput             = 0x0004
 	enableLineInput             = 0x0002
+	enableMouseInput            = 0x0010
+	enableQuickEditMode         = 0x0040
+	enableExtendedFlags         = 0x0080
 	enableVirtualTerminalInput  = 0x0200
 	enableVirtualTerminalOutput = 0x0004
 )
@@ -40,6 +43,13 @@ type consoleKeyEvent struct {
 	ControlKeyState uint32
 }
 
+type consoleMouseEvent struct {
+	X, Y            int16
+	ButtonState     uint32
+	ControlKeyState uint32
+	EventFlags      uint32
+}
+
 func enterRawMode(in, out *os.File) (terminalState, error) {
 	getMode := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleMode")
 	setMode := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode")
@@ -52,7 +62,7 @@ func enterRawMode(in, out *os.File) (terminalState, error) {
 		return state, fmt.Errorf("reading console output mode")
 	}
 	state.outputModeSet = true
-	inputMode := (state.inputMode &^ (enableEchoInput | enableLineInput | 0x0001)) | enableVirtualTerminalInput
+	inputMode := (state.inputMode &^ (enableEchoInput | enableLineInput | enableQuickEditMode | 0x0001)) | enableVirtualTerminalInput | enableMouseInput | enableExtendedFlags
 	if ok, _, err := setMode.Call(in.Fd(), uintptr(inputMode)); ok == 0 {
 		return state, fmt.Errorf("enabling console input: %v", err)
 	}
@@ -108,7 +118,20 @@ func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
 			if ok == 0 {
 				return 0, fmt.Errorf("reading console input: %v", readErr)
 			}
-			if read != 1 || record.EventType != 0x0001 {
+			if read != 1 {
+				continue
+			}
+			if record.EventType == 0x0002 {
+				mouse := (*consoleMouseEvent)(unsafe.Pointer(&record.Event[0]))
+				if mouse.EventFlags == 0x0004 {
+					if int16(mouse.ButtonState>>16) > 0 {
+						return terminalByteMouseUp, nil
+					}
+					return terminalByteMouseDown, nil
+				}
+				continue
+			}
+			if record.EventType != 0x0001 {
 				continue
 			}
 			key := (*consoleKeyEvent)(unsafe.Pointer(&record.Event[0]))
@@ -117,8 +140,14 @@ func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
 			}
 			switch key.VirtualKeyCode {
 			case 0x26:
+				if key.ControlKeyState&(0x0004|0x0008) != 0 {
+					return terminalByteCtrlUp, nil
+				}
 				return terminalByteUp, nil
 			case 0x28:
+				if key.ControlKeyState&(0x0004|0x0008) != 0 {
+					return terminalByteCtrlDown, nil
+				}
 				return terminalByteDown, nil
 			}
 			if key.UnicodeChar > 0 && key.UnicodeChar <= 0xff {
