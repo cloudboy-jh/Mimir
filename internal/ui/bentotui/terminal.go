@@ -166,7 +166,7 @@ func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app Terminal
 
 func terminalControlSequences(options RunOptions) (start, cleanup string) {
 	if options.AlternateScreen {
-		start, cleanup = "\x1b[?1049h\x1b[?25l", "\x1b[?25h\x1b[?1049l"
+		start, cleanup = "\x1b[?1049h\x1b[?25l\x1b[?7l", "\x1b[?25h\x1b[?7h\x1b[?1049l"
 	}
 	if options.Mouse {
 		start += "\x1b[?1000h\x1b[?1006h"

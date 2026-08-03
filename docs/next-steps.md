@@ -8,10 +8,13 @@ specification rather than an expanding completion log.
 
 ### Adaptive full-terminal Mimir TUI
 
-`mimir tui` currently uses the shared compact `80x20` application frame. That
-constraint remains appropriate for temporary install, deploy, update, login,
-and lightweight session-browser surfaces, but it wastes space and complicates
-the persistent sessions-and-agent application.
+The core AltScreen transition and full-terminal layout are implemented. The
+remaining items below are hardening and manual validation work.
+
+The compact `80x20` constraint remains appropriate for temporary install,
+deploy, update, login, and lightweight session-browser surfaces, but it wastes
+space and complicates the persistent sessions-and-agent application. `mimir tui`
+now uses the measured terminal dimensions and AltScreen lifecycle.
 
 Implementation plan:
 

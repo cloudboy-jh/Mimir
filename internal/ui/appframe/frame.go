@@ -44,6 +44,13 @@ func ForScreen(screen bentotui.Screen) Layout {
 	return Layout{Width: width, Height: height, BodyWidth: max(1, width-4), BodyHeight: max(2, height-4)}
 }
 
+// FullScreenForScreen consumes the measured terminal dimensions. Persistent
+// applications use this layout; short-lived command surfaces use ForScreen.
+func FullScreenForScreen(screen bentotui.Screen) Layout {
+	width, height := max(1, screen.Width), max(1, screen.Height)
+	return Layout{Width: width, Height: height, BodyWidth: max(1, width-4), BodyHeight: max(2, height-4)}
+}
+
 func TooSmall(screen bentotui.Screen) bool {
 	return screen.Width < MinimumWidth || screen.Height < MinimumHeight
 }
@@ -69,7 +76,10 @@ func Wrap(lines []string, width int) []string {
 }
 
 func (f Frame) Render(ctx bentotui.Context, screen bentotui.Screen) (string, int) {
-	layout := ForScreen(screen)
+	return f.RenderLayout(ctx, screen, ForScreen(screen))
+}
+
+func (f Frame) RenderLayout(ctx bentotui.Context, screen bentotui.Screen, layout Layout) (string, int) {
 	ctx.Width = layout.Width
 	if ctx.Theme.Text.R == 0 && ctx.Theme.Text.G == 0 && ctx.Theme.Text.B == 0 {
 		ctx.Theme = bentotui.Mimir

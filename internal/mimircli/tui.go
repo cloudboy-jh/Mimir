@@ -11,8 +11,8 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/sessions"
 	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	mimirtui "github.com/cloudboy-jh/mimir/internal/ui/mimirtui"
 	sessionui "github.com/cloudboy-jh/mimir/internal/ui/sessions"
-	terminalui "github.com/cloudboy-jh/mimir/internal/ui/terminal"
 )
 
 func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
@@ -55,7 +55,7 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 
 	service := currentSessionService()
 	pointer, _ := loadPointer()
-	model := terminalui.New(terminalui.Options{
+	model := mimirtui.New(mimirtui.Options{
 		Context: ctx,
 		Out:     out,
 		Agent:   agent,
@@ -73,5 +73,5 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 		},
 	})
 	defer model.Close()
-	return bentotui.RunWithOptions(ctx, in, out, model, bentotui.RunOptions{AlternateScreen: false, Mouse: true})
+	return bentotui.RunWithOptions(ctx, in, out, model, bentotui.RunOptions{AlternateScreen: true, Mouse: true})
 }

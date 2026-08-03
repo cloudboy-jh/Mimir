@@ -1,4 +1,4 @@
-package terminalui
+package mimirtui
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ func (m *Model) View(screen bentotui.Screen) string {
 	if appframe.TooSmall(screen) {
 		return appframe.SmallScreen(screen)
 	}
-	layout := appframe.ForScreen(screen)
+	layout := appframe.FullScreenForScreen(screen)
 	themes := bentotui.Themes()
 	render := appframe.New(m.options.Out).WithWidth(layout.Width)
 	render.Theme = themes[m.theme%len(themes)].Theme
@@ -27,15 +27,20 @@ func (m *Model) View(screen bentotui.Screen) string {
 	if status == "" {
 		status = fmt.Sprintf("%d sessions", len(m.visible))
 	}
-	view, _ := (appframe.Frame{Surface: "Terminal", Status: status, Lines: lines, Footer: footer}).Render(render.Context(), screen)
+	view, _ := (appframe.Frame{Surface: "Terminal", Status: status, Lines: lines, Footer: footer}).RenderLayout(render.Context(), screen, layout)
 	return view
 }
 
 func (m *Model) bodyLinesLocked(render appframe.Renderer, layout appframe.Layout) []string {
-	if m.fullscreen {
+	if m.screen == screenDetail {
+		return fitLines(m.detailLinesLocked(render, layout.BodyHeight), layout.BodyWidth, layout.BodyHeight)
+	}
+	if m.screen == screenAgent {
 		return fitLines(m.agentLinesLocked(render, layout.BodyHeight), layout.BodyWidth, layout.BodyHeight)
 	}
-	sessionRows := min(max(3, m.splitRows), max(3, layout.BodyHeight-4))
+	available := max(6, layout.BodyHeight-1)
+	sessionRows := available * m.splitRatio / 100
+	sessionRows = min(max(3, sessionRows), max(3, available-3))
 	agentRows := layout.BodyHeight - sessionRows - 1
 	sessions := m.sessionLinesLocked(render, sessionRows)
 	divider := bentotui.Divider(render.Context(), "")
@@ -55,7 +60,7 @@ func (m *Model) sessionLinesLocked(render appframe.Renderer, height int) []strin
 		heading = "/ " + cleanText(m.query) + cursor
 	}
 	lines := []string{heading}
-	capacity := max(1, height-1)
+	capacity := max(1, (height-1)/2)
 	if len(m.visible) == 0 {
 		message := "No sessions match."
 		if m.loading {
@@ -73,7 +78,7 @@ func (m *Model) sessionLinesLocked(render appframe.Renderer, height int) []strin
 	end := min(len(m.visible), m.offset+capacity)
 	for position := m.offset; position < end; position++ {
 		item := m.items[m.visible[position]]
-		lines = append(lines, compactSession(render, item, position == m.selected))
+		lines = append(lines, strings.Split(compactSession(render, item, position == m.selected), "\n")...)
 	}
 	return fitLines(lines, render.Width, height)
 }
@@ -88,25 +93,30 @@ func compactSession(render appframe.Renderer, item sessionui.BrowserSession, sel
 	if stat == "0" {
 		stat = cleanText(item.Capture)
 	}
-	meta := cleanText(item.Harness)
-	if meta == "" {
-		meta = cleanText(item.Model)
-	}
-	right := strings.TrimSpace(strings.Join(nonempty(meta, stat), "  "))
 	available := max(1, render.Width-bentotui.VisibleWidth(prefix))
-	if right != "" && available > bentotui.VisibleWidth(right)+8 {
-		titleWidth := available - bentotui.VisibleWidth(right) - 2
-		return prefix + bentotui.PadRight(bentotui.Truncate(cleanText(item.Title), titleWidth), titleWidth) + "  " + right
+	statWidth := bentotui.VisibleWidth(stat)
+	titleWidth := available
+	if stat != "" && available > statWidth+8 {
+		titleWidth = available - statWidth - 2
 	}
-	return prefix + bentotui.Truncate(cleanText(item.Title), available)
+	first := prefix + bentotui.PadRight(bentotui.Truncate(displayValue(item.Title, "Untitled session"), titleWidth), titleWidth)
+	if stat != "" && titleWidth < available {
+		first += "  " + stat
+	}
+	muted := bentotui.Style{Color: render.Theme.Muted, Enabled: render.Color}
+	metadata := strings.Join(nonempty(
+		"repo: "+displayValue(item.Repo, "none"),
+		displayValue(item.Harness, displayValue(item.Model, "unknown model")),
+		displayValue(item.Started, "unknown time"),
+		displayValue(item.Capture, "capture pending"),
+	), " · ")
+	second := "  " + muted.Render(bentotui.Truncate(metadata, max(1, render.Width-2)))
+	return first + "\n" + second
 }
 
 func (m *Model) agentLinesLocked(render appframe.Renderer, height int) []string {
 	if height <= 0 {
 		return nil
-	}
-	if m.detail {
-		return m.detailLinesLocked(render, height)
 	}
 	lines := []string{"◆ Agent"}
 	for _, message := range m.messages {
@@ -142,9 +152,23 @@ func (m *Model) detailLinesLocked(render appframe.Renderer, height int) []string
 	if !ok {
 		return fitLines([]string{"◆ Session", "No session selected."}, render.Width, height)
 	}
-	lines := []string{"◆ Session " + cleanText(item.ID), fmt.Sprintf("%s · %s · %s", cleanText(item.Capture), strings.ToUpper(cleanText(item.Outcome)), cleanText(item.Model))}
+	lines := []string{
+		"◆ Session detail",
+		displayValue(item.Title, "Untitled session"),
+		"",
+		"Outcome: " + render.OutcomeBadge(cleanText(item.Outcome)),
+		"Capture: " + displayValue(item.Capture, "Pending"),
+		"Repository: " + displayValue(item.Repo, "None"),
+		"Harness: " + displayValue(item.Harness, "Unknown"),
+		"Model: " + displayValue(item.Model, "Unknown"),
+		"Started: " + displayValue(item.Started, "Unknown"),
+		"Tokens: " + compactCount(item.Tokens),
+		"Session ID: " + cleanText(item.ID),
+		"",
+		"Evidence",
+	}
 	if detail, loaded := m.details[item.ID]; loaded {
-		lines = append(lines, fmt.Sprintf("%d exchanges · %s", len(detail.Exchanges), detail.Session.State))
+		lines = append(lines, fmt.Sprintf("Exchanges: %d", len(detail.Exchanges)), "State: "+displayValue(detail.Session.State, "Unknown"))
 		if len(detail.Files) > 0 {
 			lines = append(lines, "Files: "+cleanText(strings.Join(detail.Files, ", ")))
 		}
@@ -154,7 +178,10 @@ func (m *Model) detailLinesLocked(render appframe.Renderer, height int) []string
 	} else {
 		lines = append(lines, "Loading evidence...")
 	}
-	return fitLines(lines, render.Width, height)
+	maxOffset := max(0, len(lines)-height)
+	m.detailOffset = min(m.detailOffset, maxOffset)
+	start := max(0, maxOffset-m.detailOffset)
+	return lines[start:min(len(lines), start+height)]
 }
 
 func (m *Model) footerLocked(render appframe.Renderer) string {
@@ -164,7 +191,10 @@ func (m *Model) footerLocked(render appframe.Renderer) string {
 	if m.focus == focusFilter {
 		return "Type to filter · Enter keep · Esc clear"
 	}
-	if m.focus == focusAgent || m.fullscreen {
+	if m.screen == screenDetail {
+		return appframe.Footer(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Scroll"}, {Key: "Esc", Label: "Back"}}, []appframe.Binding{{Key: "o", Label: "Outcome"}, {Key: "q", Label: "Quit"}})
+	}
+	if m.focus == focusAgent || m.screen == screenAgent {
 		return appframe.Footer(render.Context(), []appframe.Binding{{Key: "Enter", Label: "Send"}, {Key: "Esc", Label: "Sessions"}}, []appframe.Binding{{Key: "/", Label: "Commands"}, {Key: "z", Label: "Split"}})
 	}
 	return appframe.Footer(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Browse"}, {Key: "↵", Label: "Detail"}}, []appframe.Binding{{Key: "Tab", Label: "Agent"}, {Key: "q", Label: "Quit"}})
@@ -214,6 +244,14 @@ func nonempty(values ...string) []string {
 		}
 	}
 	return result
+}
+
+func displayValue(value, fallback string) string {
+	value = cleanText(value)
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func cleanText(value string) string {

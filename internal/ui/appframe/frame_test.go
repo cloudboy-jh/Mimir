@@ -51,6 +51,23 @@ func TestLayoutUsesGlobalMaximumAndMinimumFallbackBoundary(t *testing.T) {
 	}
 }
 
+func TestFullScreenLayoutUsesMeasuredDimensions(t *testing.T) {
+	layout := FullScreenForScreen(bentotui.Screen{Width: 120, Height: 40})
+	if layout.Width != 120 || layout.Height != 40 || layout.BodyWidth != 116 || layout.BodyHeight != 36 {
+		t.Fatalf("layout %#v", layout)
+	}
+	view, _ := (Frame{Surface: "Terminal"}).RenderLayout(bentotui.Context{Theme: bentotui.Mimir}, bentotui.Screen{Width: 120, Height: 40}, layout)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 40 {
+		t.Fatalf("height %d", len(lines))
+	}
+	for _, line := range lines {
+		if bentotui.VisibleWidth(line) != 120 {
+			t.Fatalf("width %d: %q", bentotui.VisibleWidth(line), line)
+		}
+	}
+}
+
 func TestSmallScreenViewPreservesMeasuredDimensions(t *testing.T) {
 	view := SmallScreen(bentotui.Screen{Width: 40, Height: 10})
 	lines := strings.Split(view, "\n")

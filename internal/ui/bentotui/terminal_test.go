@@ -107,7 +107,7 @@ func TestInlineRendererRedrawsReservedLines(t *testing.T) {
 
 func TestRunDefaultsPreserveAlternateScreenControls(t *testing.T) {
 	start, cleanup := terminalControlSequences(RunOptions{AlternateScreen: true})
-	if start != "\x1b[?1049h\x1b[?25l" || cleanup != "\x1b[?25h\x1b[?1049l" {
+	if start != "\x1b[?1049h\x1b[?25l\x1b[?7l" || cleanup != "\x1b[?25h\x1b[?7h\x1b[?1049l" {
 		t.Fatalf("alternate screen controls: start %q cleanup %q", start, cleanup)
 	}
 }

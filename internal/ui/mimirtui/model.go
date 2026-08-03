@@ -1,4 +1,4 @@
-package terminalui
+package mimirtui
 
 import (
 	"context"
@@ -32,6 +32,14 @@ type Options struct {
 	SetOutcome func(context.Context, string, domainsessions.SetOutcomeOptions) error
 }
 
+type screen uint8
+
+const (
+	screenSplit screen = iota
+	screenAgent
+	screenDetail
+)
+
 type focus uint8
 
 const (
@@ -48,22 +56,22 @@ type Model struct {
 	options Options
 	updates chan struct{}
 
-	items    []sessionui.BrowserSession
-	visible  []int
-	selected int
-	offset   int
-	query    string
-	focus    focus
-	detail   bool
-	details  map[string]domainsessions.Detail
+	items        []sessionui.BrowserSession
+	visible      []int
+	selected     int
+	offset       int
+	query        string
+	focus        focus
+	screen       screen
+	details      map[string]domainsessions.Detail
+	detailOffset int
 
 	input       string
 	messages    []chatLine
 	streaming   string
 	agentOffset int
 	busy        bool
-	fullscreen  bool
-	splitRows   int
+	splitRatio  int
 	theme       int
 	status      string
 	loading     bool
@@ -73,7 +81,7 @@ func New(options Options) *Model {
 	if options.Context == nil {
 		options.Context = context.Background()
 	}
-	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, splitRows: 7, loading: true}
+	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, splitRatio: 55, loading: true}
 	m.messages = []chatLine{{role: "agent", text: "Ask about the selected session or search across Mimir."}}
 	if options.Agent != nil {
 		go m.readAgent(options.Agent.Events())
@@ -147,7 +155,11 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 		m.handleOutcomeLocked(ctx, key)
 		return false
 	}
-	if m.focus == focusAgent {
+	if m.screen == screenDetail {
+		m.handleDetailLocked(key)
+		return false
+	}
+	if m.focus == focusAgent || m.screen == screenAgent {
 		return m.handleAgentLocked(ctx, key)
 	}
 	return m.handleSessionsLocked(ctx, key)
@@ -155,16 +167,17 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 
 func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool {
 	if key.Kind == bentotui.KeyTab {
+		m.screen = screenSplit
 		m.focus = focusAgent
 		return false
 	}
 	if key.Modifiers&bentotui.KeyModifierCtrl != 0 && (key.Kind == bentotui.KeyUp || key.Kind == bentotui.KeyDown) {
 		if key.Kind == bentotui.KeyUp {
-			m.splitRows--
+			m.splitRatio -= 5
 		} else {
-			m.splitRows++
+			m.splitRatio += 5
 		}
-		m.splitRows = max(3, min(13, m.splitRows))
+		m.splitRatio = max(25, min(75, m.splitRatio))
 		return false
 	}
 	switch key.Kind {
@@ -174,13 +187,11 @@ func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool
 		m.moveLocked(1)
 	case bentotui.KeyEnter:
 		if id := m.currentIDLocked(); id != "" {
-			m.detail = !m.detail
-			if m.detail {
-				go m.loadDetail(id)
-			}
+			m.screen = screenDetail
+			m.detailOffset = 0
+			go m.loadDetail(id)
 		}
 	case bentotui.KeyEscape:
-		m.detail = false
 		if m.query != "" {
 			m.query = ""
 			m.applyFilterLocked()
@@ -205,13 +216,37 @@ func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool
 				go m.reload()
 			}
 		case 'z':
-			m.fullscreen = true
+			m.screen = screenAgent
 			m.focus = focusAgent
 		case 't':
 			m.theme = (m.theme + 1) % len(bentotui.Themes())
 		}
 	}
 	return false
+}
+
+func (m *Model) handleDetailLocked(key bentotui.Key) {
+	switch key.Kind {
+	case bentotui.KeyEscape:
+		m.screen = screenSplit
+		m.focus = focusSessions
+		m.detailOffset = 0
+	case bentotui.KeyUp, bentotui.KeyMouseUp:
+		m.detailOffset++
+	case bentotui.KeyDown, bentotui.KeyMouseDown:
+		m.detailOffset = max(0, m.detailOffset-1)
+	case bentotui.KeyRune:
+		switch key.Rune {
+		case 'k':
+			m.detailOffset++
+		case 'j':
+			m.detailOffset = max(0, m.detailOffset-1)
+		case 'o':
+			if m.currentIDLocked() != "" {
+				m.focus = focusOutcome
+			}
+		}
+	}
 }
 
 func (m *Model) handleFilterLocked(key bentotui.Key) {
@@ -273,27 +308,27 @@ func (m *Model) handleOutcomeLocked(ctx context.Context, key bentotui.Key) {
 func (m *Model) handleAgentLocked(ctx context.Context, key bentotui.Key) bool {
 	switch key.Kind {
 	case bentotui.KeyTab:
-		if !m.fullscreen {
+		if m.screen == screenSplit {
 			m.focus = focusSessions
 		}
 	case bentotui.KeyEscape:
-		if m.fullscreen && m.busy && m.options.Agent != nil {
+		if m.screen == screenAgent && m.busy && m.options.Agent != nil {
 			go m.abortAgent(ctx)
 			m.status = "Agent paused"
 		}
-		m.fullscreen = false
+		m.screen = screenSplit
 		m.focus = focusSessions
 	case bentotui.KeyBackspace:
 		m.input = trimLastRune(m.input)
 	case bentotui.KeyUp, bentotui.KeyMouseUp:
-		m.agentOffset = max(0, m.agentOffset-1)
-	case bentotui.KeyDown, bentotui.KeyMouseDown:
 		m.agentOffset++
+	case bentotui.KeyDown, bentotui.KeyMouseDown:
+		m.agentOffset = max(0, m.agentOffset-1)
 	case bentotui.KeyEnter:
 		return m.submitLocked(ctx)
 	case bentotui.KeyRune:
-		if key.Rune == 'z' && m.fullscreen && m.input == "" {
-			m.fullscreen = false
+		if key.Rune == 'z' && m.screen == screenAgent && m.input == "" {
+			m.screen = screenSplit
 			m.focus = focusSessions
 			return false
 		}
@@ -456,7 +491,7 @@ func (m *Model) applyFilterLocked() {
 func (m *Model) moveLocked(delta int) {
 	if len(m.visible) > 0 {
 		m.selected = min(len(m.visible)-1, max(0, m.selected+delta))
-		if m.detail {
+		if m.screen == screenDetail {
 			id := m.currentIDLocked()
 			if _, loaded := m.details[id]; !loaded {
 				go m.loadDetail(id)
