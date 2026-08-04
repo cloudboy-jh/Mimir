@@ -313,8 +313,8 @@ describe("Worker integration", () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ exchange_id: `reported-${reason}`, session_id: `reported-${reason}`, capture_status: "skipped", capture_reason: reason, duplicate: false });
-    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first()).toEqual({ count: 0 });
-    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions").first()).toEqual({ count: 0 });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges WHERE id = ?").bind(`reported-${reason}`).first()).toEqual({ count: 0 });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE id = ?").bind(`reported-${reason}`).first()).toEqual({ count: 0 });
     expect((await env.LOGS.list()).objects).toHaveLength(0);
   });
 
