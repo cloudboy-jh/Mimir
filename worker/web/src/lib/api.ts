@@ -1,5 +1,6 @@
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
+export type SessionLiveness = "active" | "disconnected" | "finalized";
 
 export type DashboardIdentity = {
   email: string | null;
@@ -21,6 +22,7 @@ export type Session = {
   started_at: string;
   ended_at: string | null;
   state: "active" | "inactive";
+  liveness: SessionLiveness;
   last_active_at: string | null;
   inactive_at: string | null;
   harness: string | null;
@@ -36,6 +38,10 @@ export type Session = {
   request_count: number;
   tokens_in: number;
   tokens_out: number;
+  title: string | null;
+  title_source: string | null;
+  title_updated_at: string | null;
+  display_title: string | null;
   intent: string | null;
   child_session_count: number;
   capture: CaptureSummary;
@@ -71,6 +77,48 @@ export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model
   capture_reason: string | null;
   failure_code: string | null;
 };
+
+export type LiveSessionTurn = {
+  ts: string;
+  exchange_id?: string;
+  model?: string;
+  provider?: string | null;
+  request_kind?: "primary" | "title" | "summary" | "compaction";
+  usage?: { input_tokens: number; output_tokens: number };
+  latency_ms?: number;
+  excerpt?: string;
+};
+
+export type SessionObjectState = {
+  session_id: string;
+  parent_session_id: string | null;
+  liveness: SessionLiveness;
+  harness: string | null;
+  repo: string | null;
+  started_at: string;
+  last_event_at: string;
+  finalized_at: string | null;
+  end_reason: string | null;
+  turn_count: number;
+  tokens_in: number;
+  tokens_out: number;
+};
+
+type LiveSessionEvent = {
+  version: 1;
+  kind: "turn" | "heartbeat" | "end";
+  session_id: string;
+  harness: string | null;
+  ts: string;
+  turn?: Omit<LiveSessionTurn, "ts">;
+  reason?: string;
+};
+
+export type SessionLiveMessage =
+  | { type: "snapshot"; state: SessionObjectState; turns: LiveSessionTurn[] }
+  | { type: "event"; event: LiveSessionEvent }
+  | { type: "finalized"; session_id: string; reason: string; ended_at: string }
+  | { type: "reopened"; session_id: string };
 
 export type SessionError = {
   signature: string;
@@ -121,9 +169,9 @@ export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | nul
 }
 
 export type SessionDetail = {
-  session: Omit<Session, "capture">;
+  session: Omit<Session, "capture" | "liveness">;
   capture: CaptureSummary;
-  supporting_sessions: Array<Omit<Session, "capture" | "child_session_count">>;
+  supporting_sessions: Array<Omit<Session, "capture" | "child_session_count" | "liveness">>;
   outcome_events: OutcomeEvent[];
   files: string[];
   errors: SessionError[];
@@ -232,6 +280,37 @@ export async function listSessions(filters: SessionFilters = {}, signal?: AbortS
 
 export async function getSession(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/dashboard/api/sessions/${encodeURIComponent(id)}`, { signal });
+}
+
+export async function getSessionObjectState(id: string, signal?: AbortSignal) {
+  return request<SessionObjectState>(`/dashboard/api/sessions/${encodeURIComponent(id)}/object-state`, { signal });
+}
+
+export function connectSessionLive(id: string, onMessage: (message: SessionLiveMessage) => void) {
+  if (import.meta.env.VITE_MIMIR_DATA_SOURCE === "fixtures" || typeof window === "undefined") return null;
+  const url = new URL(`/dashboard/api/sessions/${encodeURIComponent(id)}/live`, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  socket.addEventListener("message", (event) => {
+    try {
+      onMessage(JSON.parse(String(event.data)) as SessionLiveMessage);
+    } catch {
+      // Ignore malformed frames and keep the live connection available.
+    }
+  });
+  return socket;
+}
+
+export type SessionTitleUpdate = Pick<Session, "id" | "title" | "title_source" | "title_updated_at" | "display_title">;
+
+export async function setSessionTitle(id: string, title: string, signal?: AbortSignal) {
+  const result = await request<{ session: SessionTitleUpdate }>(`/dashboard/api/sessions/${encodeURIComponent(id)}/title`, {
+    method: "PATCH",
+    signal,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: title.trim() }),
+  });
+  return result.session;
 }
 
 export async function setSessionOutcome(id: string, outcome: Outcome, reason: string, evidence?: OutcomeEvidence, signal?: AbortSignal) {

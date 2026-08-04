@@ -13,7 +13,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/dashboard/auth": { target: "http://127.0.0.1:8787", changeOrigin: true },
-      "/dashboard/api": { target: "http://127.0.0.1:8787", changeOrigin: true },
+      "/dashboard/api": { target: "http://127.0.0.1:8787", changeOrigin: true, ws: true },
       "/dashboard/log-objects": { target: "http://127.0.0.1:8787", changeOrigin: true },
     },
   },

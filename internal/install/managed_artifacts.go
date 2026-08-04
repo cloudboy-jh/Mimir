@@ -49,6 +49,9 @@ type installationPaths struct {
 	Receipt        string `json:"receipt"`
 	Log            string `json:"log"`
 	OpenCodeHome   string `json:"opencode_home"`
+	ClaudeCodeHome string `json:"claude_code_home"`
+	CodexHome      string `json:"codex_home"`
+	CursorHome     string `json:"cursor_home"`
 	HermesHome     string `json:"hermes_home,omitempty"`
 	HermesDetected bool   `json:"hermes_detected"`
 	Worker         string `json:"worker"`
@@ -146,16 +149,39 @@ func managedInstallationPaths() (installationPaths, error) {
 	if err != nil {
 		return installationPaths{}, err
 	}
+	claudeHome, err := configuredHome("CLAUDE_CONFIG_DIR", filepath.Join(userHome, ".claude"))
+	if err != nil {
+		return installationPaths{}, err
+	}
+	codexHome, err := configuredHome("CODEX_HOME", filepath.Join(userHome, ".codex"))
+	if err != nil {
+		return installationPaths{}, err
+	}
 	return installationPaths{
 		MimirHome:      mimirHome,
 		Receipt:        filepath.Join(mimirHome, "install-receipt.json"),
 		Log:            filepath.Join(mimirHome, "install-log.jsonl"),
 		OpenCodeHome:   opencodeHome,
+		ClaudeCodeHome: claudeHome,
+		CodexHome:      codexHome,
+		CursorHome:     filepath.Join(userHome, ".cursor"),
 		HermesHome:     hermesHome,
 		HermesDetected: found,
 		Worker:         filepath.Join(mimirHome, "worker"),
 		SharedAssets:   filepath.Join(mimirHome, "assets", "images"),
 	}, nil
+}
+
+func configuredHome(env, fallback string) (string, error) {
+	value := strings.TrimSpace(os.Getenv(env))
+	if value == "" {
+		return fallback, nil
+	}
+	path, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", env, err)
+	}
+	return path, nil
 }
 
 func loadInstallReceipt() (installReceipt, error) {
@@ -340,6 +366,28 @@ func receiptManagedArtifactSpec(paths installationPaths, target string, owned in
 		root = paths.HermesHome
 		managedDir = filepath.Join(root, "plugins", "mimir")
 		expected = filepath.Join(managedDir, filepath.Base(source))
+	case source == "plugins/claude-code/.claude-plugin/plugin.json":
+		root = paths.ClaudeCodeHome
+		managedDir = filepath.Join(root, "skills", "mimir")
+		expected = filepath.Join(managedDir, ".claude-plugin", "plugin.json")
+		legacy := filepath.Join(root, "plugins", "mimir", ".claude-plugin", "plugin.json")
+		if sameFilePath(legacy, target) {
+			expected, managedDir = legacy, filepath.Join(root, "plugins", "mimir")
+		}
+	case source == "plugins/claude-code/hooks/hooks.json":
+		root = paths.ClaudeCodeHome
+		managedDir = filepath.Join(root, "skills", "mimir")
+		expected = filepath.Join(managedDir, "hooks", "hooks.json")
+		legacy := filepath.Join(root, "plugins", "mimir", "hooks", "hooks.json")
+		if sameFilePath(legacy, target) {
+			expected, managedDir = legacy, filepath.Join(root, "plugins", "mimir")
+		}
+	case source == "plugins/codex/hooks.json":
+		root = paths.CodexHome
+		expected = filepath.Join(root, "hooks.json")
+	case source == "plugins/cursor/hooks.json":
+		root = paths.CursorHome
+		expected = filepath.Join(root, "hooks.json")
 	case strings.HasPrefix(source, "skills/mimir-"):
 		rel := strings.TrimPrefix(source, "skills/")
 		parts := strings.Split(rel, "/")
@@ -594,8 +642,28 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	receiptChanged := receipt.migrated
+	claudeBlocked, claudeResults, err := preflightClaudePluginGroup(paths, specs, receipt, enroll, write, adoptIdentical)
+	if err != nil {
+		return report, err
+	}
 	for _, spec := range specs {
-		result, own, changed, err := reconcileManagedArtifact(spec, receipt.Artifacts[spec.target], enroll, write, adoptIdentical)
+		if result, blocked := claudeResults[spec.target]; claudeBlocked && blocked {
+			report.Artifacts = append(report.Artifacts, result)
+			continue
+		}
+		owned := receipt.Artifacts[spec.target]
+		if owned.Hash == "" && strings.HasPrefix(spec.source, "plugins/claude-code/") {
+			for priorTarget, prior := range receipt.Artifacts {
+				if prior.Source != spec.source {
+					continue
+				}
+				if _, recognized := receiptManagedArtifactSpec(paths, priorTarget, prior); recognized {
+					owned = prior
+					break
+				}
+			}
+		}
+		result, own, changed, err := reconcileManagedArtifact(spec, owned, enroll, write, adoptIdentical)
 		if err != nil {
 			return report, err
 		}
@@ -620,6 +688,9 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		for _, target := range obsolete {
 			owned := receipt.Artifacts[target]
 			spec, recognized := receiptManagedArtifactSpec(paths, target, owned)
+			if claudeBlocked && recognized && strings.HasPrefix(spec.source, "plugins/claude-code/") {
+				continue
+			}
 			if !recognized {
 				spec = managedArtifactSpec{source: owned.Source, target: target}
 			}
@@ -674,6 +745,136 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	return report, nil
+}
+
+func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifactSpec, receipt installReceipt, enroll, write, adoptIdentical bool) (bool, map[string]managedArtifactResult, error) {
+	var group []managedArtifactSpec
+	for _, spec := range specs {
+		if strings.HasPrefix(spec.source, "plugins/claude-code/") {
+			group = append(group, spec)
+		}
+	}
+	if len(group) == 0 {
+		return false, nil, nil
+	}
+
+	owners := make(map[string][]string, len(group))
+	for target, owned := range receipt.Artifacts {
+		spec, recognized := receiptManagedArtifactSpec(paths, target, owned)
+		if recognized && strings.HasPrefix(spec.source, "plugins/claude-code/") {
+			owners[spec.source] = append(owners[spec.source], target)
+		}
+	}
+	ownedSources := 0
+	ownershipUnsafe := false
+	for _, spec := range group {
+		if len(owners[spec.source]) > 0 {
+			ownedSources++
+		}
+		if len(owners[spec.source]) > 1 {
+			ownershipUnsafe = true
+		}
+		if direct := receipt.Artifacts[spec.target]; direct.Hash != "" && direct.Source != spec.source {
+			ownershipUnsafe = true
+		}
+	}
+	if ownedSources != 0 && ownedSources != len(group) {
+		ownershipUnsafe = true
+	}
+
+	results := make(map[string]managedArtifactResult, len(group))
+	unsafe := ownershipUnsafe
+	projectedOwners := 0
+	for _, spec := range group {
+		owned := receipt.Artifacts[spec.target]
+		result, safe, err := preflightManagedArtifact(spec, owned)
+		if err != nil {
+			return false, nil, err
+		}
+		results[spec.target] = result
+		unsafe = unsafe || !safe
+		if len(owners[spec.source]) > 0 || write && (result.Status == artifactOutdated || result.Status == artifactIdentical && adoptIdentical || result.Status == artifactMissing && enroll) {
+			projectedOwners++
+		}
+		for _, priorTarget := range owners[spec.source] {
+			if sameFilePath(priorTarget, spec.target) {
+				continue
+			}
+			prior := receipt.Artifacts[priorTarget]
+			priorSpec, _ := receiptManagedArtifactSpec(paths, priorTarget, prior)
+			priorResult, safe, err := preflightManagedArtifact(priorSpec, prior)
+			if err != nil {
+				return false, nil, err
+			}
+			unsafe = unsafe || !safe || priorResult.Status == artifactMissing
+		}
+	}
+	if projectedOwners != 0 && projectedOwners != len(group) {
+		ownershipUnsafe = true
+		unsafe = true
+	}
+	if !unsafe {
+		return false, nil, nil
+	}
+
+	detail := "Claude Code plugin group was preserved because a member is unsafe"
+	if ownershipUnsafe {
+		detail = "Claude Code plugin group was preserved because receipt ownership is incomplete or ambiguous"
+	}
+	for _, spec := range group {
+		result := results[spec.target]
+		if ownershipUnsafe || (result.Status != artifactConflict && result.Status != artifactModified && result.Status != artifactSymlinkRejected) {
+			result.Status = artifactConflict
+		}
+		result.Detail = detail
+		results[spec.target] = result
+	}
+	return true, results, nil
+}
+
+func preflightManagedArtifact(spec managedArtifactSpec, owned installReceiptArtifact) (managedArtifactResult, bool, error) {
+	result := managedArtifactResult{Path: spec.target, Source: spec.source, BundleHash: spec.hash, ReceiptHash: owned.Hash}
+	if symlink, err := pathContainsSymlink(spec.root, spec.target); err != nil {
+		return result, false, err
+	} else if symlink {
+		result.Status = artifactSymlinkRejected
+		return result, false, nil
+	}
+	info, err := os.Lstat(spec.target)
+	if os.IsNotExist(err) {
+		result.Status = artifactMissing
+		return result, true, nil
+	}
+	if err != nil {
+		return result, false, err
+	}
+	if !info.Mode().IsRegular() {
+		result.Status = artifactConflict
+		return result, false, nil
+	}
+	data, err := os.ReadFile(spec.target)
+	if err != nil {
+		return result, false, err
+	}
+	result.Hash = hashBytes(data)
+	if owned.Hash != "" {
+		if result.Hash != owned.Hash {
+			result.Status = artifactModified
+			return result, false, nil
+		}
+		result.Status = artifactCurrent
+		return result, true, nil
+	}
+	if result.Hash == spec.hash {
+		result.Status = artifactIdentical
+		return result, true, nil
+	}
+	if legacyMimirArtifact(spec.source, result.Hash) {
+		result.Status = artifactOutdated
+		return result, true, nil
+	}
+	result.Status = artifactConflict
+	return result, false, nil
 }
 
 func currentExecutableReceiptCLI() (installReceiptCLI, error) {
@@ -751,6 +952,10 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 	}
 	targets := []struct{ source, target, root string }{
 		{"plugins/opencode/mimir.ts", filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts"), paths.OpenCodeHome},
+		{"plugins/claude-code/.claude-plugin/plugin.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"), paths.ClaudeCodeHome},
+		{"plugins/claude-code/hooks/hooks.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"), paths.ClaudeCodeHome},
+		{"plugins/codex/hooks.json", filepath.Join(paths.CodexHome, "hooks.json"), paths.CodexHome},
+		{"plugins/cursor/hooks.json", filepath.Join(paths.CursorHome, "hooks.json"), paths.CursorHome},
 	}
 	for _, skill := range []string{"mimir-setup", "mimir-use"} {
 		prefix := "skills/" + skill + "/"
@@ -785,6 +990,8 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 			cleanupDir = filepath.Join(target.root, "skills", "mimir-use")
 		} else if strings.HasPrefix(target.source, "plugins/hermes/") {
 			cleanupDir = filepath.Join(target.root, "plugins", "mimir")
+		} else if strings.HasPrefix(target.source, "plugins/claude-code/") {
+			cleanupDir = filepath.Join(target.root, "skills", "mimir")
 		}
 		specs = append(specs, managedArtifactSpec{source: target.source, target: target.target, root: target.root, cleanupDir: cleanupDir, data: data, hash: hashBytes(data)})
 	}

@@ -55,6 +55,7 @@ type SessionEvent = {
   parent_session_id?: string | null;
   harness: string | null;
   repo?: string | null;
+  title?: string;
   ts: string;
   turn?: Record<string, unknown>;
   reason?: string;
@@ -703,7 +704,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         if (typeof info?.id === "string") {
           activity.touch(info.id);
           const parentSessionID = typeof info.parentID === "string" && info.parentID !== info.id ? info.parentID : null;
-          delivery.deliver({ version: 1, kind: "heartbeat", session_id: info.id, parent_session_id: parentSessionID, harness: "opencode", repo, ts: new Date().toISOString() });
+          const title = typeof info.title === "string" && info.title.trim() ? info.title.trim() : undefined;
+          delivery.deliver({ version: 1, kind: "heartbeat", session_id: info.id, parent_session_id: parentSessionID, harness: "opencode", repo, title, ts: new Date().toISOString() });
         }
         return;
       }

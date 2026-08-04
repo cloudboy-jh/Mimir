@@ -15,10 +15,7 @@ func Items(values []domainsessions.Receipt, dashboardBaseURL string, limit int) 
 	}
 	items := make([]BrowserSession, 0, len(values))
 	for _, receipt := range values {
-		title := receipt.ID
-		if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
-			title = strings.TrimSpace(*receipt.Intent)
-		}
+		title := domainsessions.DisplayTitle(receipt.DisplayTitle, receipt.Title, receipt.Intent)
 		dashboardURL := ""
 		if dashboardBaseURL != "" {
 			dashboardURL = strings.TrimRight(dashboardBaseURL, "/") + "/dashboard/sessions/" + url.PathEscape(receipt.ID)

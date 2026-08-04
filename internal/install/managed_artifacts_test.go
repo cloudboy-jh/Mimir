@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,6 +49,16 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.HermesHome, "skills", "mimir-use", "SKILL.md")); err != nil {
 		t.Fatal(err)
 	}
+	for _, target := range []string{
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+		filepath.Join(paths.CodexHome, "hooks.json"),
+		filepath.Join(paths.CursorHome, "hooks.json"),
+	} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("managed hook artifact %s: %v", target, err)
+		}
+	}
 
 	receipt, err := loadInstallReceipt()
 	if err != nil {
@@ -70,6 +81,289 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	}
 	if lines := jsonLines(t, paths.Log); lines != 2 {
 		t.Fatalf("install log lines = %d, want 2", lines)
+	}
+}
+
+func TestManagedInstallationPathsHonorOfficialHomeOverrides(t *testing.T) {
+	home := t.TempDir()
+	claudeHome := filepath.Join(home, "claude-config")
+	codexHome := filepath.Join(home, "codex-config")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("MIMIR_HOME", filepath.Join(home, "mimir"))
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
+	t.Setenv("CODEX_HOME", codexHome)
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paths.ClaudeCodeHome != claudeHome || paths.CodexHome != codexHome || paths.CursorHome != filepath.Join(home, ".cursor") {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestSyncManagedArtifactsMovesOwnedClaudePluginToSkillsDirectory(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	oldManifest := filepath.Join(paths.ClaudeCodeHome, "plugins", "mimir", ".claude-plugin", "plugin.json")
+	oldHooks := filepath.Join(paths.ClaudeCodeHome, "plugins", "mimir", "hooks", "hooks.json")
+	receipt := newInstallReceipt()
+	for path, source := range map[string]string{
+		oldManifest: "plugins/claude-code/.claude-plugin/plugin.json",
+		oldHooks:    "plugins/claude-code/hooks/hooks.json",
+	} {
+		data, err := mimirassets.Bundle.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		receipt.Artifacts[path] = installReceiptArtifact{Source: source, Hash: hashBytes(data)}
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{oldManifest, oldHooks} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("obsolete Claude plugin path remains %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("new Claude plugin path missing %s: %v", path, err)
+		}
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{oldManifest, oldHooks} {
+		if _, owned := receipt.Artifacts[path]; owned {
+			t.Fatalf("obsolete Claude ownership remains at %s", path)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+	} {
+		if receipt.Artifacts[path].Hash == "" {
+			t.Fatalf("new Claude ownership missing at %s", path)
+		}
+	}
+}
+
+func TestClaudePluginGroupPreservesBothWhenEitherFileConflicts(t *testing.T) {
+	sources := []string{
+		"plugins/claude-code/.claude-plugin/plugin.json",
+		"plugins/claude-code/hooks/hooks.json",
+	}
+	for _, operation := range []string{"install", "update"} {
+		for unsafeIndex := range sources {
+			t.Run(operation+"/"+filepath.Base(filepath.Dir(sources[unsafeIndex])), func(t *testing.T) {
+				paths := isolatedInstallation(t, false)
+				targets := []string{
+					filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+					filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+				}
+				foreign := []byte("foreign Claude file\n")
+				if err := os.MkdirAll(filepath.Dir(targets[unsafeIndex]), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(targets[unsafeIndex], foreign, 0o600); err != nil {
+					t.Fatal(err)
+				}
+
+				receipt := newInstallReceipt()
+				enroll := operation == "install"
+				var safeBefore []byte
+				if !enroll {
+					for index, target := range targets {
+						prior := []byte(fmt.Sprintf("prior Claude file %d\n", index))
+						if index != unsafeIndex {
+							if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+								t.Fatal(err)
+							}
+							if err := os.WriteFile(target, prior, 0o600); err != nil {
+								t.Fatal(err)
+							}
+							safeBefore = prior
+						}
+						receipt.Artifacts[target] = installReceiptArtifact{Source: sources[index], Hash: hashBytes(prior)}
+					}
+					if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				report, err := syncManagedArtifacts(enroll, operation)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, target := range targets {
+					if got := resultForPath(t, report, target).Status; got != artifactConflict && got != artifactModified {
+						t.Fatalf("%s status = %s, want group conflict", target, got)
+					}
+				}
+				if got := mustReadFile(t, targets[unsafeIndex]); !bytes.Equal(got, foreign) {
+					t.Fatal("unsafe Claude file was changed")
+				}
+				safeTarget := targets[1-unsafeIndex]
+				if enroll {
+					if _, err := os.Lstat(safeTarget); !os.IsNotExist(err) {
+						t.Fatalf("safe sibling was created despite group conflict: %v", err)
+					}
+				} else if got := mustReadFile(t, safeTarget); !bytes.Equal(got, safeBefore) {
+					t.Fatal("safe Claude sibling was updated despite group conflict")
+				}
+				after, err := loadInstallReceipt()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if enroll {
+					for _, target := range targets {
+						if _, owned := after.Artifacts[target]; owned {
+							t.Fatalf("blocked Claude group claimed %s", target)
+						}
+					}
+				} else {
+					for target, owned := range receipt.Artifacts {
+						if after.Artifacts[target] != owned {
+							t.Fatalf("ownership changed for blocked Claude artifact %s", target)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestClaudePluginGroupPreservesPartialPriorOwnership(t *testing.T) {
+	sources := []string{
+		"plugins/claude-code/.claude-plugin/plugin.json",
+		"plugins/claude-code/hooks/hooks.json",
+	}
+	for ownedIndex := range sources {
+		t.Run(filepath.Base(filepath.Dir(sources[ownedIndex])), func(t *testing.T) {
+			paths := isolatedInstallation(t, false)
+			legacyTargets := []string{
+				filepath.Join(paths.ClaudeCodeHome, "plugins", "mimir", ".claude-plugin", "plugin.json"),
+				filepath.Join(paths.ClaudeCodeHome, "plugins", "mimir", "hooks", "hooks.json"),
+			}
+			data, err := mimirassets.Bundle.ReadFile(sources[ownedIndex])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(legacyTargets[ownedIndex]), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyTargets[ownedIndex], data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			receipt := newInstallReceipt()
+			receipt.Artifacts[legacyTargets[ownedIndex]] = installReceiptArtifact{Source: sources[ownedIndex], Hash: hashBytes(data)}
+			if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := syncManagedArtifacts(false, "update"); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustReadFile(t, legacyTargets[ownedIndex]); !bytes.Equal(got, data) {
+				t.Fatal("partially owned legacy Claude artifact was changed")
+			}
+			for _, target := range []string{
+				filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+				filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+			} {
+				if _, err := os.Lstat(target); !os.IsNotExist(err) {
+					t.Fatalf("new Claude target was created with partial ownership: %s", target)
+				}
+			}
+			after, err := loadInstallReceipt()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after.Artifacts) != 1 || after.Artifacts[legacyTargets[ownedIndex]].Hash == "" {
+				t.Fatalf("partial Claude ownership was transferred: %#v", after.Artifacts)
+			}
+		})
+	}
+}
+
+func TestClaudePluginGroupDoesNotPartiallyAdopt(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	manifest := filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json")
+	data, err := mimirassets.Bundle.ReadFile("plugins/claude-code/.claude-plugin/plugin.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, owned := receipt.Artifacts[manifest]; owned {
+		t.Fatal("one existing Claude file was adopted without its missing sibling")
+	}
+	if _, err := os.Stat(filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("missing Claude sibling was created during non-enrolling update: %v", err)
+	}
+}
+
+func TestCursorHookConflictIsPreservedAndNotOwned(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	target := filepath.Join(paths.CursorHome, "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte(`{"version":1,"hooks":{"sessionStart":[]}}`)
+	if err := os.WriteFile(target, foreign, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := syncManagedArtifacts(true, "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, artifact := range report.Artifacts {
+		if artifact.Source == "plugins/cursor/hooks.json" {
+			found = true
+			if artifact.Status != artifactConflict {
+				t.Fatalf("status = %s", artifact.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Cursor artifact was not registered")
+	}
+	data, _ := os.ReadFile(target)
+	if !bytes.Equal(data, foreign) {
+		t.Fatal("foreign Cursor hooks were rewritten")
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, owned := receipt.Artifacts[target]; owned {
+		t.Fatal("conflicting Cursor hooks were claimed by the receipt")
 	}
 }
 
@@ -930,6 +1224,8 @@ func isolatedInstallation(t *testing.T, hermes bool) installationPaths {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("MIMIR_HOME", mimirHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
 	if hermes {
 		t.Setenv("HERMES_HOME", hermesHome)
 	} else {

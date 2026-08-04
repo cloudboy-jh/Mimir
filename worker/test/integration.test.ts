@@ -7,10 +7,10 @@ import { finalizeAcceptedExchange } from "../src/capture";
 const schema = `
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
 CREATE TABLE hermes_credentials (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, authorized_by TEXT);
-CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (harness IN ('opencode', 'hermes')), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
-CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64 AND substr(harness, 1, 1) GLOB '[a-z0-9]' AND harness NOT GLOB '*[^a-z0-9._-]*'), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
+CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, title TEXT, title_source TEXT CHECK (title_source IN ('manual', 'harness', 'generated', 'derived')), title_updated_at TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
- CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT);
+ CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT, title_candidate TEXT);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session_files (session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(session_id, file));
 CREATE TABLE session_errors (session_id TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(session_id, signature));
@@ -152,12 +152,25 @@ describe("Worker integration", () => {
     expect(other.loads).toEqual([expect.objectContaining({ harness: "hermes", token_label: "other" })]);
   });
 
+  it("accepts bounded first-party harness identifiers", async () => {
+    for (const harness of ["claude-code", "codex", "cursor"]) {
+      const response = await request("/integrations/harness-loads", {
+        method: "POST",
+        headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+        body: JSON.stringify({ version: 1, harness, source_sha256: "a".repeat(64) }),
+      });
+      expect(response.status).toBe(200);
+    }
+    const loads = await env.DB.prepare("SELECT harness FROM harness_loads ORDER BY harness").all();
+    expect(loads.results).toEqual([{ harness: "claude-code" }, { harness: "codex" }, { harness: "cursor" }]);
+  });
+
   it.each([
     ["invalid JSON", "{"],
     ["a non-object body", "null"],
     ["a missing version", JSON.stringify({ harness: "opencode", source_sha256: "a".repeat(64) })],
     ["an unsupported version", JSON.stringify({ version: 2, harness: "opencode", source_sha256: "a".repeat(64) })],
-    ["an unknown harness", JSON.stringify({ version: 1, harness: "claude", source_sha256: "a".repeat(64) })],
+    ["an invalid harness", JSON.stringify({ version: 1, harness: "Claude Code", source_sha256: "a".repeat(64) })],
     ["a missing source hash", JSON.stringify({ version: 1, harness: "opencode" })],
     ["an uppercase source hash", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "A".repeat(64) })],
     ["a short source hash", JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(63) })],
@@ -275,6 +288,34 @@ describe("Worker integration", () => {
     });
     const state = await (await request("/sessions/reported-session/object-state", { headers: { authorization: "Bearer machine-token" } })).json() as Record<string, unknown>;
     expect(state).toMatchObject({ turn_count: 1, tokens_in: 12, tokens_out: 4 });
+  });
+
+  it.each([
+    ["disabled", "save.enabled", false, {}, "openai/gpt-5"],
+    ["excluded_repository", "save.exclude_repos", ["private-*"], { "x-mimir-repo": "private-repo" }, "openai/gpt-5"],
+    ["excluded_model", "save.exclude_models", ["anthropic/*"], {}, "anthropic/claude-sonnet"],
+  ])("skips reported exchanges excluded by %s capture policy", async (reason, key, value, metadataHeaders, model) => {
+    await env.DB.prepare("INSERT INTO config(key, value) VALUES(?, ?)").bind(key, JSON.stringify(value)).run();
+    const response = await request(`/sessions/reported-${reason}/exchanges`, {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-harness": "opencode", ...metadataHeaders },
+      body: JSON.stringify({
+        exchange_id: `reported-${reason}`,
+        ts: "2026-07-26T12:00:00Z",
+        model,
+        request: { messages: [{ role: "user", content: "Must not persist" }] },
+        response: { output: "Must not persist" },
+        usage: { input_tokens: 2, output_tokens: 1 },
+        latency_ms: 10,
+        request_kind: "primary",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ exchange_id: `reported-${reason}`, session_id: `reported-${reason}`, capture_status: "skipped", capture_reason: reason, duplicate: false });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first()).toEqual({ count: 0 });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions").first()).toEqual({ count: 0 });
+    expect((await env.LOGS.list()).objects).toHaveLength(0);
   });
 
   it("deduplicates canonical harness exchange retries without changing aggregates or DO turns", async () => {
@@ -500,6 +541,10 @@ describe("Worker integration", () => {
       outcome_src: null,
       outcome_updated_at: null,
       outcome_reason: null,
+      title: null,
+      title_source: null,
+      title_updated_at: null,
+      display_title: "status-session",
       receipt: { label: "Saved to Mimir", detail: "1 exchange in this session", action_label: null },
       dashboard_url: null,
     });
@@ -841,6 +886,74 @@ describe("Worker integration", () => {
     expect(result.matches.map((match) => match.session_id)).toContain("intent-session");
   });
 
+  it("projects derived and generated titles only from successfully saved redacted exchanges", async () => {
+    await env.DB.prepare("INSERT INTO config(key, value) VALUES('redact.patterns', '[\"customer-[0-9]+\"]')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-harness": "opencode" };
+    const report = (session: string, payload: Record<string, unknown>) => request(`/sessions/${session}/exchanges`, { method: "POST", headers, body: JSON.stringify(payload) });
+    const base = { ts: "2026-07-26T12:00:00Z", model: "openai/test", usage: { input_tokens: 2, output_tokens: 1 }, latency_ms: 10 };
+
+    expect((await report("title-projection", { ...base, exchange_id: "title-primary", request_kind: "primary", request: { messages: [{ role: "user", content: "Implement durable title precedence" }] }, response: { choices: [] } })).status).toBe(201);
+    expect(await env.DB.prepare("SELECT intent, title, title_source FROM sessions WHERE id = 'title-projection'").first()).toEqual({ intent: "Implement durable title precedence", title: "Implement durable title precedence", title_source: "derived" });
+
+    expect((await report("title-projection", { ...base, ts: "2026-07-26T12:01:00Z", exchange_id: "title-generated", request_kind: "title", request: { messages: [] }, response: { choices: [{ message: { content: "Fix customer-123 title storage" } }] } })).status).toBe(201);
+    expect(await env.DB.prepare("SELECT intent, title, title_source FROM sessions WHERE id = 'title-projection'").first()).toEqual({ intent: "Implement durable title precedence", title: "Fix [REDACTED] title storage", title_source: "generated" });
+
+    const listed = await (await request("/sessions", { headers: { authorization: "Bearer machine-token" } })).json() as { sessions: Array<Record<string, unknown>> };
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "title-projection", title: "Fix [REDACTED] title storage", display_title: "Fix [REDACTED] title storage" }));
+    const search = await request("/search", { method: "POST", headers, body: JSON.stringify({ query: "title storage", types: ["title"] }) });
+    expect((await search.json() as { matches: Array<Record<string, unknown>> }).matches).toContainEqual(expect.objectContaining({ session_id: "title-projection", display_title: "Fix [REDACTED] title storage" }));
+
+    vi.spyOn(env.LOGS, "put").mockRejectedValueOnce(new Error("injected title R2 failure"));
+    expect((await report("failed-title-projection", { ...base, exchange_id: "title-failed", request_kind: "title", request: {}, response: { choices: [{ message: { content: "Must not project" } }] } })).status).toBe(500);
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'failed-title-projection'").first()).toEqual({ title: null, title_source: null });
+  });
+
+  it("enforces manual, harness, generated, and derived title precedence", async () => {
+    const authHeaders = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    await request("/sessions/title-precedence/events", { method: "POST", headers: authHeaders, body: JSON.stringify({ version: 1, kind: "heartbeat", ts: "2026-07-26T12:00:00Z", title: "Harness title" }) });
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'title-precedence'").first()).toEqual({ title: "Harness title", title_source: "harness" });
+
+    const generated = await request("/sessions/title-precedence/exchanges", { method: "POST", headers: authHeaders, body: JSON.stringify({ exchange_id: "precedence-generated", ts: "2026-07-26T12:00:30Z", model: "openai/test", request: {}, response: { choices: [{ message: { content: "Generated title" } }] }, usage: { input_tokens: 1, output_tokens: 1 }, latency_ms: 1, request_kind: "title" }) });
+    expect(generated.status).toBe(201);
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'title-precedence'").first()).toEqual({ title: "Harness title", title_source: "harness" });
+
+    const manual = await dashboardRequest("/dashboard/api/sessions/title-precedence/title", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "  Manual   title  " }) });
+    expect(manual.status).toBe(200);
+    expect(await manual.json()).toMatchObject({ session: { title: "Manual title", title_source: "manual", display_title: "Manual title" } });
+
+    await request("/sessions/title-precedence/events", { method: "POST", headers: authHeaders, body: JSON.stringify({ version: 1, kind: "heartbeat", ts: "2026-07-26T12:01:00Z", title: "Later harness title" }) });
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'title-precedence'").first()).toEqual({ title: "Manual title", title_source: "manual" });
+
+    expect((await dashboardRequest("/dashboard/api/sessions/title-precedence/title", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: " " }) })).status).toBe(400);
+    expect((await dashboardRequest("/dashboard/api/sessions/title-precedence/title", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "x".repeat(201) }) })).status).toBe(400);
+    expect((await dashboardRequest("/dashboard/api/sessions/missing/title", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Valid" }) })).status).toBe(404);
+    expect((await request("/dashboard/api/sessions/title-precedence/title", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Unauthorized" }) })).status).toBe(403);
+  });
+
+  it("reconciles a persisted generated title candidate after R2 succeeds", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('reconciled-title', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')").run();
+    await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, request_kind, title_candidate) VALUES ('reconciled-title-exchange', 'reconciled-title', '2026-01-01T00:00:00Z', 'chat', 'openai/test', 1, 'log/reconciled-title.json', 'accepted', '2026-01-01T00:00:00Z', 'title', 'Recovered generated title')").run();
+    await env.LOGS.put("log/reconciled-title.json", "{}");
+
+    await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+
+    expect(await env.DB.prepare("SELECT title, title_source, title_updated_at FROM sessions WHERE id = 'reconciled-title'").first()).toEqual({ title: "Recovered generated title", title_source: "generated", title_updated_at: "2026-01-01T00:00:00Z" });
+  });
+
+  it("falls back from a missing generated title object without clearing title locks", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, last_active_at, boundary, intent, title, title_source, title_updated_at) VALUES ('missing-generated-title', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header', 'Preserved session intent', 'Missing generated title', 'generated', '2026-01-01T00:01:00Z');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, saved_at, request_kind, title_candidate) VALUES ('missing-generated-title-exchange', 'missing-generated-title', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/missing-generated-title.json', 'saved', '2026-01-01T00:01:01Z', 'title', 'Missing generated title');
+      INSERT INTO sessions(id, started_at, state, last_active_at, boundary, intent, title, title_source, title_updated_at) VALUES ('locked-missing-title', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header', 'Locked intent', 'Manual lock', 'manual', '2026-01-01T00:02:00Z');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, saved_at, request_kind, title_candidate) VALUES ('locked-missing-title-exchange', 'locked-missing-title', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/locked-missing-title.json', 'saved', '2026-01-01T00:01:01Z', 'title', 'Missing generated title');
+    `);
+
+    await request("/reconcile", { method: "POST", headers: { authorization: "Bearer machine-token" } });
+
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'missing-generated-title'").first()).toEqual({ title: "Preserved session intent", title_source: "derived" });
+    expect(await env.DB.prepare("SELECT title, title_source FROM sessions WHERE id = 'locked-missing-title'").first()).toEqual({ title: "Manual lock", title_source: "manual" });
+  });
+
   it("filters search matches by requested types", async () => {
     await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary, intent) VALUES ('typed-session', '2026-01-01T00:00:00Z', 'inactive', '2026-01-01T00:00:00Z', 'header', 'zebra intent only')").run();
     await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at, request_excerpt, response_excerpt) VALUES ('typed-exchange', 'typed-session', '2026-01-01T00:00:00Z', 'chat', 1, 'log/typed.json', 'saved', '2026-01-01T00:00:01Z', 'plain request', 'plain response')").run();
@@ -922,8 +1035,26 @@ describe("Session object", () => {
     const { body } = await objectState("object-live");
     expect(body).toMatchObject({ session_id: "object-live", liveness: "active", turn_count: 1, tokens_in: 5, tokens_out: 3, finalized_at: null });
     expect(await env.DB.prepare("SELECT state, harness, model_primary FROM sessions WHERE id = 'object-live'").first()).toEqual({ state: "active", harness: null, model_primary: "openai/test" });
-    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string }> };
-    expect(listed.sessions.map((session) => session.id)).toContain("object-live");
+    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; liveness: string }> };
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "object-live", liveness: "active" }));
+  });
+
+  it("serves object state through Access-protected dashboard routes and leaves D1-only history intact", async () => {
+    const stale = new Date(Date.now() - 3 * 60_000).toISOString();
+    await postEvent("dashboard-object-state", { version: 1, kind: "heartbeat", ts: stale });
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, boundary) VALUES ('historical-only', '2026-01-01T00:00:00Z', 'inactive', 'header')").run();
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, boundary) VALUES ('d1-active-only', '2026-01-02T00:00:00Z', 'active', 'header')").run();
+
+    const state = await dashboardRequest("/dashboard/api/sessions/dashboard-object-state/object-state");
+    expect(state.status).toBe(200);
+    expect(await state.json()).toMatchObject({ session_id: "dashboard-object-state", liveness: "disconnected" });
+    expect((await dashboardRequest("/dashboard/api/sessions/historical-only/object-state")).status).toBe(404);
+
+    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; liveness: string }> };
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "dashboard-object-state", liveness: "disconnected" }));
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "d1-active-only", liveness: "disconnected" }));
+    expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "historical-only", liveness: "finalized" }));
+    expect((await request("/dashboard/api/sessions/dashboard-object-state/object-state")).status).toBe(403);
   });
 
   it("reports the machine API version and capabilities", async () => {
@@ -1018,6 +1149,49 @@ describe("Session object", () => {
     expect(snapshot.state).toMatchObject({ session_id: "object-feed", liveness: "active", turn_count: 1 });
     expect(snapshot.turns).toHaveLength(1);
     socket.close(1000);
+  });
+
+  it("passes dashboard WebSockets through to the session object without machine credentials", async () => {
+    await postEvent("dashboard-feed", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", excerpt: "dashboard live turn" } });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(new Request("http://localhost/dashboard/api/sessions/dashboard-feed/live", { headers: { upgrade: "websocket" } }), env as Env & { OPENROUTER_API_KEY: string }, ctx);
+    expect(response.status).toBe(101);
+    const socket = response.webSocket!;
+    socket.accept();
+    const message = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("dashboard snapshot timeout")), 5_000);
+      socket.addEventListener("message", (event) => {
+        clearTimeout(timer);
+        resolve(String(event.data));
+      }, { once: true });
+    });
+    expect(JSON.parse(message)).toMatchObject({ type: "snapshot", state: { session_id: "dashboard-feed", liveness: "active" }, turns: [{ excerpt: "dashboard live turn" }] });
+    const liveMessages = new Promise<Array<Record<string, unknown>>>((resolve, reject) => {
+      const messages: Array<Record<string, unknown>> = [];
+      const timer = setTimeout(() => reject(new Error("dashboard live events timeout")), 5_000);
+      socket.addEventListener("message", (event) => {
+        const parsed = JSON.parse(String(event.data)) as Record<string, unknown>;
+        messages.push(parsed);
+        if (parsed.type === "finalized") {
+          clearTimeout(timer);
+          resolve(messages);
+        }
+      });
+    });
+    const closed = new Promise<CloseEvent>((resolve) => socket.addEventListener("close", resolve, { once: true }));
+    await postEvent("dashboard-feed", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", excerpt: "streamed turn" } });
+    await postEvent("dashboard-feed", { version: 1, kind: "end", ts: new Date().toISOString(), reason: "dashboard test" });
+    const streamed = await liveMessages;
+    expect(streamed).toContainEqual(expect.objectContaining({ type: "event", event: expect.objectContaining({ kind: "turn", turn: expect.objectContaining({ excerpt: "streamed turn" }) }) }));
+    expect(streamed).toContainEqual(expect.objectContaining({ type: "finalized", reason: "dashboard test" }));
+    await expect(closed).resolves.toMatchObject({ code: 1000, reason: "session finalized" });
+    await waitOnExecutionContext(ctx);
+
+    const finalizedFeed = await worker.fetch(new Request("http://localhost/dashboard/api/sessions/dashboard-feed/live", { headers: { upgrade: "websocket" } }), env as Env & { OPENROUTER_API_KEY: string }, createExecutionContext());
+    expect(finalizedFeed.status).toBe(409);
+
+    expect((await request("/dashboard/api/sessions/dashboard-feed/live", { headers: { upgrade: "websocket" } })).status).toBe(403);
+    expect((await dashboardRequest("/dashboard/api/sessions/dashboard-feed/live")).status).toBe(426);
   });
 
   it("reports proxied exchanges to the session object", async () => {

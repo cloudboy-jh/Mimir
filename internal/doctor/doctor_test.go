@@ -107,6 +107,9 @@ func TestStructuredReportGroupsOperationalState(t *testing.T) {
 	report := Report{OK: false, Checks: []Check{
 		{Name: "managed-artifact plugins/opencode/mimir.ts", Status: "failed", Detail: "outdated", Repair: "mimir update"},
 		{Name: "opencode.plugin-load", Status: "failed", Detail: "restart required", Repair: "restart OpenCode"},
+		{Name: "claude-code.plugin-load", Status: "failed", Detail: "staged", Repair: "run /reload-plugins"},
+		{Name: "codex.plugin-load", Status: "failed", Detail: "staged", Repair: "restart Codex"},
+		{Name: "cursor.plugin-load", Status: "failed", Detail: "staged", Repair: "open a session"},
 		{Name: "worker.bundle", Status: "ok", Detail: "current"},
 		{Name: "connection", Status: "ok", Detail: "connected"},
 	}}
@@ -116,6 +119,11 @@ func TestStructuredReportGroupsOperationalState(t *testing.T) {
 	}
 	if structured.Active["opencode.plugin-load"].Repair != "restart OpenCode" {
 		t.Fatalf("active = %#v", structured.Active)
+	}
+	for _, name := range []string{"claude-code.plugin-load", "codex.plugin-load", "cursor.plugin-load"} {
+		if _, ok := structured.Active[name]; !ok {
+			t.Fatalf("%s not grouped as active: %#v", name, structured)
+		}
 	}
 	if structured.Deployed["worker.bundle"].Status != "ok" || structured.Connection["connection"].Status != "ok" {
 		t.Fatalf("structured = %#v", structured)
@@ -160,7 +168,7 @@ func TestHarnessLoadChecksCompareActivePluginHashes(t *testing.T) {
 	if checks[0].Name != "opencode.plugin-load" || checks[0].Status != "ok" || !strings.Contains(checks[0].Detail, "installed, active, and current") {
 		t.Fatalf("OpenCode check %#v", checks[0])
 	}
-	if checks[1].Name != "hermes.plugin-load" || checks[1].Status != "failed" || checks[1].Repair != "restart Hermes" || !strings.Contains(checks[1].Detail, "restart required") {
+	if checks[1].Name != "hermes.plugin-load" || checks[1].Status != "failed" || checks[1].Repair != "restart Hermes" || !strings.Contains(checks[1].Detail, "active integration") {
 		t.Fatalf("Hermes check %#v", checks[1])
 	}
 }
@@ -182,7 +190,7 @@ func TestHarnessLoadChecksTreatLegacyEndpointAsUnknown(t *testing.T) {
 	}
 }
 
-func TestHarnessLoadChecksRequireRestartWhenNoLoadReported(t *testing.T) {
+func TestHarnessLoadChecksRemainStagedWhenNoLoadReported(t *testing.T) {
 	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) {
 		return []byte(`{"loads":[]}`), nil
 	}))
@@ -194,7 +202,22 @@ func TestHarnessLoadChecksRequireRestartWhenNoLoadReported(t *testing.T) {
 	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
 		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
 	})
-	if len(checks) != 1 || checks[0].Status != "failed" || checks[0].Repair != "restart Hermes" {
+	if len(checks) != 1 || checks[0].Status != "failed" || checks[0].Repair != "restart Hermes" || !strings.Contains(checks[0].Detail, "staged") {
+		t.Fatalf("checks %#v", checks)
+	}
+}
+
+func TestCursorLoadCheckUsesHotReloadAction(t *testing.T) {
+	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) {
+		return []byte(`{"loads":[]}`), nil
+	}))
+	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{InstallationID: "install-1"}, nil }
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{Source: "plugins/cursor/hooks.json", Status: install.ArtifactCurrent, BundleHash: "current"}}}
+	var checks []Check
+	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
+		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
+	})
+	if len(checks) != 1 || strings.Contains(strings.ToLower(checks[0].Detail+checks[0].Repair), "restart") || !strings.Contains(checks[0].Repair, "reloads hooks.json") {
 		t.Fatalf("checks %#v", checks)
 	}
 }

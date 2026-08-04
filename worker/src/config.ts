@@ -9,6 +9,8 @@ export type CaptureDecision =
   | { capture: "scheduled"; reason: "enabled" }
   | { capture: "skipped"; reason: "disabled" | "excluded_repository" | "excluded_model" | "missing_response_body" };
 
+const CONFIG_KEYS = new Set(["save.enabled", "save.exclude_repos", "save.exclude_models", "redact.patterns", "session.gap_minutes"]);
+
 export async function readConfig(db: D1Database) {
   const result = await db.prepare("SELECT key, value FROM config").all<{ key: string; value: string }>();
   const config: Record<string, unknown> = {
@@ -17,14 +19,18 @@ export async function readConfig(db: D1Database) {
     "save.exclude_models": [],
     "redact.patterns": ["builtin"],
     "session.gap_minutes": 15,
-    "session.abandon_days": 7,
   };
-  for (const row of result.results) config[row.key] = parseJSON(row.value);
+  for (const row of result.results) {
+    if (CONFIG_KEYS.has(row.key)) config[row.key] = parseJSON(row.value);
+  }
   return config;
 }
 
 export async function readSaveConfig(db: D1Database): Promise<SaveConfig> {
-  const config = await readConfig(db);
+  return saveConfig(await readConfig(db));
+}
+
+export function saveConfig(config: Record<string, unknown>): SaveConfig {
   return {
     enabled: config["save.enabled"] !== false,
     excludeRepos: stringArray(config["save.exclude_repos"]),
@@ -46,15 +52,13 @@ export function decideCapture(config: SaveConfig, repo: string | null, model: st
 }
 
 export function validateConfigValues(values: Record<string, unknown>) {
-  const allowed = new Set(["save.enabled", "save.exclude_repos", "save.exclude_models", "redact.patterns", "session.gap_minutes", "session.abandon_days"]);
   for (const [key, value] of Object.entries(values)) {
-    if (!allowed.has(key)) return `unknown config key: ${key}`;
+    if (!CONFIG_KEYS.has(key)) return `unknown config key: ${key}`;
     if (key === "save.enabled" && typeof value !== "boolean") return `${key} must be boolean`;
     if (["save.exclude_repos", "save.exclude_models", "redact.patterns"].includes(key)) {
       if (!Array.isArray(value) || value.length > 100 || value.some((item) => typeof item !== "string" || item.length > 256)) return `${key} must be an array of strings up to 256 characters`;
     }
     if (key === "session.gap_minutes" && (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 1440)) return `${key} must be an integer from 1 to 1440`;
-    if (key === "session.abandon_days" && (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 365)) return `${key} must be an integer from 1 to 365`;
   }
   return "";
 }

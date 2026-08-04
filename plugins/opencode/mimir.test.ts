@@ -47,9 +47,9 @@ describe("session hierarchy", () => {
     };
     try {
       const hooks = await plugin.server({ directory: "/repo/mimir" } as never);
-      await hooks.event!({ event: { type: "session.created", properties: { info: { id: "child", parentID: "root" } } } } as never);
+      await hooks.event!({ event: { type: "session.created", properties: { info: { id: "child", parentID: "root", title: "Fix session titles" } } } } as never);
       await Bun.sleep(10);
-      expect(body).toMatchObject({ kind: "heartbeat", session_id: "child", parent_session_id: "root" });
+      expect(body).toMatchObject({ kind: "heartbeat", session_id: "child", parent_session_id: "root", title: "Fix session titles" });
     } finally {
       globalThis.fetch = originalFetch;
       if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;

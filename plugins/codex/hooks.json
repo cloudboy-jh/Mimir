@@ -1,0 +1,11 @@
+{
+  "description": "Report Codex lifecycle and completed turns to Mimir.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "PostCompact": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex", "timeout": 3 }] }]
+  }
+}

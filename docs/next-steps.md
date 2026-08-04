@@ -45,49 +45,15 @@ Remaining work:
      `mimir tui` as the adaptive AltScreen exception to compact command surfaces.
    - Update those documents only when behavior changes.
 
-### Lifecycle configuration
-
-- Remove `session.abandon_days` from the public configuration contract or
-  implement and document the lifecycle process that consumes it. Do not keep
-  accepting a setting with no behavioral effect.
-
-### Session lifecycle and harness capture
-
-The architecture is defined in [`session-lifecycle.md`](session-lifecycle.md).
-Foundation (event format, Session Durable Object, proxy reporting, session
-object routes) is implemented, as are both reporters: the OpenCode plugin and
-the Hermes plugin. Remaining build order:
-
-- **Dashboard live view + liveness badges.** Consume the session-object behavior
-  that already shipped:
-  - Session detail page (`worker/web` sessions detail route): subscribe to
-    the live feed, render turns as they stream in, show finalization when it
-    happens.
-  - Sessions list: liveness badge per active session — `active` (<90s
-    heartbeat), `disconnected` (silence, unfinalized), `finalized` — from the
-    object-state projection.
-  - **Current gap:** `/sessions/:id/live` and `/sessions/:id/object-state` are
-    machine-token routes; the browser must not hold machine tokens. Add
-    Access-protected equivalents under `/dashboard/api/sessions/:id/live`
-    (websocket passthrough to the object) and
-    `/dashboard/api/sessions/:id/object-state`, registered in
-    `worker/src/routes/dashboard.ts`. Dashboard API routes already bypass
-    Access on localhost for development.
-  - Session objects only exist for sessions that reported events; history
-    views keep reading D1 exactly as today. The live feed is additive.
-
-### Installer portability
-
-- Add native macOS and Windows CI smoke jobs for install, update, and uninstall.
-  Cross-compilation and Linux tests do not exercise platform filesystem aliases
-  or Windows executable replacement behavior.
-- Keep the smoke environment isolated from real harness configuration and
-  verify the receipt, installed binary, managed artifacts, and cleanup result.
-
 ## Operational Follow-ups
 
 - Add required-reviewer protection to the existing GitHub `release`
   environment.
+- Complete first deployed desktop/TUI verification for Hermes and real
+  install, activation, capture, resume, compaction, offline retry, update, and
+  uninstall validation for Claude Code, Codex, and Cursor on each supported
+  operating system. Hook installation remains staged until doctor observes a
+  matching harness load.
 - Define a recommended reconciliation cadence and an explicit policy for stale
   accepted rows and orphaned R2 objects.
 - Keep `docs/Spec.md` synchronized with the live Access-protected dashboard and
@@ -105,6 +71,21 @@ the Hermes plugin. Remaining build order:
 
 ## Recently Closed
 
+- Added Access-protected dashboard session-object state and WebSocket routes,
+  live turn rendering, finalization updates, and verified liveness badges.
+  Historical D1-only sessions remain additive fallbacks and never receive a
+  false active state.
+- Added native macOS and Windows CI coverage for the receipt-owned installer,
+  hook outbox, lifecycle integration, diagnostics, and CLI build.
+- Removed the unused lifecycle-retention setting from the public configuration
+  contract; automatic retention or abandonment remains out of scope.
+- Added receipt-owned Claude Code, Codex, and Cursor command-hook integrations
+  with bounded reconstructed exchanges, private retry outboxes, lifecycle
+  events, and active-source diagnostics. OpenCode direct-provider exchanges are
+  reconstructed from its session store; Hermes direct providers remain
+  event-only.
+- Added first-class session titles with explicit source precedence: manual,
+  harness, generated title exchange, then derived primary intent.
 - Live Access-protected dashboard data, request-log cursor pagination, R2
   payload detail, and outcome updates.
 - Exact Cloudflare Access destinations for `/dashboard/auth`,

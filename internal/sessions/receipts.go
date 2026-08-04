@@ -10,18 +10,22 @@ import (
 )
 
 type Receipt struct {
-	ID           string  `json:"id"`
-	StartedAt    string  `json:"started_at"`
-	State        string  `json:"state"`
-	Outcome      string  `json:"outcome"`
-	Model        *string `json:"model_primary"`
-	Intent       *string `json:"intent"`
-	Repo         *string `json:"repo"`
-	Harness      *string `json:"harness"`
-	RequestCount int     `json:"request_count"`
-	TokensIn     int     `json:"tokens_in"`
-	TokensOut    int     `json:"tokens_out"`
-	Capture      struct {
+	ID             string  `json:"id"`
+	StartedAt      string  `json:"started_at"`
+	State          string  `json:"state"`
+	Outcome        string  `json:"outcome"`
+	Model          *string `json:"model_primary"`
+	Title          *string `json:"title"`
+	TitleSource    *string `json:"title_source"`
+	TitleUpdatedAt *string `json:"title_updated_at"`
+	DisplayTitle   *string `json:"display_title"`
+	Intent         *string `json:"intent"`
+	Repo           *string `json:"repo"`
+	Harness        *string `json:"harness"`
+	RequestCount   int     `json:"request_count"`
+	TokensIn       int     `json:"tokens_in"`
+	TokensOut      int     `json:"tokens_out"`
+	Capture        struct {
 		Status           string `json:"status"`
 		SavedExchanges   int    `json:"saved_exchanges"`
 		FailedExchanges  int    `json:"failed_exchanges"`
@@ -101,11 +105,18 @@ func FormatReceipts(receipts []Receipt, limit int) string {
 			parts = append(parts, "active")
 		}
 		text.WriteString(strings.Join(parts, " · "))
-		if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
-			text.WriteString("\n  " + truncate(strings.TrimSpace(*receipt.Intent), 100))
-		}
+		text.WriteString("\n  " + truncate(DisplayTitle(receipt.DisplayTitle, receipt.Title, receipt.Intent), 100))
 	}
 	return text.String()
+}
+
+func DisplayTitle(displayTitle, title, intent *string) string {
+	for _, value := range []*string{displayTitle, title, intent} {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return strings.TrimSpace(*value)
+		}
+	}
+	return "Untitled session"
 }
 
 func ValidOutcome(outcome string) bool {

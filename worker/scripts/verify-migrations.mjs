@@ -84,6 +84,14 @@ try {
     VALUES ('machine-hash', 'migration-test', 'opencode', '${"a".repeat(64)}', 'install-1', '2026-07-15T12:00:00Z', '2026-07-15T12:00:00Z');
   `);
 
+  cpSync(join(root, "migrations", "0012_session_titles.sql"), join(migrations, "0012_session_titles.sql"));
+  cpSync(join(root, "migrations", "0013_generic_harness_loads.sql"), join(migrations, "0013_generic_harness_loads.sql"));
+  applyMigrations();
+  execute(`
+    INSERT INTO harness_loads(token_hash, token_label, harness, artifact_sha256, installation_id, client_loaded_at, reported_at)
+    VALUES ('machine-hash', 'migration-test', 'claude-code', '${"b".repeat(64)}', 'install-1', '2026-07-15T12:01:00Z', '2026-07-15T12:01:00Z');
+  `);
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
@@ -107,7 +115,10 @@ try {
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'hermes_credentials') AS hermes_credentials_table,
       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'harness_loads') AS harness_loads_table,
       (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id') AS session_parent_column,
-      (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_artifact_sha256
+      (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('title', 'title_source', 'title_updated_at')) AS session_title_columns,
+      (SELECT COUNT(*) FROM pragma_table_info('exchanges') WHERE name = 'title_candidate') AS exchange_title_column,
+      (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash' AND harness = 'opencode') AS harness_artifact_sha256,
+      (SELECT COUNT(*) FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_load_count
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -137,7 +148,10 @@ try {
     hermes_credentials_table: 1,
     harness_loads_table: 1,
     session_parent_column: 1,
+    session_title_columns: 3,
+    exchange_title_column: 1,
     harness_artifact_sha256: "a".repeat(64),
+    harness_load_count: 2,
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

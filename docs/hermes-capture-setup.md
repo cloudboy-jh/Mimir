@@ -14,16 +14,18 @@ Hermes capture has two cooperating paths:
    plugin (Hermes' own plugin system, no upstream changes) that reports
    turns, heartbeats, and session ends to `/sessions/:id/events`. It covers
    the providers the proxy cannot reach: Nous portal account, direct
-   providers, anything not routed through the Worker.
+   providers, and anything not routed through the Worker. These are bounded
+   event summaries, not persisted request/response exchange objects.
 
-The plugin decides its mode once at startup: when the managed OpenRouter
-redirect is active (`OPENROUTER_BASE_URL` points at the Mimir Worker) it runs
-**liveness-only** — heartbeats and ends, no turn events, because the proxy is
-already capturing turns and double reporting would inflate the session. When
-Hermes talks to providers directly it runs **full mode** and reports every
-completed turn (via Hermes' `post_llm_call` hook) plus session lifecycle
-(`on_session_start`, `on_session_end`, `on_session_reset`,
-`on_session_finalize`).
+The plugin classifies each turn from `pre_api_request` provider and base-URL
+metadata. A turn using the managed OpenRouter redirect is **liveness-only**:
+heartbeats and ends continue, but no plugin turn event is emitted because the
+proxy is already capturing it. When Hermes talks to a provider directly, the
+plugin reports the completed-turn summary through `post_llm_call`. The plugin
+registers exactly `pre_api_request`,
+`post_llm_call`, `on_session_start`, and `on_session_finalize`; start and
+finalize provide lifecycle heartbeats and ends. It does not register
+`on_session_end` or `on_session_reset`.
 
 The canonical installer embeds the plugin and enrolls its exact files under
 the detected Hermes home (`~/.hermes/plugins/mimir/` or the active Windows
@@ -88,8 +90,9 @@ mid-session switches between OpenRouter models.
 
 Direct Nous, Anthropic OAuth, Codex, Gemini, and other provider transports bypass
 the Worker and are not captured **by the proxy** — install the Hermes plugin
-(above) to capture them from inside the harness. Mimir does not intercept TLS
-traffic.
+(above) to retain completed-turn event summaries from inside the harness. Their
+request and response bodies are not written to R2 or indexed as searchable
+exchanges. Mimir does not intercept TLS traffic.
 
 Hermes auxiliary tools that hard-code OpenRouter's URL also remain direct and
 uncaptured. They retain the real OpenRouter credential, so they continue working

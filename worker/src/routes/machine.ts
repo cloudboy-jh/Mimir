@@ -5,12 +5,12 @@ import { ingestReportedExchange } from "../reported-exchanges";
 import { parseSessionEvent, SESSION_ID } from "../session-events";
 import { canonicalOutcome, endSession, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
 import { attachCaptureSummary, captureSummary, captureTreeSummary, reconcile, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
+import { sessionTitleColumns, sessionTitleSearchClause } from "../session-titles";
 import type { AppEnv } from "../types";
 
-const SEARCH_TYPES = ["intent", "excerpts", "files", "errors"] as const;
+const SEARCH_TYPES = ["title", "intent", "excerpts", "files", "errors"] as const;
 const MACHINE_API_VERSION = 1;
-const MACHINE_CAPABILITIES = ["canonical_exchanges", "harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search"] as const;
-const HARNESS_LOAD_NAMES = ["opencode", "hermes"] as const;
+const MACHINE_CAPABILITIES = ["canonical_exchanges", "harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search", "session_titles"] as const;
 const HARNESS_LOAD_KEYS = ["version", "harness", "source_sha256", "bundle_version", "cli_version", "cli_commit", "installation_id"] as const;
 type SearchType = (typeof SEARCH_TYPES)[number];
 
@@ -22,7 +22,7 @@ function searchTypes(types: string[] | undefined): (SearchType | null)[] {
 }
 
 function clauseNeedles(type: SearchType) {
-  return type === "excerpts" ? 2 : 1;
+  return type === "excerpts" || type === "title" ? 2 : 1;
 }
 
 export function registerMachineRoutes(app: Hono<AppEnv>) {
@@ -97,7 +97,7 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   });
 
   app.get("/sessions/:id/status", async (c) => {
-    const session = await c.env.DB.prepare("SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
+    const session = await c.env.DB.prepare(`SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, ${sessionTitleColumns("sessions")} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
     const capture = await captureSummary(c.env.DB, c.req.param("id"));
     const hostname = new URL(c.req.url).hostname;
@@ -182,6 +182,7 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const needle = query;
     for (const type of searchTypes(body.types)) {
       if (!type) return c.json({ error: "invalid search type" }, 400);
+      if (type === "title") clauses.push(sessionTitleSearchClause("s"));
       if (type === "intent") clauses.push("instr(lower(s.intent), lower(?)) > 0");
       if (type === "excerpts") clauses.push("(instr(lower(e.request_excerpt), lower(?)) > 0 OR instr(lower(e.response_excerpt), lower(?)) > 0)");
       if (type === "files") clauses.push("EXISTS (SELECT 1 FROM session_files sf WHERE sf.session_id = s.id AND instr(lower(sf.file), lower(?)) > 0)");
@@ -200,7 +201,7 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
       values.push(canonical);
     }
     where.push("e.capture_status = 'saved'");
-    const sql = `${SESSION_TREE_CTE} SELECT root.id AS session_id, root.started_at, root.work_outcome AS outcome, root.repo, root.model_primary, e.id AS exchange_id, e.request_excerpt, e.response_excerpt, e.r2_key FROM sessions s JOIN session_tree ON session_tree.id = s.id JOIN sessions root ON root.id = session_tree.root_id JOIN exchanges e ON e.session_id = s.id WHERE ${where.join(" AND ")} ORDER BY root.started_at DESC LIMIT 50`;
+    const sql = `${SESSION_TREE_CTE} SELECT root.id AS session_id, root.started_at, root.work_outcome AS outcome, root.repo, root.model_primary, root.title, root.title_source, root.title_updated_at, COALESCE(root.title, root.intent, root.id) AS display_title, e.id AS exchange_id, e.request_excerpt, e.response_excerpt, e.r2_key FROM sessions s JOIN session_tree ON session_tree.id = s.id JOIN sessions root ON root.id = session_tree.root_id JOIN exchanges e ON e.session_id = s.id WHERE ${where.join(" AND ")} ORDER BY root.started_at DESC LIMIT 50`;
     const result = await c.env.DB.prepare(sql).bind(...values).all<Record<string, unknown>>();
     const matches: Record<string, unknown>[] = [];
     let used = 0;
@@ -248,8 +249,8 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     if (values.version !== 1) {
       return c.json({ error: "version must be 1" }, 400);
     }
-    if (typeof values.harness !== "string" || !(HARNESS_LOAD_NAMES as readonly string[]).includes(values.harness)) {
-      return c.json({ error: "harness must be opencode or hermes" }, 400);
+    if (typeof values.harness !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(values.harness)) {
+      return c.json({ error: "harness must be a lowercase identifier" }, 400);
     }
     if (typeof values.source_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(values.source_sha256)) {
       return c.json({ error: "source_sha256 must be a lowercase SHA-256 hex digest" }, 400);

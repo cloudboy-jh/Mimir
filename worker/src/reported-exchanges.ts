@@ -1,8 +1,9 @@
 import type { Context } from "hono";
 import { classifyRequestKind, deriveIntent, deriveSessionFields, excerpt, extractFinishReason, extractProvider, finalizeAcceptedExchange, readBoundedText, redact, type RequestKind } from "./capture";
-import { readConfig, stringArray } from "./config";
+import { decideCapture, readConfig, saveConfig, shouldSave, stringArray } from "./config";
 import { reportSessionEvent, SESSION_ID } from "./session-events";
 import { resolveSession } from "./sessions";
+import { extractGeneratedTitle, normalizeSessionTitle } from "./session-titles";
 import type { AppEnv } from "./types";
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
@@ -12,7 +13,7 @@ const MAX_JSON_VALUES = 100_000;
 const MAX_STRING_CHARS = 2 * 1024 * 1024;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_KINDS = new Set<RequestKind>(["primary", "title", "summary", "compaction"]);
-const PAYLOAD_FIELDS = new Set(["exchange_id", "ts", "model", "provider", "request", "response", "usage", "latency_ms", "request_kind"]);
+const PAYLOAD_FIELDS = new Set(["exchange_id", "ts", "model", "provider", "request", "response", "usage", "latency_ms", "request_kind", "title"]);
 const USAGE_FIELDS = new Set(["input_tokens", "output_tokens"]);
 
 type ReportedExchange = {
@@ -25,6 +26,7 @@ type ReportedExchange = {
   usage: { input_tokens: number; output_tokens: number };
   latency_ms: number;
   request_kind: RequestKind;
+  title: string | null;
 };
 
 export async function ingestReportedExchange(c: Context<AppEnv>) {
@@ -53,6 +55,18 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
   if (prior?.capture_status === "saved") return duplicateResponse(c, prior, sessionId);
   if (prior && prior.session_id !== sessionId) return duplicateResponse(c, prior, sessionId);
   if (prior?.capture_status === "accepted") return c.json({ error: "exchange save in progress" }, 503);
+
+  const repo = metadata(c.req.header("x-mimir-repo"));
+  const harness = metadata(c.req.header("x-mimir-harness"));
+  const sourceRef = metadata(c.req.header("x-mimir-git-ref"));
+  const acceptedAt = new Date().toISOString();
+  const config = await readConfig(c.env.DB);
+  const policy = saveConfig(config);
+  if (!shouldSave(policy, repo, parsed.model)) {
+    const decision = decideCapture(policy, repo, parsed.model, true);
+    if (decision.capture !== "skipped") throw new Error("inconsistent reported exchange capture decision");
+    return c.json({ exchange_id: parsed.exchange_id, session_id: sessionId, capture_status: "skipped", capture_reason: decision.reason, duplicate: false });
+  }
   if (prior) {
     await c.env.DB.batch([
       c.env.DB.prepare("DELETE FROM exchange_files WHERE exchange_id = ?").bind(parsed.exchange_id),
@@ -60,15 +74,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       c.env.DB.prepare("DELETE FROM exchanges WHERE id = ? AND session_id = ? AND capture_status = 'failed'").bind(parsed.exchange_id, sessionId),
     ]);
   }
-
-  const repo = metadata(c.req.header("x-mimir-repo"));
-  const harness = metadata(c.req.header("x-mimir-harness"));
-  const sourceRef = metadata(c.req.header("x-mimir-git-ref"));
-  const acceptedAt = new Date().toISOString();
-  const [config, session] = await Promise.all([
-    readConfig(c.env.DB),
-    resolveSession(c.env.DB, sessionId, repo, harness, sourceRef, parsed.model, parsed.ts),
-  ]);
+  const session = await resolveSession(c.env.DB, sessionId, repo, harness, sourceRef, parsed.model, parsed.ts);
   const patterns = stringArray(config["redact.patterns"]);
   const request = redact(parsed.request, patterns);
   const response = redact(parsed.response, patterns);
@@ -79,10 +85,11 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
   const finishReason = extractFinishReason(response);
   const requestExcerpt = excerpt(JSON.stringify(request));
   const responseExcerpt = excerpt(JSON.stringify(response));
+  const titleCandidate = requestKind === "title" ? extractGeneratedTitle(response) : null;
   const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${parsed.exchange_id}.json`;
 
-  const inserted = await c.env.DB.prepare("INSERT OR IGNORE INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version, request_kind, intent_candidate) VALUES (?, ?, ?, 'harness', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'reported', ?, 1, ?, ?)")
-    .bind(parsed.exchange_id, session.id, parsed.ts, parsed.model, requestExcerpt, responseExcerpt, JSON.stringify(parsed.usage), parsed.latency_ms, repo, harness, r2Key, provider, finishReason, c.get("tokenLabel"), parsed.usage.input_tokens, parsed.usage.output_tokens, acceptedAt, requestKind, intent).run();
+  const inserted = await c.env.DB.prepare("INSERT OR IGNORE INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version, request_kind, intent_candidate, title_candidate) VALUES (?, ?, ?, 'harness', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'reported', ?, 1, ?, ?, ?)")
+    .bind(parsed.exchange_id, session.id, parsed.ts, parsed.model, requestExcerpt, responseExcerpt, JSON.stringify(parsed.usage), parsed.latency_ms, repo, harness, r2Key, provider, finishReason, c.get("tokenLabel"), parsed.usage.input_tokens, parsed.usage.output_tokens, acceptedAt, requestKind, intent, titleCandidate).run();
   if (inserted.meta.changes === 0) {
     const raced = await existingExchange(c.env.DB, parsed.exchange_id);
     if (raced) return duplicateResponse(c, raced, sessionId);
@@ -113,7 +120,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
     const objectBody = JSON.stringify(envelope);
     const r2Bytes = new TextEncoder().encode(objectBody).byteLength;
     await c.env.LOGS.put(r2Key, objectBody, { httpMetadata: { contentType: "application/json" } });
-    await finalizeAcceptedExchange(c.env.DB, parsed.exchange_id, sessionId, parsed.ts, new Date().toISOString(), harness, parsed.model, parsed.usage.input_tokens, parsed.usage.output_tokens, r2Bytes, true);
+    await finalizeAcceptedExchange(c.env.DB, parsed.exchange_id, sessionId, parsed.ts, new Date().toISOString(), harness, parsed.model, parsed.usage.input_tokens, parsed.usage.output_tokens, r2Bytes, true, titleCandidate);
   } catch (error) {
     await c.env.DB.prepare("UPDATE exchanges SET capture_status = 'failed', capture_reason = 'reported', failed_at = ?, failure_code = ? WHERE id = ? AND capture_status = 'accepted'")
       .bind(new Date().toISOString(), "reported_save_failed", parsed.exchange_id).run();
@@ -127,6 +134,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
     session_id: sessionId,
     harness,
     repo,
+    ...(parsed.title ? { title: parsed.title } : {}),
     ts: parsed.ts,
     turn: {
       exchange_id: parsed.exchange_id,
@@ -160,6 +168,7 @@ function parseReportedExchange(input: unknown): ReportedExchange | { error: stri
   if (!boundedInteger(usage.input_tokens) || !boundedInteger(usage.output_tokens)) return { error: "invalid usage token counts" };
   if (!boundedInteger(body.latency_ms)) return { error: "invalid latency_ms" };
   if (!REQUEST_KINDS.has(body.request_kind as RequestKind)) return { error: "invalid request_kind" };
+  if (body.title !== undefined && normalizeSessionTitle(body.title) === null) return { error: "invalid title" };
   return {
     exchange_id: body.exchange_id,
     ts: new Date(body.ts).toISOString(),
@@ -170,6 +179,7 @@ function parseReportedExchange(input: unknown): ReportedExchange | { error: stri
     usage: { input_tokens: usage.input_tokens as number, output_tokens: usage.output_tokens as number },
     latency_ms: body.latency_ms as number,
     request_kind: body.request_kind as RequestKind,
+    title: body.title === undefined ? null : normalizeSessionTitle(body.title),
   };
 }
 

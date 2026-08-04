@@ -11,6 +11,7 @@ import type {
   Session,
   SessionDetail,
   SessionExchange,
+  SessionObjectState,
 } from "@/lib/api";
 
 const now = new Date("2026-07-29T17:45:00.000Z");
@@ -69,6 +70,7 @@ const sessions: Session[] = [
     started_at: iso(78),
     ended_at: iso(6),
     state: "inactive",
+    liveness: "finalized",
     last_active_at: iso(6),
     inactive_at: iso(5),
     harness: "opencode",
@@ -88,6 +90,10 @@ const sessions: Session[] = [
     request_count: 21,
     tokens_in: 381_420,
     tokens_out: 42_870,
+    title: "Restore dashboard evidence hierarchy",
+    title_source: "manual",
+    title_updated_at: iso(3),
+    display_title: "Restore dashboard evidence hierarchy",
     intent: "Correct session evidence hierarchy, multi-model rendering, and dashboard motion without hiding implementation detail",
     child_session_count: 2,
     capture: savedCapture(21),
@@ -98,6 +104,7 @@ const sessions: Session[] = [
     started_at: iso(24),
     ended_at: null,
     state: "active",
+    liveness: "active",
     last_active_at: iso(1),
     inactive_at: null,
     harness: "hermes",
@@ -113,6 +120,10 @@ const sessions: Session[] = [
     request_count: 7,
     tokens_in: 88_200,
     tokens_out: 9_840,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: "Investigate intermittent capture receipts from direct providers",
     intent: "Investigate intermittent capture receipts from direct providers",
     child_session_count: 0,
     capture: { status: "pending", saved_exchanges: 6, failed_exchanges: 0, pending_exchanges: 1, last_saved_at: iso(2) },
@@ -123,6 +134,7 @@ const sessions: Session[] = [
     started_at: iso(390),
     ended_at: iso(332),
     state: "inactive",
+    liveness: "finalized",
     last_active_at: iso(332),
     inactive_at: iso(331),
     harness: "opencode",
@@ -138,6 +150,10 @@ const sessions: Session[] = [
     request_count: 9,
     tokens_in: 144_800,
     tokens_out: 18_420,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: "Prototype a session synchronization path and validate ownership behavior",
     intent: "Prototype a session synchronization path and validate ownership behavior",
     child_session_count: 1,
     capture: savedCapture(8, 1),
@@ -148,6 +164,7 @@ const sessions: Session[] = [
     started_at: iso(1_420),
     ended_at: iso(1_419),
     state: "inactive",
+    liveness: "finalized",
     last_active_at: iso(1_419),
     inactive_at: iso(1_418),
     harness: "opencode",
@@ -163,6 +180,10 @@ const sessions: Session[] = [
     request_count: 0,
     tokens_in: 0,
     tokens_out: 0,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: null,
     intent: null,
     child_session_count: 0,
     capture: { status: "empty", saved_exchanges: 0, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: null },
@@ -191,6 +212,10 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     request_count: 2,
     tokens_in: 28_400,
     tokens_out: 3_120,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: "Audit the session detail information architecture and identify evidence regressions",
     intent: "Audit the session detail information architecture and identify evidence regressions",
   },
   {
@@ -214,6 +239,10 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     request_count: 1,
     tokens_in: 11_220,
     tokens_out: 1_980,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: "Inspect shared overlay motion and select transitions",
     intent: "Inspect shared overlay motion and select transitions",
   },
 ];
@@ -276,7 +305,7 @@ const exchanges: Exchange[] = sessionExchanges.map((exchange) => ({
 }));
 
 function detailFor(session: Session): SessionDetail {
-  const { capture, ...detailSession } = session;
+  const { capture, liveness: _liveness, ...detailSession } = session;
   const rich = session.id === sessions[0].id;
   return {
     session: detailSession,
@@ -328,7 +357,7 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
   if (url.pathname === "/dashboard/api/sessions") {
     const needle = (url.searchParams.get("q") ?? "").toLowerCase();
     const filtered = sessions.filter((session) => {
-      const haystack = [session.id, session.intent, session.repo, session.harness, ...session.models.map((model) => model.name)].filter(Boolean).join(" ").toLowerCase();
+      const haystack = [session.id, session.display_title, session.title, session.intent, session.repo, session.harness, ...session.models.map((model) => model.name)].filter(Boolean).join(" ").toLowerCase();
       return (!needle || haystack.includes(needle))
         && (!url.searchParams.get("repo") || session.repo === url.searchParams.get("repo"))
         && (!url.searchParams.get("outcome") || session.outcome === url.searchParams.get("outcome"))
@@ -351,6 +380,17 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
     return clone({ id: session.id, outcome: session.outcome }) as T;
   }
 
+  if (segments[2] === "sessions" && segments[3] && segments[4] === "title" && init.method === "PATCH") {
+    const session = sessions.find((item) => item.id === segments[3]);
+    if (!session) throw new Error("Fixture session not found.");
+    const body = JSON.parse(String(init.body ?? "{}")) as { title: string };
+    session.title = body.title.trim();
+    session.title_source = "manual";
+    session.title_updated_at = now.toISOString();
+    session.display_title = session.title || session.intent || null;
+    return clone({ session: { id: session.id, title: session.title, title_source: session.title_source, title_updated_at: session.title_updated_at, display_title: session.display_title } }) as T;
+  }
+
   if (segments[2] === "sessions" && segments[3] && segments[4] === "exchanges") {
     let filtered = segments[3] === sessions[0].id ? sessionExchanges : [];
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
@@ -362,6 +402,25 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
     if (url.searchParams.get("order") !== "asc") filtered = [...filtered].reverse();
     const { page, next_cursor } = paginate(filtered, url.searchParams);
     return clone({ exchanges: page, next_cursor }) as T;
+  }
+
+  if (segments[2] === "sessions" && segments[3] && segments[4] === "object-state") {
+    const session = sessions.find((item) => item.id === segments[3]);
+    if (!session) throw new Error("Fixture session not found.");
+    return clone({
+      session_id: session.id,
+      parent_session_id: session.parent_session_id,
+      liveness: session.liveness,
+      harness: session.harness,
+      repo: session.repo,
+      started_at: session.started_at,
+      last_event_at: session.last_active_at ?? session.started_at,
+      finalized_at: session.liveness === "finalized" ? session.ended_at : null,
+      end_reason: session.liveness === "finalized" ? "fixture" : null,
+      turn_count: session.request_count,
+      tokens_in: session.tokens_in,
+      tokens_out: session.tokens_out,
+    } satisfies SessionObjectState) as T;
   }
 
   if (segments[2] === "sessions" && segments[3]) {

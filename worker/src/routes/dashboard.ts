@@ -2,6 +2,8 @@ import type { Hono } from "hono";
 import { canonicalOutcome, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
 import { attachCaptureSummary, captureSummary, captureTreeSummary, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import type { AppEnv } from "../types";
+import { MAX_SESSION_TITLE_CHARS, normalizeSessionTitle, sessionTitleColumns, sessionTitleSearchClause, titleUpdateStatement } from "../session-titles";
+import { SESSION_ID } from "../session-events";
 
 const FACET_LIMIT = 50;
 
@@ -35,6 +37,28 @@ async function attachSessionModels(db: D1Database, rows: Array<Record<string, un
     }
     return { ...row, models };
   });
+}
+
+async function sessionObjectResponse(env: AppEnv["Bindings"], id: string, path: "/state" | "/feed", headers?: HeadersInit) {
+  const stub = env.SESSIONS.get(env.SESSIONS.idFromName(id));
+  return stub.fetch(`https://session-object${path}`, { headers });
+}
+
+async function attachSessionLiveness(env: AppEnv["Bindings"], rows: Array<Record<string, unknown>>) {
+  return Promise.all(rows.map(async (row) => {
+    if (row.state !== "active") return { ...row, liveness: "finalized" };
+    try {
+      const response = await sessionObjectResponse(env, String(row.id), "/state");
+      if (!response.ok) return { ...row, liveness: "disconnected" };
+      const state = await response.json<{ liveness?: unknown }>();
+      const liveness = state.liveness === "active" || state.liveness === "disconnected" || state.liveness === "finalized"
+        ? state.liveness
+        : "disconnected";
+      return { ...row, liveness };
+    } catch {
+      return { ...row, liveness: "disconnected" };
+    }
+  }));
 }
 
 export function registerDashboardRoutes(app: Hono<AppEnv>) {
@@ -117,8 +141,8 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const values: Array<string | number> = [];
     const q = c.req.query("q");
     if (q) {
-      where.push("(instr(lower(COALESCE(sessions.intent, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = sessions.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(sessions.id), lower(?)) > 0)");
-      values.push(q, q, q, q, q, q);
+      where.push(`(${sessionTitleSearchClause("sessions")} OR instr(lower(COALESCE(sessions.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = sessions.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(sessions.id), lower(?)) > 0)`);
+      values.push(q, q, q, q, q, q, q);
     }
     for (const [parameter, column] of [["repo", "repo"], ["app", "harness"]] as const) {
       const value = c.req.query(parameter);
@@ -156,7 +180,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const limit = boundedLimit(c.req.query("limit"));
     const result = await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY sessions.started_at DESC, sessions.id DESC LIMIT ?`).bind(...values, limit + 1).all<Record<string, unknown>>();
     const hasMore = result.results.length > limit;
-    const sessions = await attachSessionModels(c.env.DB, result.results.slice(0, limit).map(attachCaptureSummary));
+    const sessions = await attachSessionLiveness(c.env, await attachSessionModels(c.env.DB, result.results.slice(0, limit).map(attachCaptureSummary)));
     const last = sessions.at(-1) as { started_at?: string; id?: string } | undefined;
     return c.json({ sessions, next_cursor: hasMore && last?.started_at && last.id ? encodeCursor(last.started_at, last.id) : null });
   });
@@ -235,7 +259,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
   });
 
   app.get("/dashboard/api/sessions/:id/status", async (c) => {
-    const session = await c.env.DB.prepare("SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(c.req.param("id")).first();
+    const session = await c.env.DB.prepare(`SELECT state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, ${sessionTitleColumns("sessions")} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
     const capture = await captureSummary(c.env.DB, c.req.param("id"));
     c.header("cache-control", "no-store");
@@ -250,6 +274,43 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
   app.post("/dashboard/api/sessions/:id/outcome", async (c) => {
     const body = await c.req.json<{ outcome?: string; source?: string; reason?: unknown; evidence?: unknown }>();
     return updateOutcome(c, { ...body, source: "user" }, "user");
+  });
+
+  app.get("/dashboard/api/sessions/:id/object-state", async (c) => {
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+    const response = await sessionObjectResponse(c.env, id, "/state");
+    c.header("cache-control", "no-store");
+    return new Response(response.body, { status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  });
+
+  app.get("/dashboard/api/sessions/:id/live", async (c) => {
+    if ((c.req.header("upgrade") ?? "").toLowerCase() !== "websocket") return c.json({ error: "websocket upgrade required" }, 426);
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+    return sessionObjectResponse(c.env, id, "/feed", { Upgrade: "websocket" });
+  });
+
+  app.patch("/dashboard/api/sessions/:id/title", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "title")) return c.json({ error: "body must contain only title" }, 400);
+    const value = (body as Record<string, unknown>).title;
+    if (typeof value !== "string") return c.json({ error: "title must be a string" }, 400);
+    const title = normalizeSessionTitle(value);
+    if (!title) return c.json({ error: `title must be non-empty and at most ${MAX_SESSION_TITLE_CHARS} characters` }, 400);
+    const id = c.req.param("id");
+    if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
+    const now = new Date().toISOString();
+    await titleUpdateStatement(c.env.DB, id, title, "manual", now).run();
+    const session = await c.env.DB.prepare(`SELECT id, intent, ${sessionTitleColumns("sessions")} FROM sessions WHERE id = ?`).bind(id).first();
+    return c.json({ session });
   });
 
   // Facets back the dashboard's filter dropdowns. Values come from real stored

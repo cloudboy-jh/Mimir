@@ -1,5 +1,6 @@
 import type { SessionDetail, SessionExchange } from "@/lib/api";
 import { compactNumber, duration, shortDate } from "@/lib/format";
+import { displayTitle } from "@/lib/sessions";
 
 const EXPORT_LIMIT = 500;
 
@@ -17,7 +18,7 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
   const session = detail.session;
   const models = session.models?.length ? session.models.map((model) => model.name) : session.model_primary ? [session.model_primary] : [];
   const lines: string[] = [];
-  lines.push(`# ${session.intent || "Untitled session"}`, "");
+  lines.push(`# ${displayTitle(session)}`, "");
   lines.push(heading("Session"));
   lines.push(
     bullet("ID", `\`${session.id}\``),

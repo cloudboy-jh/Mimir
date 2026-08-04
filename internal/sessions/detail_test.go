@@ -12,7 +12,7 @@ func TestGetReturnsTypedDetailAndPreservesUnknownData(t *testing.T) {
 			t.Fatalf("request %s %s %#v", method, path, body)
 		}
 		return []byte(`{
-			"session":{"id":"root/child","started_at":"2026-07-31T10:00:00Z","outcome":"landed","request_count":2,"future_session_field":true},
+			"session":{"id":"root/child","started_at":"2026-07-31T10:00:00Z","outcome":"landed","request_count":2,"title":"Readable title","title_source":"user","title_updated_at":"2026-07-31T10:02:00Z","display_title":"Readable title","future_session_field":true},
 			"capture":{"status":"saved","saved_exchanges":2,"failed_exchanges":0,"pending_exchanges":0,"last_saved_at":"2026-07-31T10:01:00Z"},
 			"outcome_events":[{"id":"event-1","outcome":"landed","source":"agent","reason":"shipped","evidence_json":"{\"commit\":\"abc\"}","created_at":"2026-07-31T10:02:00Z"}],
 			"supporting_sessions":[{"id":"child-1","started_at":"2026-07-31T10:00:30Z","outcome":"unresolved"}],
@@ -28,6 +28,9 @@ func TestGetReturnsTypedDetailAndPreservesUnknownData(t *testing.T) {
 	}
 	if detail.Session.ID != "root/child" || detail.Session.RequestCount != 2 || detail.Capture.SavedExchanges != 2 {
 		t.Fatalf("detail = %#v", detail)
+	}
+	if detail.Session.Title == nil || *detail.Session.Title != "Readable title" || detail.Session.DisplayTitle == nil || *detail.Session.DisplayTitle != "Readable title" {
+		t.Fatalf("session title fields = %#v", detail.Session)
 	}
 	if len(detail.Exchanges) != 1 || detail.Exchanges[0].Model != "model-1" || len(detail.OutcomeEvents) != 1 {
 		t.Fatalf("detail = %#v", detail)

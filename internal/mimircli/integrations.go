@@ -30,6 +30,15 @@ func integrationSummary(report harness.IntegrationReport) string {
 	if report.Hermes.RestartRequired {
 		lines = append(lines, "Hermes: restart required")
 	}
+	if report.ClaudeCode.RestartRequired {
+		lines = append(lines, "Claude Code: restart required")
+	}
+	if report.Codex.RestartRequired {
+		lines = append(lines, "Codex: restart required")
+	}
+	if report.Cursor.RestartRequired {
+		lines = append(lines, "Cursor: restart required")
+	}
 	if report.Hermes.State == "installed" && report.Hermes.Scope == "all-providers" {
 		lines = append(lines, "Hermes scope: OpenRouter proxy plus direct providers")
 	}

@@ -26,6 +26,9 @@ type InstallReport struct {
 	Artifacts      install.ArtifactReport   `json:"artifacts"`
 	OpenCode       harness.IntegrationState `json:"opencode"`
 	Hermes         harness.IntegrationState `json:"hermes"`
+	ClaudeCode     harness.IntegrationState `json:"claude_code"`
+	Codex          harness.IntegrationState `json:"codex"`
+	Cursor         harness.IntegrationState `json:"cursor"`
 	OpenCodeReady  bool                     `json:"open_code_ready"`
 	HermesReady    bool                     `json:"hermes_ready"`
 	ActionRequired bool                     `json:"action_required"`
@@ -89,11 +92,14 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	report := InstallReport{Binary: mechanical.Binary, Artifacts: mechanical.Artifacts, HermesReady: true}
 	pointer, pointerErr := s.LoadPointer()
 	if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
-		report.OpenCode = harness.IntegrationState{State: "installed", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin installed"}
+		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 	}
 	report.OpenCodeReady = report.OpenCode.State != "failed"
+	report.ClaudeCode = hookArtifactState(mechanical.Artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
+	report.Codex = hookArtifactState(mechanical.Artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Cursor = hookArtifactState(mechanical.Artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
 	s.step("OpenCode integration configured")
 	if paths.HermesDetected {
 		if !install.ArtifactsReady(mechanical.Artifacts, paths.HermesHome, hermesintegration.ArtifactSourcePrefixes()...) {
@@ -104,7 +110,7 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 				if err := s.Hermes.Enable(ctx, paths.HermesHome); err != nil {
 					return InstallReport{}, err
 				}
-				report.Hermes = harness.IntegrationState{State: "installed", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin enabled; connect Mimir to install the OpenRouter route"}
+				report.Hermes = harness.IntegrationState{State: "staged", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin staged; activation is unverified until a load is reported; connect Mimir to install the OpenRouter route"}
 			} else {
 				manifest, err := s.Manifest(pointer.URL)
 				if err != nil {
@@ -117,14 +123,14 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 				if !installed {
 					return InstallReport{}, fmt.Errorf("Hermes disappeared during installation")
 				}
-				report.Hermes = harness.IntegrationState{State: "installed", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture installed"}
+				report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture staged; activation is unverified until a load is reported"}
 			}
 		}
 	} else {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
 	s.step("Hermes integration checked")
-	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.OpenCodeReady || !report.HermesReady
+	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
 	return report, nil
 }
 
@@ -256,8 +262,11 @@ func (s Service) RefreshConnected(ctx context.Context, operation string) Report 
 	}
 	if !managed {
 		report.Integrations = harness.IntegrationReport{
-			OpenCode: harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt; setup and login do not enroll artifacts"},
-			Hermes:   harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
+			OpenCode:   harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt; setup and login do not enroll artifacts"},
+			Hermes:     harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
+			ClaudeCode: harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
+			Codex:      harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
+			Cursor:     harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
 		}
 		return report
 	}
@@ -268,8 +277,11 @@ func (s Service) finish(ctx context.Context, report Report) Report {
 	pointer, err := s.LoadPointer()
 	if err != nil {
 		report.Integrations = harness.IntegrationReport{
-			OpenCode: harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
-			Hermes:   harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
+			OpenCode:   harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
+			Hermes:     harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
+			ClaudeCode: harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
+			Codex:      harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
+			Cursor:     harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
 		}
 		return report
 	}
@@ -297,10 +309,18 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		return report, err
 	}
 	if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
-		report.OpenCode = harness.IntegrationState{State: "installed", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin installed"}
+		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 		failures = append(failures, report.OpenCode.Detail)
+	}
+	report.ClaudeCode = hookArtifactState(artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
+	report.Codex = hookArtifactState(artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Cursor = hookArtifactState(artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
+	for _, state := range []harness.IntegrationState{report.ClaudeCode, report.Codex, report.Cursor} {
+		if state.State == "failed" {
+			failures = append(failures, state.Detail)
+		}
 	}
 	if _, found, discoverErr := s.Hermes.Discover(); discoverErr != nil {
 		failures = append(failures, discoverErr.Error())
@@ -313,7 +333,7 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: configureErr.Error()}
 		failures = append(failures, configureErr.Error())
 	} else if installed {
-		report.Hermes = harness.IntegrationState{State: "installed", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture installed"}
+		report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture staged; activation is unverified until a load is reported"}
 	} else {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
@@ -321,4 +341,28 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		return report, fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return report, nil
+}
+
+func hookArtifactState(artifacts install.ArtifactReport, root, prefix, label string) harness.IntegrationState {
+	if root == "" {
+		return harness.IntegrationState{State: "skipped", Detail: label + " hook path is unavailable"}
+	}
+	if install.ArtifactsReady(artifacts, root, prefix) {
+		state := harness.IntegrationState{State: "staged", Scope: "hooks", RestartRequired: true, Detail: "managed " + label + " capture hooks staged; activation is unverified until a load is reported"}
+		if label == "Cursor" {
+			state.RestartRequired = false
+			state.Detail += "; Cursor reloads hooks.json automatically"
+		}
+		return state
+	}
+	return harness.IntegrationState{State: "failed", Scope: "hooks", Detail: "conflicting or modified " + label + " hook files were preserved"}
+}
+
+func integrationStaged(states ...harness.IntegrationState) bool {
+	for _, state := range states {
+		if state.State == "staged" {
+			return true
+		}
+	}
+	return false
 }

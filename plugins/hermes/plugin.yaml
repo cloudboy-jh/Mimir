@@ -1,5 +1,5 @@
 name: mimir
 version: "1.0.0"
-description: "Reports turns, heartbeats, and session ends to the Mimir memory plane. Classifies each turn so proxied OpenRouter traffic is liveness-only while Nous portal and direct-provider turns are captured."
+description: "Reports event-only turn summaries, heartbeats, and session ends to Mimir. Proxied OpenRouter traffic is liveness-only."
 author: Mimir
 kind: standalone

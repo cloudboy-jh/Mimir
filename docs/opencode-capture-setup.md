@@ -2,9 +2,11 @@
 
 OpenCode capture runs through the Mimir plugin at
 [`plugins/opencode/mimir.ts`](../plugins/opencode/mimir.ts). It observes
-completed turns inside the harness — above provider transport and
-authentication — so every OpenCode provider is covered identically:
-OpenRouter, the Zen subscription, Claude API keys, and Codex/ChatGPT OAuth.
+completed turns inside the harness, above provider transport and authentication.
+OpenRouter traffic remains canonical at the Worker proxy. For the Zen
+subscription, Claude API keys, Codex/ChatGPT OAuth, and other direct providers,
+the plugin reads the completed user and assistant records from OpenCode's
+session store and uploads a bounded reconstructed exchange.
 
 ## Install
 
@@ -31,8 +33,9 @@ token from
 
 ## What It Reports
 
-All events go to `POST /sessions/:id/events` on the Worker and are owned by
-the session Durable Object (see [`session-lifecycle.md`](session-lifecycle.md)):
+Lifecycle events go to `POST /sessions/:id/events` on the Worker and are owned
+by the session Durable Object (see
+[`session-lifecycle.md`](session-lifecycle.md)):
 
 - **Turn** — each completed assistant message (model, provider, token usage,
   latency), deduplicated by message ID.
@@ -42,6 +45,15 @@ the session Durable Object (see [`session-lifecycle.md`](session-lifecycle.md)):
   process exits or dies first, the server-side silence timer finalizes the
   session within ~10 minutes. Explicit end via `mimir session end <id>` always
   works.
+
+For a completed non-OpenRouter turn, `POST /sessions/:id/exchanges` receives
+the reconstructed user and assistant parts, tool parts, model/provider, token
+counts, timing, finish reason, and reported error when OpenCode exposes them.
+Payloads are bounded to 512 KiB and individual strings to 64 KiB; parts may be
+trimmed to fit. This is a redacted durable R2 exchange with searchable D1
+metadata, but it is not a byte-for-byte provider request or response. If the
+session-store read, normalization, or best-effort delivery fails, only the turn
+event may remain.
 
 The plugin never throws into OpenCode: delivery failures are swallowed and
 capture never interrupts the harness.

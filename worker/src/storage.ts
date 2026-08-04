@@ -1,4 +1,5 @@
 import { finalizeAcceptedExchange } from "./capture";
+import { reconcileSessionTitleStatement } from "./session-titles";
 import type { Bindings } from "./types";
 
 export type CaptureSummary = {
@@ -44,6 +45,7 @@ type ReconcileRow = {
   output_tokens: number;
   request_excerpt: string;
   response_excerpt: string;
+  title_candidate: string | null;
 };
 
 export async function captureSummary(db: D1Database, sessionId: string): Promise<CaptureSummary> {
@@ -115,7 +117,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
   const limit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 100, 100));
   const decodedCursor = decodeDatabaseCursor(databaseCursor);
   const queried = scanDatabase
-    ? await env.DB.prepare(`SELECT id, session_id, ts, accepted_at, capture_status, r2_key, harness, model, input_tokens, output_tokens, request_excerpt, response_excerpt FROM exchanges WHERE capture_status IN ('accepted', 'saved') ${decodedCursor ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`)
+    ? await env.DB.prepare(`SELECT id, session_id, ts, accepted_at, capture_status, r2_key, harness, model, input_tokens, output_tokens, request_excerpt, response_excerpt, title_candidate FROM exchanges WHERE capture_status IN ('accepted', 'saved') ${decodedCursor ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`)
       .bind(...(decodedCursor ? [decodedCursor, limit + 1] : [limit + 1])).all<ReconcileRow>()
     : { results: [] as ReconcileRow[] };
   const rows = queried.results.slice(0, limit);
@@ -150,7 +152,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
         continue;
       }
       const recent = !!row.accepted_at && Date.parse(row.accepted_at) >= staleCutoff;
-      await finalizeAcceptedExchange(env.DB, row.id, row.session_id, row.ts, now, row.harness, row.model ?? "", row.input_tokens, row.output_tokens, object.size, recent);
+      await finalizeAcceptedExchange(env.DB, row.id, row.session_id, row.ts, now, row.harness, row.model ?? "", row.input_tokens, row.output_tokens, object.size, recent, row.title_candidate);
       finalized.push(row.id);
       continue;
     }
@@ -166,6 +168,7 @@ export async function reconcile(env: Bindings, requestedLimit: number, r2Cursor?
       const hasLegacy = await env.DB.prepare("SELECT 1 FROM exchanges WHERE session_id = ? AND capture_status = 'saved' AND schema_version = 0 LIMIT 1").bind(sessionId).first();
       const statements = [
         env.DB.prepare("UPDATE sessions SET request_count = (SELECT COUNT(*) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), tokens_in = COALESCE((SELECT SUM(input_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0), tokens_out = COALESCE((SELECT SUM(output_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0) WHERE id = ?").bind(sessionId, sessionId, sessionId, sessionId),
+        reconcileSessionTitleStatement(env.DB, sessionId, now),
       ];
       if (!hasLegacy) {
         statements.push(

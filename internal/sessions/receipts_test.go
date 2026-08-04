@@ -23,22 +23,41 @@ func TestFormatReceipts(t *testing.T) {
 	}
 	stamp := local.Local().Format("2006-01-02 15:04")
 	receipts := []Receipt{
-		{ID: "01JZ3A2KPM", StartedAt: started, Outcome: "landed", Model: strptr("claude-sonnet-4"), Intent: strptr("Fix the login redirect loop")},
+		{ID: "01JZ3A2KPM", StartedAt: started, Outcome: "landed", Model: strptr("claude-sonnet-4"), DisplayTitle: strptr("Login redirect repair"), Title: strptr("Login redirect repair"), Intent: strptr("Fix the login redirect loop")},
 		{ID: "01JZ3B9XYZ", StartedAt: started, State: "active"},
 	}
 	receipts[0].Capture.Status, receipts[0].Capture.SavedExchanges = "saved", 12
 	receipts[1].Capture.Status, receipts[1].Capture.PendingExchanges = "pending", 1
 	text := FormatReceipts(receipts, 20)
 	lines := strings.Split(text, "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("lines=%d: %q", len(lines), text)
 	}
 	wantFirst := stamp + " · 01JZ3A2KPM · landed · 12 exchanges saved · claude-sonnet-4"
-	if lines[0] != wantFirst || lines[1] != "  Fix the login redirect loop" {
+	if lines[0] != wantFirst || lines[1] != "  Login redirect repair" {
 		t.Fatalf("lines = %#v", lines)
 	}
-	if !strings.Contains(lines[2], "01JZ3B9XYZ · unresolved · saving… · unknown model · active") {
-		t.Fatalf("second session line %q", lines[2])
+	if !strings.Contains(lines[2], "01JZ3B9XYZ · unresolved · saving… · unknown model · active") || lines[3] != "  Untitled session" {
+		t.Fatalf("second session lines %q", lines[2:])
+	}
+}
+
+func TestDisplayTitlePrecedence(t *testing.T) {
+	for _, test := range []struct {
+		name                   string
+		display, title, intent *string
+		want                   string
+	}{
+		{name: "display title", display: strptr(" Display "), title: strptr("Title"), intent: strptr("Intent"), want: "Display"},
+		{name: "title", title: strptr(" Title "), intent: strptr("Intent"), want: "Title"},
+		{name: "intent", intent: strptr(" Intent "), want: "Intent"},
+		{name: "fallback", display: strptr(" "), want: "Untitled session"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := DisplayTitle(test.display, test.title, test.intent); got != test.want {
+				t.Fatalf("DisplayTitle() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

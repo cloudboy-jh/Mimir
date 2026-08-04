@@ -17,8 +17,11 @@ type IntegrationState struct {
 }
 
 type IntegrationReport struct {
-	OpenCode IntegrationState `json:"opencode"`
-	Hermes   IntegrationState `json:"hermes"`
+	OpenCode   IntegrationState `json:"opencode"`
+	Hermes     IntegrationState `json:"hermes"`
+	ClaudeCode IntegrationState `json:"claude_code"`
+	Codex      IntegrationState `json:"codex"`
+	Cursor     IntegrationState `json:"cursor"`
 }
 
 type Diagnostic struct {

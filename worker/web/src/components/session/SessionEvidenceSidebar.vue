@@ -5,6 +5,7 @@ import SessionFiles from "@/components/session/SessionFiles.vue";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
 import type { OutcomeEvidence, SessionDetail } from "@/lib/api";
 import { relativeDate } from "@/lib/format";
+import { displayTitle } from "@/lib/sessions";
 
 const ERROR_PREVIEW = 5;
 const RUN_PREVIEW = 5;
@@ -21,7 +22,7 @@ const visibleRuns = computed(() => showAllRuns.value ? props.supportingSessions 
   <aside class="space-y-7">
     <div v-if="supportingSessions.length">
       <h2 class="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Supporting runs ({{ supportingSessions.length }})</h2>
-      <ul class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800"><li v-for="run in visibleRuns" :key="run.id" class="py-3"><p class="line-clamp-2 text-xs font-medium text-zinc-800 dark:text-zinc-200">{{ run.intent || "Supporting agent run" }}</p><SessionModelStack class="mt-2" :app="run.harness" :primary="run.model_primary" :models="run.models" /><span class="mt-1.5 block truncate font-mono text-[11px] text-zinc-500">{{ run.id }}</span></li></ul>
+      <ul class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800"><li v-for="run in visibleRuns" :key="run.id" class="py-3"><p class="line-clamp-2 text-xs font-medium text-zinc-800 dark:text-zinc-200">{{ displayTitle(run) }}</p><SessionModelStack class="mt-2" :app="run.harness" :primary="run.model_primary" :models="run.models" /><span class="mt-1.5 block truncate font-mono text-[11px] text-zinc-500">{{ run.id }}</span></li></ul>
       <button v-if="supportingSessions.length > RUN_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllRuns = !showAllRuns">{{ showAllRuns ? "Show fewer runs" : `Show all ${supportingSessions.length} runs` }}</button>
     </div>
     <SessionFiles :files="files" :evidence="evidence" />

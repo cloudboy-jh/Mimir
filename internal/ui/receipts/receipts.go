@@ -23,10 +23,7 @@ func Render(out io.Writer, receipts []domainsessions.Receipt, limit int) error {
 		return err
 	}
 	for index, receipt := range receipts {
-		title := receipt.ID
-		if receipt.Intent != nil && strings.TrimSpace(*receipt.Intent) != "" {
-			title = strings.TrimSpace(*receipt.Intent)
-		}
+		title := domainsessions.DisplayTitle(receipt.DisplayTitle, receipt.Title, receipt.Intent)
 		capture := domainsessions.ExchangeCount(receipt.Capture.SavedExchanges) + " saved"
 		if receipt.Capture.FailedExchanges > 0 && receipt.Capture.PendingExchanges > 0 {
 			capture = fmt.Sprintf("%d saved · %d failed · %d pending", receipt.Capture.SavedExchanges, receipt.Capture.FailedExchanges, receipt.Capture.PendingExchanges)

@@ -54,10 +54,24 @@ Invoking installation through another executable cannot silently transfer it.
 
 ## Harnesses
 
-OpenCode receives the managed capture plugin and skills. The plugin reports
-turns and lifecycle events directly to the Worker over HTTP. Hermes receives
-its plugin, skills, and bounded managed OpenRouter route; the plugin is enabled
-through the Hermes CLI only after every managed plugin file is safe.
+OpenCode receives the managed capture plugin and skills. Claude Code receives a
+managed skills-directory plugin under `~/.claude/skills/mimir/`. Codex and
+Cursor receive managed `~/.codex/hooks.json` and `~/.cursor/hooks.json` files. `CLAUDE_CONFIG_DIR`
+and `CODEX_HOME` relocate the corresponding official user homes. Cursor does not
+document a user-home override, so Mimir uses `~/.cursor`. Their command
+hooks pair supported prompt and completion payloads into reconstructed
+exchanges and report lifecycle events. Hermes receives its plugin, skills, and
+bounded managed OpenRouter route; the plugin is enabled through the Hermes CLI
+only after every managed plugin file is safe.
+
+Mimir creates, adopts, or updates those hook files only under the receipt rules
+above. A pre-existing different `hooks.json` is a conflict and is preserved;
+Mimir does not merge or replace arbitrary harness hook configuration. Hook
+delivery uses the receipt-owned `mimir _hook` adapter, a bounded private local
+outbox, and the existing machine connection. Prompt/response queue and pairing
+state is authenticated-encrypted at rest with a receipt-adjacent local storage
+key that survives machine-token rotation; existing plaintext entries are
+migrated before delivery.
 
 When Mimir is already connected, `mimir install` also repairs Hermes through the
 normal lifecycle: it enables the safe plugin, authorizes Hermes' existing
@@ -67,7 +81,9 @@ connection or enroll credentials. `mimir setup` and `mimir login` continue to
 refresh only an existing managed installation and never enroll artifacts on
 their own.
 
-Restart a harness after its plugin, skills, or injected configuration changes.
+Claude Code can apply plugin hook changes with `/reload-plugins`; Cursor watches
+and hot-reloads `hooks.json`. Other harness changes require the harness-specific
+activation action reported by `mimir doctor`.
 
 ## Uninstall
 

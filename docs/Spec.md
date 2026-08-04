@@ -144,7 +144,8 @@ personal single-owner trust model.
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
 | `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
 | `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. Also notifies the session object, which finalizes. |
-| `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `end`) to the session object. The path session ID is authoritative. |
+| `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `end`) to the session object. The path session ID is authoritative; events may carry a harness title. |
+| `POST` | `/sessions/:id/exchanges` | Validate, redact, and persist a bounded exchange reconstructed by a trusted harness integration. |
 | `GET` | `/sessions/:id/live` | WebSocket live feed from the session object: snapshot plus event broadcast. |
 | `GET` | `/sessions/:id/object-state` | Read the session object's liveness projection and counters. |
 | `POST` | `/sessions/:id/outcome` | Append an evidenced work-outcome event. |
@@ -154,6 +155,8 @@ personal single-owner trust model.
 | `GET` | `/config` | Return defaults merged with persisted configuration. |
 | `PUT` | `/config` | Validate and persist a partial configuration update. |
 | `POST` | `/integrations/hermes/authorize` | Register a SHA-256 digest for a Hermes OpenRouter credential. |
+| `POST` | `/integrations/harness-loads` | Record the source hash and receipt identity reported by a loaded managed integration. |
+| `GET` | `/integrations/harness-loads` | Return harness-load reports for the authenticated machine so doctor can compare installed and active bytes. |
 | `GET` | `/log/*` | Read one redacted R2 exchange object. |
 
 Session-list filters include repository, model, outcome, and date range.
@@ -173,6 +176,7 @@ Session-list filters include repository, model, outcome, and date range.
 | `GET` | `/dashboard/api/sessions/:id/status` | Return the derived capture summary. |
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
+| `PATCH` | `/dashboard/api/sessions/:id/title` | Set a normalized manual title of at most 200 characters. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
 | `GET` | `/dashboard/api/facets` | Return filter vocabulary, optionally scoped to one session subtree. |
 
@@ -263,8 +267,37 @@ and usage, but cannot initialize or overwrite session intent. The Worker also
 defensively recognizes known title-agent prompts that were mislabeled as
 primary.
 
-Capture can be disabled globally or excluded by repository/model. Excluded
-traffic is still proxied but is not persisted.
+Capture can be disabled globally or excluded by repository/model. The same
+policy applies to proxied and reported exchanges. Excluded proxy traffic is
+still forwarded, while reported ingestion returns an explicit skipped response;
+neither path creates exchange metadata or an R2 object for skipped traffic.
+
+### 5.1 Capture Provenance
+
+Mimir persists two exchange provenances with different guarantees:
+
+- Proxy exchanges are complete redacted request/response envelopes observed on
+  the supported OpenRouter transport routes. They preserve the streamed
+  response subject to capture size limits.
+- Reported exchanges are bounded reconstructions sent to
+  `POST /sessions/:id/exchanges` by a trusted local harness integration. The
+  Worker applies the same redaction, R2 persistence, searchable metadata, and
+  capture-state accounting, but only fields exposed by the harness can be
+  retained.
+
+OpenCode reconstructs non-OpenRouter exchanges from its session store, including
+supported message and tool parts, model/provider, usage, timing, finish reason,
+and error fields. Its payload is capped at 512 KiB, individual strings at 64
+KiB, and excess parts are removed. OpenRouter exchanges are not uploaded by the
+plugin because the proxy record is canonical.
+
+The Claude Code, Codex, and Cursor command-hook adapter pairs supported prompt
+and completion events. It caps each prompt and response at 512 KiB and reports
+zero token counts and latency when the hook payload does not expose them. These
+records are not byte-for-byte provider traffic and generally omit tool traces.
+Hermes direct-provider capture remains event-only: its completed-turn summary is
+kept in the bounded Session Durable Object buffer and does not produce an R2
+exchange or searchable D1 exchange row.
 
 A response larger than the capture limit can still reach the caller even when
 archive persistence fails. A D1 finalization failure after the R2 write leaves
@@ -310,6 +343,15 @@ Session intent is sticky and comes from the first saved primary exchange with
 a non-empty user message. Intent candidates are stored on accepted exchanges
 so reconciliation applies the same rule after an interrupted D1 finalization.
 
+Session titles are first-class metadata with source and update time. Display
+falls back through `title`, `intent`, then session ID. Source precedence is
+`manual` > `harness` > `generated` > `derived`: a dashboard edit is manual, a
+title on a lifecycle event is harness-supplied, a saved `request_kind: title`
+response is generated, and the first saved primary intent is derived. A weaker
+source cannot overwrite a stronger source; the newest value wins within the
+same source rank. Title, summary, and compaction exchanges cannot initialize or
+overwrite intent.
+
 Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 `unresolved`. Outcome is independent from capture: `landed` says the result was
 kept, while `saved` says an exchange is durably represented in both R2 and D1.
@@ -320,8 +362,8 @@ Each session is owned live by a Session Durable Object named by the session
 ID. Reporters append versioned events (`turn`, `heartbeat`, `end`); capture
 reports a `turn` after every saved exchange, and `/sessions/:id/end` reports
 `end`. The object tracks liveness and performs the final write. R2 and D1 are
-canonical for saved proxy exchanges, searchable metadata, and finalized
-lifecycle state. Plugin turn payloads remain in a bounded Durable Object live
+canonical for saved proxy and reported exchanges, searchable metadata, and
+finalized lifecycle state. Plugin turn payloads remain in a bounded Durable Object live
 buffer and are not copied into the R2 transcript manifest or D1 search data.
 
 A session finalizes when any of three triggers fires: an `end` event, a
@@ -398,7 +440,6 @@ Supported configuration keys are:
 | `save.exclude_models` | Model exclusion patterns. |
 | `redact.patterns` | Additional redaction expressions. |
 | `session.gap_minutes` | Heuristic inactivity gap. |
-| `session.abandon_days` | Reserved lifecycle setting; not yet applied automatically. |
 
 Configuration is stored in D1 and takes effect without redeployment.
 
@@ -472,8 +513,8 @@ reconciliation.
 
 The migration sequence defines:
 
-- `sessions`: identity, timing, boundary, lifecycle, context, usage, and latest outcome projection
-- `exchanges`: searchable metadata, capture lifecycle, usage, latency, and R2 reference
+- `sessions`: identity, title provenance, timing, boundary, lifecycle, context, usage, and latest outcome projection
+- `exchanges`: searchable metadata, request kind, title candidates, capture lifecycle, usage, latency, and R2 reference
 - `exchange_files`: schema-v1 file facets with exchange-level provenance
 - `exchange_errors`: schema-v1 error signatures with exchange-level provenance
 - `session_outcome_events`: immutable outcome, source, reason, and timestamp history
@@ -482,6 +523,7 @@ The migration sequence defines:
 - `config`: persisted deployment configuration
 - `access_tokens`: machine-token hashes and lifecycle fields
 - `hermes_credentials`: OpenRouter credential hashes authorized only for the Hermes proxy surface
+- `harness_loads`: loaded integration source hashes and receipt identity used by diagnostics
 
 D1 remains the searchable source of truth. R2 remains the complete redacted
 archive.
@@ -503,11 +545,12 @@ diagnostics to the canonical Worker HTTP API. `mimir session status` performs a
 bounded settle/poll while capture is pending and returns the authoritative
 receipt without upgrading a still-pending final read optimistically.
 
-OpenCode and Hermes plugins are capture and lifecycle adapters, not alternate
-memory servers. They report turns, heartbeats, ends, and direct exchanges over
-HTTP. Future harness-native search or control access must call the canonical
-Worker API through the harness's supported extension surface; Mimir does not
-spawn a local protocol server.
+OpenCode, Hermes, Claude Code, Codex, and Cursor integrations are capture and
+lifecycle adapters, not alternate memory servers. OpenCode and the command-hook
+adapter can report reconstructed exchanges; Hermes direct providers report only
+turn summaries and lifecycle events. Future harness-native search or control
+access must call the canonical Worker API through the harness's supported
+extension surface; Mimir does not spawn a local protocol server.
 
 Ending a session sets it inactive and records the explicit end timestamp for
 the current active generation. It does not alter capture state. A genuinely
@@ -537,10 +580,10 @@ and dashboard copy emit canonical values.
 9. Stores the OpenRouter Worker secret.
 10. Deploys and verifies the Worker.
 11. Saves the local URL/token pointer.
-12. Refreshes exact receipt-owned OpenCode and, when detected, Hermes plugin
-    and skill files without rewriting general harness config. Without an
-    existing receipt containing managed artifacts, setup does not create an
-    installation identity, install log, or global harness files.
+12. Refreshes exact receipt-owned OpenCode, Claude Code, Codex, Cursor, and,
+    when detected, Hermes artifacts without rewriting general harness config.
+    Without an existing receipt containing managed artifacts, setup does not
+    create an installation identity, install log, or global harness files.
 13. Returns a harness-neutral connection manifest.
 
 `mimir login` reconnects another machine by authenticating with Cloudflare,
@@ -550,6 +593,18 @@ opted-in plugin and skill files recorded in `install-receipt.json`; they do not
 modify general OpenCode JSON/JSONC, providers, credentials, or commands.
 OpenCode integration uses the managed plugin and OpenCode's supported plugin
 loading flow.
+
+`mimir install` enrolls safe absent or byte-identical Claude Code plugin files
+under `~/.claude/skills/mimir/` and hook manifests at `~/.codex/hooks.json` and
+`~/.cursor/hooks.json`. It preserves a different existing file rather than
+merging or replacing user-owned hook configuration. The manifests invoke the
+receipt-owned hidden `mimir _hook` adapter, which writes a bounded private,
+authenticated-encrypted outbox under `$MIMIR_HOME` before bounded best-effort
+delivery. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override their official user
+homes; Cursor has no documented equivalent. Harness start hooks also
+report the embedded manifest hash so `mimir doctor` can distinguish installed
+bytes from the active loaded version. Activation follows the harness-supported
+reload path; Cursor hot-reloads its hooks file.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
 Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in
@@ -655,3 +710,19 @@ developer's Cloudflare account.
 The implementation priorities are tracked in [`next-steps.md`](next-steps.md).
 The largest current gaps are release operations and capture/search lifecycle
 hardening.
+
+## 16. Validation
+
+The exact local validation commands for these surfaces are:
+
+```bash
+npm --prefix worker test -- src/config.test.ts src/session-titles.test.ts
+bun test plugins/opencode/
+python -m unittest discover -s plugins/hermes -p "test_*.py"
+go test ./internal/harness/hooks ./internal/install ./internal/doctor
+npm --prefix worker run typecheck
+```
+
+Deployment verification is separate and must not invoke
+`/v1/chat/completions`, `/v1/messages`, or another paid model route. Use
+`/whoami` for connectivity and direct session APIs for lifecycle checks.

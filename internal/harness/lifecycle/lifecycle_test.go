@@ -63,7 +63,7 @@ func TestInstallCurrentReportsManagedOpenCodeCapturePlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OpenCode.State != "installed" || report.OpenCode.Scope != "capture" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, "capture plugin") {
+	if report.OpenCode.State != "staged" || report.OpenCode.Scope != "capture" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, "unverified") {
 		t.Fatalf("OpenCode state %#v", report.OpenCode)
 	}
 }
@@ -113,8 +113,17 @@ func TestInstallMaterializesBeforeReadinessAndProviderConfiguration(t *testing.T
 	if got := strings.Join(events, ","); got != "files,hermes" {
 		t.Fatalf("ordering = %s", got)
 	}
-	if !report.OpenCodeReady || !report.HermesReady || report.ActionRequired {
+	if !report.OpenCodeReady || !report.HermesReady || !report.ActionRequired || report.OpenCode.State != "staged" || report.Hermes.State != "staged" {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestHookArtifactStateIsStagedUntilLoadAndCursorDoesNotRequireRestart(t *testing.T) {
+	root := t.TempDir()
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{Path: filepath.Join(root, "hooks.json"), Source: "plugins/cursor/hooks.json", Status: install.ArtifactCurrent}}}
+	state := hookArtifactState(artifacts, root, "plugins/cursor/", "Cursor")
+	if state.State != "staged" || state.RestartRequired || !strings.Contains(state.Detail, "unverified") || !strings.Contains(state.Detail, "reloads") {
+		t.Fatalf("state = %#v", state)
 	}
 }
 

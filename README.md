@@ -26,7 +26,8 @@ A session is one episode of agent work, not a bag of disconnected requests.
 Mimir reconstructs the session so you can see:
 
 - the task, repository, app, models, duration, and token use;
-- full redacted exchanges captured through the model proxy;
+- full redacted proxy exchanges and bounded exchanges reconstructed by
+  supported harness integrations;
 - supporting runs, tool-touched files, real error signals, and model switches;
 - whether durable capture succeeded;
 - whether the work landed, was discarded, was abandoned, or remains unresolved.
@@ -54,27 +55,31 @@ Mimir deliberately keeps two facts separate:
 
 ## How Mimir works
 
-![Coding agents send either complete proxied model traffic or lightweight harness events into a private Mimir Worker. The Worker redacts and organizes the data, stores full exchanges in R2 and session metadata in D1, and serves the CLI and private dashboard.](assets/images/mimir-system-map.svg)
+![Coding agents send proxied model traffic, reconstructed harness exchanges, and lightweight lifecycle events into a private Mimir Worker. The Worker redacts and organizes the data, stores durable exchanges in R2 and session metadata in D1, and serves the CLI and private dashboard.](assets/images/mimir-system-map.svg)
 
-There are two inputs to one session record:
+There are three inputs to one session record:
 
 1. **Proxied model traffic** carries complete OpenRouter requests and streaming
    responses. The Worker preserves streaming, redacts the exchange, writes the
    full object to R2, and indexes searchable metadata in D1.
-2. **Harness events** carry turns, heartbeats, session ends, and evidenced work
-   outcomes from OpenCode and Hermes. They keep sessions live and cover provider
-   traffic that does not pass through the proxy, but they are not full transport
-   archives.
+2. **Reconstructed harness exchanges** carry the completed prompt and response
+   fields exposed by OpenCode, Claude Code, Codex, or Cursor. The Worker redacts
+   and persists them like other exchanges, but they are bounded reconstructions,
+   not provider transport archives.
+3. **Harness events** carry turn summaries, heartbeats, titles, session ends,
+   and evidenced work outcomes. They keep sessions live. Hermes direct-provider
+   capture is event-only and does not create searchable exchange objects.
 
 `x-mimir-session` is the authoritative session boundary when available. Traffic
 without an exact session ID uses bounded inactivity grouping.
 
-| Traffic path | Full redacted exchange | Session lifecycle | Searchable exchange metadata |
+| Traffic path | Durable capture | Session lifecycle | Searchable exchange metadata |
 | --- | --- | --- | --- |
-| Redirected OpenRouter | Yes, after persistence succeeds | Yes | Yes |
-| OpenCode OAuth, subscription, or direct provider | No | Plugin events | No |
-| Hermes Nous portal, OAuth, or direct provider | No | Plugin events | No |
-| Other tools using Mimir proxy URLs | Yes, after persistence succeeds | Capture events only | Yes |
+| Redirected OpenRouter | Full redacted transport exchange | Yes | Yes |
+| OpenCode OAuth, subscription, or direct provider | Bounded reconstruction from the OpenCode session store | Plugin events | Yes, after persistence succeeds |
+| Claude Code, Codex, or Cursor supported hooks | Bounded prompt/response reconstruction | Hook events | Yes, after persistence succeeds |
+| Hermes Nous portal, OAuth, or direct provider | Event-only turn summary | Plugin events | No |
+| Other tools using Mimir proxy URLs | Full redacted transport exchange | Capture events only | Yes |
 
 Hermes' managed OpenRouter route suppresses duplicate plugin turns for known
 proxied requests. A scheduled capture response only means persistence was
@@ -120,15 +125,28 @@ click away when you need the raw record.
 ### OpenCode
 
 The installer manages the Mimir plugin and skills without rewriting general
-OpenCode JSON or JSONC. The plugin reports turns, lifecycle events, model
-switches, and Git outcome evidence over HTTP. Restart OpenCode after an install
-or update. See [OpenCode capture setup](docs/opencode-capture-setup.md).
+OpenCode JSON or JSONC. OpenRouter exchanges remain canonical at the proxy; for
+other providers, the plugin uploads bounded reconstructed exchanges from
+OpenCode's session store. It also reports lifecycle events, titles, model
+switches, and Git outcome evidence. Restart OpenCode after an install or update.
+See [OpenCode capture setup](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
 Mimir redirects Hermes' built-in OpenRouter provider through `/v1/hermes` and
-enables a plugin for direct-provider turns and lifecycle events. Restart Hermes
-after an install or update. See [Hermes capture setup](docs/hermes-capture-setup.md).
+enables a plugin for direct-provider turn summaries and lifecycle events. Those
+direct-provider summaries are event-only; they do not contain request/response
+bodies or create searchable exchanges. Restart Hermes after an install or
+update. See [Hermes capture setup](docs/hermes-capture-setup.md).
+
+### Claude Code, Codex, and Cursor
+
+The installer enrolls receipt-owned hook manifests in each harness's supported
+location. Their start, prompt, completion, and end hooks invoke the hidden
+`mimir _hook` adapter, which reconstructs bounded prompt/assistant exchanges and
+queues delivery when the Worker is unavailable. Existing different hook files
+are preserved as conflicts rather than merged or overwritten. Restart the named
+harness after installation or update.
 
 ### Other harnesses and tools
 
@@ -140,13 +158,21 @@ The connection manifest supplies proxy base URLs, credential sources, and
 supported metadata headers. The CLI inspects and controls memory; it does not
 capture unrelated model traffic.
 
+### Session titles
+
+Titles are first-class session metadata, separate from the original task intent.
+The displayed title falls back through `title`, `intent`, then session ID. A
+manual dashboard title has highest precedence, followed by a title reported by
+the harness, a saved generated title exchange, and the first saved primary user
+intent. Lower-precedence sources cannot overwrite a stronger title.
+
 ## Your account, your data
 
 There is no Mimir account, hosted backend, shared memory service, or browser
 machine-token storage.
 
 - The Worker and dashboard run in your Cloudflare account.
-- Full redacted proxy exchanges live in R2.
+- Redacted proxy and reconstructed harness exchanges live in R2.
 - Searchable metadata, configuration, and lifecycle state live in D1.
 - A Session Durable Object coordinates liveness, retries, reopening, and
   transcript finalization.
@@ -181,6 +207,26 @@ Deploy only with `mimir deploy`. The packaged Worker and dashboard are always
 the default source; arbitrary source requires explicit `--worker-dir <path>`.
 Run `mimir help advanced` for code recall, connection, configuration, and
 diagnostic commands.
+
+`mimir install` creates or reconciles only receipt-managed integrations.
+`mimir setup` and `mimir login` refresh them only when a managed installation
+receipt already exists; they do not silently enroll global hook files. Updates
+preserve unowned or locally modified files and do not deploy the Worker.
+
+## Validation
+
+From the repository root, validate the capture and installer surfaces with:
+
+```bash
+npm --prefix worker test -- src/config.test.ts src/session-titles.test.ts
+bun test plugins/opencode/
+python -m unittest discover -s plugins/hermes -p "test_*.py"
+go test ./internal/harness/hooks ./internal/install ./internal/doctor
+npm --prefix worker run typecheck
+```
+
+These are local tests only. Deployment verification must use `/whoami` and
+direct session APIs; it must not invoke paid model routes.
 
 ## Dashboard development
 

@@ -35,4 +35,11 @@ describe("parseSessionEvent", () => {
     expect(event).toMatchObject({ ts: "2026-07-22T12:00:00.000Z", reason: "explicit" });
     expect(parseSessionEvent({ ...base, kind: "end", reason: "user closed" })).toMatchObject({ reason: "user closed" });
   });
+
+  it("accepts optional harness-native titles without changing the v1 envelope", () => {
+    expect(parseSessionEvent({ ...base, kind: "heartbeat", title: "  Fix   session titles  " })).toMatchObject({ version: 1, title: "Fix session titles" });
+    expect(parseSessionEvent({ ...base, kind: "heartbeat" })).not.toHaveProperty("title");
+    expect(parseSessionEvent({ ...base, kind: "heartbeat", title: " " })).toEqual({ error: "invalid title" });
+    expect(parseSessionEvent({ ...base, kind: "heartbeat", title: "x".repeat(201) })).toEqual({ error: "invalid title" });
+  });
 });

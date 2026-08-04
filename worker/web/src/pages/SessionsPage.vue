@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ArrowRight, Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-next";
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
+import SessionLivenessBadge from "@/components/session/SessionLivenessBadge.vue";
 import Button from "@/components/ui/Button.vue";
 import DropdownPanel from "@/components/ui/DropdownPanel.vue";
 import Select from "@/components/ui/Select.vue";
@@ -12,6 +13,7 @@ import { useAutoRefresh } from "@/lib/auto-refresh";
 import { facetSelectOptions, useFacets } from "@/lib/facets";
 import { compactNumber, duration, relativeDate } from "@/lib/format";
 import { outcomeOptions, pageSizeOptions } from "@/lib/options";
+import { displayTitle } from "@/lib/sessions";
 
 const SEARCH_DEBOUNCE_MS = 350;
 const facetKeys = ["repo", "outcome", "app", "model", "from", "to"] as const;
@@ -153,7 +155,7 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
         <form class="relative min-w-0 flex-1 sm:max-w-lg" role="search" @submit.prevent="commitSearch">
           <label class="sr-only" for="session-search">Search sessions</label>
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
-          <input id="session-search" v-model="search" type="search" placeholder="Search intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+          <input id="session-search" v-model="search" type="search" placeholder="Search title, intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
         </form>
         <DropdownPanel v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
           <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button></template>
@@ -190,7 +192,7 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
       <div v-else-if="error && !sessions.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load()"><RotateCw class="size-3.5" />Retry</button></div>
       <template v-else>
         <RouterLink v-for="session in sessions" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
-          <div class="min-w-0"><div class="flex items-center gap-2"><span v-if="session.state === 'active'" class="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label="Active session" /><h2 class="truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ session.intent || "Untitled session" }}</h2></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span v-if="session.child_session_count">{{ session.child_session_count }} supporting {{ session.child_session_count === 1 ? "run" : "runs" }}</span><span class="font-mono">{{ session.id }}</span></div></div>
+          <div class="min-w-0"><div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ displayTitle(session) }}</h2><SessionLivenessBadge class="shrink-0" :liveness="session.liveness" /></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span v-if="session.child_session_count">{{ session.child_session_count }} supporting {{ session.child_session_count === 1 ? "run" : "runs" }}</span><span class="font-mono">{{ session.id }}</span></div></div>
           <SessionModelStack :app="session.harness" :primary="session.model_primary" :models="session.models" />
           <div><OutcomeBadge :outcome="session.outcome" /></div>
           <div class="text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} {{ session.capture.saved_exchanges === 1 ? "exchange" : "exchanges" }}<span v-if="session.capture.failed_exchanges"> · {{ session.capture.failed_exchanges }} failed</span></div>

@@ -1,5 +1,6 @@
 import type { Bindings } from "./types";
 import type { RequestKind } from "./capture";
+import { normalizeSessionTitle } from "./session-titles";
 
 // Session event format v1. Reporters (the proxy, harness plugins, native
 // harness reporting) deliver these to the Session Durable Object. The object
@@ -30,6 +31,7 @@ export type SessionEvent = {
   parent_session_id?: string | null;
   harness: string | null;
   repo?: string | null;
+  title?: string;
   ts: string;
   turn?: SessionEventTurn;
   reason?: string;
@@ -48,6 +50,7 @@ export function parseSessionEvent(input: unknown): SessionEvent | { error: strin
   if (typeof body.ts !== "string" || Number.isNaN(Date.parse(body.ts))) return { error: "invalid ts" };
   if (body.harness !== undefined && body.harness !== null && typeof body.harness !== "string") return { error: "invalid harness" };
   if (body.repo !== undefined && body.repo !== null && typeof body.repo !== "string") return { error: "invalid repo" };
+  if (body.title !== undefined && normalizeSessionTitle(body.title) === null) return { error: "invalid title" };
   const event: SessionEvent = {
     version: SESSION_EVENT_VERSION,
     kind: body.kind as SessionEventKind,
@@ -56,6 +59,7 @@ export function parseSessionEvent(input: unknown): SessionEvent | { error: strin
     ts: new Date(body.ts).toISOString(),
   };
   if (typeof body.repo === "string") event.repo = body.repo.slice(0, 512);
+  if (body.title !== undefined) event.title = normalizeSessionTitle(body.title)!;
   if (typeof body.parent_session_id === "string") event.parent_session_id = body.parent_session_id;
   if (body.reason !== undefined) {
     if (typeof body.reason !== "string" || body.reason.length > MAX_END_REASON_CHARS) return { error: "invalid reason" };

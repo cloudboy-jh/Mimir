@@ -1,18 +1,84 @@
 <script setup lang="ts">
-import { GitBranch } from "lucide-vue-next";
+import { nextTick, ref, useTemplateRef } from "vue";
+import { Check, GitBranch, Pencil, X } from "lucide-vue-next";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
-import type { SessionDetail } from "@/lib/api";
+import SessionLivenessBadge from "@/components/session/SessionLivenessBadge.vue";
+import { errorMessage, setSessionTitle, type SessionDetail, type SessionLiveness, type SessionTitleUpdate } from "@/lib/api";
 import { compactNumber, duration, shortDate } from "@/lib/format";
+import { displayTitle } from "@/lib/sessions";
 
-defineProps<{ session: SessionDetail["session"] }>();
+const MAX_TITLE_LENGTH = 200;
+const props = defineProps<{ session: SessionDetail["session"]; liveness: SessionLiveness }>();
+const emit = defineEmits<{ saved: [update: SessionTitleUpdate] }>();
+const editing = ref(false);
+const saving = ref(false);
+const editError = ref("");
+const draftTitle = ref("");
+const titleInput = useTemplateRef<HTMLInputElement>("titleInput");
+const editButton = useTemplateRef<HTMLButtonElement>("editButton");
+
+async function startEditing() {
+  draftTitle.value = displayTitle(props.session);
+  editError.value = "";
+  editing.value = true;
+  await nextTick();
+  titleInput.value?.select();
+}
+
+async function cancelEditing() {
+  if (saving.value) return;
+  editing.value = false;
+  editError.value = "";
+  await nextTick();
+  editButton.value?.focus();
+}
+
+async function saveTitle() {
+  if (saving.value) return;
+  const title = draftTitle.value.trim();
+  if (!title) {
+    editError.value = "Enter a session title.";
+    titleInput.value?.focus();
+    return;
+  }
+  saving.value = true;
+  editError.value = "";
+  try {
+    const update = await setSessionTitle(props.session.id, title);
+    emit("saved", update);
+    editing.value = false;
+    await nextTick();
+    editButton.value?.focus();
+  } catch (cause) {
+    editError.value = errorMessage(cause, "The session title could not be saved.");
+    await nextTick();
+    titleInput.value?.focus();
+  } finally {
+    saving.value = false;
+  }
+}
 </script>
 
 <template>
   <div class="border-b border-zinc-200 pb-6 dark:border-zinc-800">
     <div class="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
       <div class="min-w-0 max-w-4xl flex-1">
-        <div class="mb-3"><span v-if="session.state === 'active'" class="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400"><span class="size-1.5 rounded-full bg-emerald-500" />Active</span><span v-else class="text-xs font-medium text-zinc-500">Ended</span></div>
-        <h1 class="text-2xl font-semibold leading-tight tracking-[-0.025em] text-zinc-950 sm:text-[28px] dark:text-zinc-50">{{ session.intent || "Untitled session" }}</h1>
+        <div class="mb-3"><SessionLivenessBadge :liveness="liveness" /></div>
+        <form v-if="editing" id="session-title-editor" class="max-w-3xl" @submit.prevent="saveTitle" @keydown.esc.prevent="cancelEditing">
+          <label for="session-title" class="sr-only">Session title</label>
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input id="session-title" ref="titleInput" v-model="draftTitle" type="text" :maxlength="MAX_TITLE_LENGTH" :disabled="saving" :aria-invalid="Boolean(editError)" :aria-describedby="editError ? 'session-title-error' : undefined" class="h-10 min-w-0 flex-1 rounded-[5px] border border-zinc-300 bg-white px-3 text-lg font-semibold tracking-[-0.025em] text-zinc-950 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 disabled:cursor-wait disabled:opacity-60 sm:text-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50" />
+            <div class="flex shrink-0 items-center gap-2">
+              <button type="submit" :disabled="saving" class="inline-flex h-8.5 items-center gap-1.5 rounded-[5px] bg-zinc-900 px-2.5 text-xs font-medium text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-300"><Check class="size-3.5" aria-hidden="true" />{{ saving ? "Saving..." : "Save" }}</button>
+              <button type="button" :disabled="saving" class="inline-flex h-8.5 items-center gap-1.5 rounded-[5px] border border-zinc-300 px-2.5 text-xs font-medium text-zinc-700 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800" @click="cancelEditing"><X class="size-3.5" aria-hidden="true" />Cancel</button>
+            </div>
+          </div>
+          <p id="session-title-error" class="mt-2 min-h-4 text-xs text-red-700 dark:text-red-400" role="alert">{{ editError }}</p>
+        </form>
+        <div v-else class="flex min-w-0 items-start gap-2">
+          <h1 class="min-w-0 text-2xl font-semibold leading-tight tracking-[-0.025em] text-zinc-950 sm:text-[28px] dark:text-zinc-50">{{ displayTitle(session) }}</h1>
+          <button ref="editButton" type="button" class="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-[5px] text-zinc-500 hover:bg-stone-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100" aria-label="Edit session title" aria-controls="session-title-editor" :aria-expanded="editing" @click="startEditing"><Pencil class="size-3.5" aria-hidden="true" /></button>
+        </div>
         <div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[13px] text-zinc-500 dark:text-zinc-400"><strong class="font-medium text-zinc-800 dark:text-zinc-200">{{ session.repo || "No repository" }}</strong><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3.5" />{{ session.source_ref }}</span><span>{{ shortDate(session.started_at) }}</span><span class="break-all font-mono text-xs">{{ session.id }}</span></div>
         <dl class="mt-5 flex flex-wrap divide-x divide-zinc-200 border-t border-zinc-200 pt-3 dark:divide-zinc-800 dark:border-zinc-800">
           <div class="pr-4"><dt class="text-[11px] text-zinc-500">Duration</dt><dd class="mt-0.5 font-mono text-xs text-zinc-900 dark:text-zinc-100">{{ duration(session.started_at, session.ended_at) }}</dd></div>

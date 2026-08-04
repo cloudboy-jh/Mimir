@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/codeindex"
+	hookintegration "github.com/cloudboy-jh/mimir/internal/harness/hooks"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 	searchpkg "github.com/cloudboy-jh/mimir/internal/search"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
@@ -166,6 +167,15 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 			return fmt.Errorf("usage: mimir _apply-update")
 		}
 		return applyPendingUpdateHelper()
+	case "_hook":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: mimir _hook <claude-code|codex|cursor>")
+		}
+		service, err := hookintegration.New()
+		if err != nil {
+			return err
+		}
+		return service.Ingest(ctx, args[1], ioctx.In)
 	case "doctor":
 		return doctor(ctx, args[1:], ioctx.Out)
 	case "_post-update", "_install-integrations":

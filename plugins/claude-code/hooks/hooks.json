@@ -1,0 +1,11 @@
+{
+  "description": "Report Claude Code lifecycle and completed turns to Mimir.",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code" }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code" }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "mimir _hook claude-code", "timeout": 3 }] }]
+  }
+}

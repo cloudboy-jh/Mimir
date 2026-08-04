@@ -40,6 +40,10 @@ type Session struct {
 	RequestCount      int     `json:"request_count"`
 	TokensIn          int     `json:"tokens_in"`
 	TokensOut         int     `json:"tokens_out"`
+	Title             *string `json:"title"`
+	TitleSource       *string `json:"title_source"`
+	TitleUpdatedAt    *string `json:"title_updated_at"`
+	DisplayTitle      *string `json:"display_title"`
 	Intent            *string `json:"intent"`
 	ChildSessionCount int     `json:"child_session_count"`
 }

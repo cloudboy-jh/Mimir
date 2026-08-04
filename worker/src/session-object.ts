@@ -1,5 +1,6 @@
 import { parseSessionEvent, type SessionEvent, type SessionEventTurn } from "./session-events";
 import type { Bindings } from "./types";
+import { titleUpdateStatement } from "./session-titles";
 
 // The Session Durable Object owns one live session. Reporters (proxy capture,
 // harness plugins) append events; the object tracks liveness, serves the
@@ -38,7 +39,10 @@ export class SessionObject implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/event") return this.handleEvent(request);
-    if (request.method === "GET" && url.pathname === "/state") return Response.json(await this.currentState());
+    if (request.method === "GET" && url.pathname === "/state") {
+      if (!await this.ctx.storage.get<SessionMeta>("meta")) return Response.json({ error: "session object not found" }, { status: 404 });
+      return Response.json(await this.currentState());
+    }
     if (request.method === "GET" && url.pathname === "/feed") return this.handleFeed(request);
     return Response.json({ error: "not found" }, { status: 404 });
   }
@@ -84,6 +88,13 @@ export class SessionObject implements DurableObject {
       await this.env.DB.batch([
         this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, parent_session_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, 'header', ?, ?)").bind(meta.sessionId, event.parent_session_id ?? meta.parentSessionId, meta.startedAt, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null),
         this.env.DB.prepare("UPDATE sessions SET parent_session_id = COALESCE(parent_session_id, ?), state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ?").bind(event.parent_session_id ?? meta.parentSessionId, event.ts, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null, meta.sessionId),
+        ...(event.title ? [titleUpdateStatement(this.env.DB, meta.sessionId, event.title, "harness", event.ts)] : []),
+      ]);
+    }
+    if (event.kind === "end" && event.title) {
+      await this.env.DB.batch([
+        this.env.DB.prepare("INSERT OR IGNORE INTO sessions(id, parent_session_id, started_at, last_active_at, harness, boundary, repo) VALUES (?, ?, ?, ?, ?, 'header', ?)").bind(meta.sessionId, event.parent_session_id ?? meta.parentSessionId, meta.startedAt, event.ts, event.harness, event.repo ?? null),
+        titleUpdateStatement(this.env.DB, meta.sessionId, event.title, "harness", event.ts),
       ]);
     }
     meta.lastEventAt = event.ts;
@@ -161,6 +172,9 @@ export class SessionObject implements DurableObject {
     meta.endReason = reason;
     await this.ctx.storage.put("meta", meta);
     this.broadcast({ type: "finalized", session_id: meta.sessionId, reason, ended_at: now });
+    for (const socket of this.ctx.getWebSockets()) {
+      try { socket.close(1000, "session finalized"); } catch { /* already closed */ }
+    }
   }
 
   // currentState projects liveness from heartbeat age at read time. The
@@ -193,10 +207,13 @@ export class SessionObject implements DurableObject {
 
   private async handleFeed(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") return Response.json({ error: "websocket upgrade required" }, { status: 426 });
+    if (!await this.ctx.storage.get<SessionMeta>("meta")) return Response.json({ error: "session object not found" }, { status: 404 });
     await this.ensureLoaded();
+    const state = await this.currentState();
+    if (state.liveness === "finalized") return Response.json({ error: "session finalized" }, { status: 409 });
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
-    pair[1].send(JSON.stringify({ type: "snapshot", state: await this.currentState(), turns: this.turns }));
+    pair[1].send(JSON.stringify({ type: "snapshot", state, turns: this.turns }));
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 

@@ -9,15 +9,17 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
 - CLI: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, and `internal/doctor/`. Keep the Go CLI standard-library-only.
 - Keep terminal UI code under `internal/ui/` with dependency direction `mimircli -> surfaces -> appframe -> bentotui`. Stateful human commands use the shared, top-left-anchored app frame (80x20 preferred, 48x12 minimum). Never center or indent it, add nested boxes, or duplicate frame and key logic in command files. See `internal/ui/README.md`.
-- OpenCode plugin: `plugins/opencode/mimir.ts` reports turns, heartbeats, and session ends to `/sessions/:id/events`. Single dependency-free file; tests run with `bun test plugins/opencode/`.
-- Hermes plugin: `plugins/hermes/` (Python, stdlib-only) reports the same events via Hermes' plugin hooks, covering Nous portal and direct providers; liveness-only when the managed OpenRouter redirect is active. Tests run with `python -m unittest discover -s plugins/hermes -p "test_*.py"`.
+- OpenCode plugin: `plugins/opencode/mimir.ts` reports lifecycle events and uploads bounded reconstructed non-OpenRouter exchanges from OpenCode's session store. OpenRouter proxy exchanges remain canonical. Single dependency-free file; tests run with `bun test plugins/opencode/`.
+- Hermes plugin: `plugins/hermes/` (Python, stdlib-only) reports event-only completed-turn summaries for Nous portal and direct providers; it is liveness-only when the managed OpenRouter redirect is active. It registers `pre_api_request`, `post_llm_call`, `on_session_start`, and `on_session_finalize`. Tests run with `python -m unittest discover -s plugins/hermes -p "test_*.py"`.
+- Claude Code, Codex, and Cursor: manifests under `plugins/{claude-code,codex,cursor}/` invoke the hidden `mimir _hook` adapter in `internal/harness/hooks/`. Supported prompt/completion hooks produce bounded reconstructed exchanges, not proxy transport archives. Validate with `go test ./internal/harness/hooks ./internal/install ./internal/doctor`.
 - Project documentation: `README.md` is canonical for installation and usage, `docs/Spec.md` for current architecture, and `docs/PRODUCT.md` and `docs/DESIGN.md` for product and visual direction.
 - Shared PNG assets: `assets/images/`. Worker materialization must preserve assets imported by the dashboard.
 - Production binaries embed Worker/dashboard inputs, plugins, and skills. Setup and deploy always materialize that bundle by default. Arbitrary or checkout Worker source is a development override available only through explicit `--worker-dir`; never discover a checkout or Go module-cache version implicitly.
-- Managed harness artifacts use `$MIMIR_HOME/install-receipt.json` ownership and `$MIMIR_HOME/install-log.jsonl`. Update only exact owned, unmodified files; preserve conflicts and never rewrite general OpenCode configuration.
+- Managed harness artifacts use `$MIMIR_HOME/install-receipt.json` ownership and `$MIMIR_HOME/install-log.jsonl`. Update only exact owned, unmodified files; preserve conflicts and never rewrite general OpenCode configuration or merge user-owned hook files.
 - `AGENTS.md` and `skills/**` Markdown remain at their structural paths for automatic discovery.
 - Local code memory remains `<repo>/.mimir/index.json`.
 - Sessions are remote D1 records. Do not add Git-backed session sync or session Markdown.
+- Session titles are first-class metadata. Preserve source precedence `manual > harness > generated > derived` and the display fallback `title > intent > id`; auxiliary title requests never replace intent.
 - Raw exchanges belong in R2. Searchable metadata and R2 references belong in D1.
 
 ## Commands

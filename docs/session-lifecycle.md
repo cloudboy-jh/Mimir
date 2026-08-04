@@ -1,10 +1,12 @@
 # Session Lifecycle And Harness Capture
 
-Mimir combines two capture paths around one lifecycle owner. The Worker proxy
-persists full redacted OpenRouter exchanges. Harness plugins report completed
-turn summaries and lifecycle events across harness providers; Hermes suppresses
-turns known to have traversed the proxy. One Session Durable Object coordinates
-each exact session ID.
+Mimir combines capture paths around one lifecycle owner. The Worker proxy
+persists full redacted OpenRouter exchanges. OpenCode and the Claude Code,
+Codex, and Cursor hook adapter can persist bounded exchanges reconstructed from
+harness-visible prompts and responses. Harness integrations also report
+lifecycle events; Hermes direct providers report event-only turn summaries and
+suppress turns known to have traversed the proxy. One Session Durable Object
+coordinates each exact session ID.
 
 ```mermaid
 stateDiagram-v2
@@ -28,9 +30,10 @@ stateDiagram-v2
 ```
 
 `x-mimir-session` is the authoritative boundary. R2 and D1 are canonical for
-saved proxy exchanges, searchable metadata, and finalized lifecycle state. The
-Durable Object owns the bounded live plugin-turn buffer; plugin excerpts are
-not promoted into the R2 transcript manifest or D1 search metadata.
+saved proxy and reconstructed harness exchanges, searchable metadata, and
+finalized lifecycle state. The Durable Object owns the bounded live event-turn
+buffer; event excerpts are not promoted into the R2 transcript manifest or D1
+search metadata.
 
 ## Starting
 
@@ -97,15 +100,18 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 | Component | Responsibility |
 | --- | --- |
 | Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; report saved exchanges to the session object |
-| OpenCode plugin | Report completed turns, heartbeats, and supported lifecycle events across OpenCode providers |
-| Hermes plugin | Report direct-provider turns and lifecycle events; suppress duplicate turns for known proxied traffic |
+| OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
+| Hermes plugin | Report direct-provider turn summaries and lifecycle events; suppress duplicate turns for known proxied traffic |
+| Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges and report start/end lifecycle events |
 | Session Durable Object | Coordinate liveness, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
 | CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |
 | Dashboard | Access-protected session and request views backed by Worker APIs |
 
-Plugin events contain summaries and excerpts, not full transport archives.
-Only traffic that reaches the Worker proxy produces full redacted exchange
-objects.
+Event payloads contain summaries and excerpts, not transport archives.
+Reconstructed harness exchanges are persisted and searchable after Worker
+redaction, but can only contain fields exposed by the harness and may omit tool
+activity, transport metadata, exact token use, or timing. Only traffic that
+reaches the Worker proxy produces a full redacted transport exchange.
 
 ## Persistence Verification
 

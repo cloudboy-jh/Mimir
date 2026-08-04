@@ -69,7 +69,7 @@ func (r Report) Structured() StructuredReport {
 			section = structured.Deployed
 		case name == "connection" || strings.HasPrefix(name, "connection."):
 			section = structured.Connection
-		case strings.HasPrefix(name, "opencode.") || strings.HasPrefix(name, "hermes.") || name == "harness-loads":
+		case strings.HasSuffix(name, ".plugin-load") || name == "harness-loads":
 			section = structured.Active
 		}
 		section[name] = state
@@ -278,16 +278,23 @@ type harnessLoadsResponse struct {
 }
 
 func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.ArtifactReport, add func(string, string, string, string)) {
+	registry := []struct{ harness, label, source, activate string }{
+		{"opencode", "OpenCode", "plugins/opencode/mimir.ts", "restart OpenCode"},
+		{"hermes", "Hermes", "plugins/hermes/__init__.py", "restart Hermes"},
+		{"claude-code", "Claude Code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},
+		{"codex", "Codex", "plugins/codex/hooks.json", "restart Codex"},
+		{"cursor", "Cursor", "plugins/cursor/hooks.json", "open or continue a Cursor agent session; Cursor reloads hooks.json automatically"},
+	}
 	plugins := make(map[string]install.ArtifactResult)
 	for _, artifact := range artifacts.Artifacts {
 		if !artifactUsable(artifact.Status) || artifact.BundleHash == "" {
 			continue
 		}
-		switch artifact.Source {
-		case "plugins/opencode/mimir.ts":
-			plugins["opencode"] = artifact
-		case "plugins/hermes/__init__.py":
-			plugins["hermes"] = artifact
+		for _, entry := range registry {
+			if artifact.Source == entry.source {
+				plugins[entry.harness] = artifact
+				break
+			}
 		}
 	}
 	if len(plugins) == 0 {
@@ -302,9 +309,9 @@ func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.Art
 	if err != nil {
 		var apiErr *mimirapi.Error
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
-			for _, harnessName := range []string{"opencode", "hermes"} {
-				if _, ok := plugins[harnessName]; ok {
-					add(harnessName+".plugin-load", "skipped", "installed plugin is current; active version unknown because the deployed Worker does not report harness loads", "")
+			for _, entry := range registry {
+				if _, ok := plugins[entry.harness]; ok {
+					add(entry.harness+".plugin-load", "skipped", "installed plugin is current; active version unknown because the deployed Worker does not report harness loads", "")
 				}
 			}
 			return
@@ -317,20 +324,17 @@ func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.Art
 		add("harness-loads", "failed", "invalid /integrations/harness-loads response: "+err.Error(), "mimir deploy")
 		return
 	}
-	for _, harnessName := range []string{"opencode", "hermes"} {
+	for _, entry := range registry {
+		harnessName := entry.harness
 		artifact, ok := plugins[harnessName]
 		if !ok {
 			continue
 		}
 		load, found := latestHarnessLoad(response.Loads, harnessName, receipt.InstallationID)
-		label := "OpenCode"
-		if harnessName == "hermes" {
-			label = "Hermes"
-		}
 		if !found || load.ArtifactSHA256 == "" {
-			add(harnessName+".plugin-load", "failed", "installed plugin is current, but no active load was reported; restart required", "restart "+label)
+			add(harnessName+".plugin-load", "failed", "installed integration is staged, but no active load was reported", entry.activate)
 		} else if load.ArtifactSHA256 != artifact.BundleHash {
-			add(harnessName+".plugin-load", "failed", fmt.Sprintf("installed plugin is current (%s), but active plugin is %s; restart required", artifact.BundleHash, load.ArtifactSHA256), "restart "+label)
+			add(harnessName+".plugin-load", "failed", fmt.Sprintf("installed integration is current (%s), but active integration is %s", artifact.BundleHash, load.ArtifactSHA256), entry.activate)
 		} else {
 			add(harnessName+".plugin-load", "ok", "plugin is installed, active, and current · sha256 "+artifact.BundleHash, "")
 		}

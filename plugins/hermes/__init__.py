@@ -1,12 +1,12 @@
 """Mimir capture plugin for Hermes.
 
-Reports completed turns, heartbeats, and session ends to the Mimir session
-object. Capture happens above provider transport, so providers the Mimir
-proxy cannot reach (Nous portal account, direct providers) are covered.
+Reports completed-turn summaries, heartbeats, and session ends to the Mimir
+session object. Reporting happens above provider transport, so providers the
+Mimir proxy cannot reach (Nous portal account, direct providers) are covered.
 
 Each turn is classified from Hermes' pre_api_request transport metadata.
 Turns routed through the Mimir OpenRouter redirect are liveness-only to avoid
-double counting; direct-provider turns are reported in full.
+double counting; direct-provider turns are reported as event-only summaries.
 
 Install: copy this directory to the plugins directory under your Hermes home
 (~/.hermes/plugins/ or %LOCALAPPDATA%/hermes/plugins on Windows). Uninstall:
@@ -17,8 +17,8 @@ No credentials live here. Connection resolves from, in order:
   2. $MIMIR_HOME/config + $MIMIR_HOME/token
   3. ~/.mimir/config + ~/.mimir/token (written by `mimir setup`/`mimir login`)
 
-Delivery is best-effort and never blocks or raises into Hermes. Session ends
-are reported by on_session_finalize; if the process dies first, the
+Delivery is best-effort and never blocks or raises into Hermes. Session
+finalization is reported by on_session_finalize; if the process dies first, the
 server-side silence timer finalizes the session within ~10 minutes.
 """
 
