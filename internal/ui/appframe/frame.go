@@ -26,6 +26,14 @@ type Frame struct {
 	Follow                  bool
 }
 
+// HomeFrame is the persistent application's full-screen shell. It keeps the
+// canvas anchored at row zero while reserving the final two rows for the rule
+// and contextual footer.
+type HomeFrame struct {
+	Lines  []string
+	Footer string
+}
+
 func Interactive(in io.Reader, out io.Writer) bool {
 	if !bentotui.Interactive(in, out) {
 		return false
@@ -108,6 +116,27 @@ func (f Frame) RenderLayout(ctx bentotui.Context, screen bentotui.Screen, layout
 	result = append(result, border.Render("│")+bentotui.PadRight(" "+bentotui.Truncate(f.Footer, layout.BodyWidth)+" ", inner)+border.Render("│"))
 	result = append(result, border.Render("└"+strings.Repeat("─", inner)+"┘"))
 	return strings.Join(result, "\n"), offset
+}
+
+func (f HomeFrame) RenderLayout(ctx bentotui.Context, screen bentotui.Screen, layout Layout) string {
+	ctx.Width = layout.Width
+	if ctx.Theme == (bentotui.Theme{}) {
+		ctx.Theme = bentotui.Mimir
+	}
+	bodyHeight := max(1, layout.Height-2)
+	lines := make([]string, 0, layout.Height)
+	for _, line := range f.Lines {
+		lines = append(lines, bentotui.PadRight(bentotui.Truncate(line, layout.Width), layout.Width))
+		if len(lines) == bodyHeight {
+			break
+		}
+	}
+	for len(lines) < bodyHeight {
+		lines = append(lines, strings.Repeat(" ", layout.Width))
+	}
+	lines = append(lines, bentotui.Divider(ctx, ""))
+	lines = append(lines, bentotui.PadRight(bentotui.Truncate(f.Footer, layout.Width), layout.Width))
+	return strings.Join(lines, "\n")
 }
 
 func frameLabelLine(border bentotui.Style, width int, left, title, right, end string) string {

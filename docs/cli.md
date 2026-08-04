@@ -30,17 +30,18 @@ terminals. Redirected output and `--no-interactive` retain the static text
 format. Agents and scripts should use `mimir list --json`; JSON mode never emits
 terminal control sequences.
 
-`mimir tui` opens the persistent split sessions/agent surface in the terminal's
+`mimir tui` opens the persistent sessions and Pi home surface in the terminal's
 alternate screen. It consumes the current terminal dimensions, restores the
 original screen on exit, and shows a bounded message below 48x12. `Tab` moves
-between session browsing and agent input, `/` filters sessions, `Enter` toggles
-session detail, `o` records an outcome, and `z` expands the agent. The Pi agent
+between session browsing and Pi input. In the session list, `/` filters,
+`Enter` opens detail, `o` records an outcome, and `z` expands the agent. In the
+Pi input, `/` opens commands and `/theme` opens the Mimir theme picker. The agent
 receives the selected session as context and uses private tool adapters for
 session listing, detail, search, outcomes, and diagnostics. Run
-`mimir doctor --tui` to validate Pi and provider credentials. `Ctrl+Up` and
-`Ctrl+Down` adjust the sessions/agent split.
+`mimir doctor --tui` to validate Pi and provider credentials. The centered home
+surface keeps recent sessions above the Pi prompt.
 
-Stateful human commands use one top-left-anchored 80x20 application frame
+Temporary stateful human commands use one top-left-anchored 80x20 application frame
 (48x12 minimum). Session browsing, deploy, update, setup, install, and login
 share its header, scrollable body, and contextual footer. Arrow keys or `j`/`k`
 scroll, `g`/`G` jump to either end, `f` resumes following live output, and

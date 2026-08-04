@@ -13,8 +13,8 @@ mimircli -> sessions / operations / receipts -> appframe -> bentotui
   the persistent terminal uses the measured full terminal dimensions. It owns
   headers, footers, binding layout, viewport dimensions, and static rendering.
 - `sessions/` owns session list, filtering, detail, and session key handling.
-- `mimirtui/` owns the persistent split sessions/agent surface, focus, agent
-  scrollback, outcome prompts, layout switching, and Pi event mapping.
+- `mimirtui/` owns the persistent centered home surface, sessions, Pi input and
+  scrollback, command and theme overlays, outcome prompts, and Pi event mapping.
 - `operations/` owns deploy, update, setup, install, and login progress,
   bounded command output, scrolling, follow mode, cancellation, and the stable
   line-oriented fallback.

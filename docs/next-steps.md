@@ -8,13 +8,14 @@ specification rather than an expanding completion log.
 
 ### Adaptive full-terminal Mimir TUI
 
-The adaptive AltScreen transition, measured full-terminal layout, ratio-based
-split, state-preserving reload behavior, and small-terminal fallback are
-implemented. The remaining work is hardening and validation.
+The adaptive AltScreen transition, measured full-terminal layout, centered
+sessions-and-Pi home surface, state-preserving reload behavior, and
+small-terminal fallback are implemented. The remaining work is hardening and
+validation.
 
 The compact `80x20` constraint remains appropriate for temporary install,
 deploy, update, login, and lightweight session-browser surfaces, but it wastes
-space and complicates the persistent sessions-and-agent application. `mimir tui`
+space and complicates the persistent sessions-and-Pi application. `mimir tui`
 now uses the measured terminal dimensions and AltScreen lifecycle.
 
 Remaining work:
@@ -22,9 +23,9 @@ Remaining work:
 1. **Finish deterministic resize coverage.**
    - Assert exact frames at `48x12`, `80x20`, `120x40`, and `200x60`.
    - Exercise large-to-small, small-to-large, supported-to-unsupported-to-supported,
-     and split-to-fullscreen-to-resized-to-split transitions.
+     and home-to-fullscreen-to-resized-to-home transitions.
    - Verify no stale lines, wrapping, broken borders, or displaced footer.
-   - Verify selection, filters, input, scrolling, split ratio, and streaming
+   - Verify selection, filters, input, scrolling, overlays, and streaming
      responses survive every transition.
    - Add terminal transcript tests for AltScreen entry/exit, home, clear,
      wrapping disable/restore, mouse cleanup, and failure cleanup.

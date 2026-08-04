@@ -35,7 +35,7 @@ type Options struct {
 type screen uint8
 
 const (
-	screenSplit screen = iota
+	screenHome screen = iota
 	screenAgent
 	screenDetail
 )
@@ -50,6 +50,26 @@ const (
 )
 
 type chatLine struct{ role, text string }
+
+type overlay uint8
+
+const (
+	overlayNone overlay = iota
+	overlayCommands
+	overlayThemes
+	overlayHelp
+)
+
+type slashCommand struct {
+	name, description string
+}
+
+var slashCommands = []slashCommand{
+	{name: "/model", description: "Switch model: /model provider/model"},
+	{name: "/theme", description: "Open the Mimir theme picker"},
+	{name: "/help", description: "Show TUI controls"},
+	{name: "/quit", description: "Exit Mimir"},
+}
 
 type Model struct {
 	mu      sync.Mutex
@@ -71,9 +91,11 @@ type Model struct {
 	streaming   string
 	agentOffset int
 	busy        bool
-	splitRatio  int
 	theme       int
+	overlay     overlay
+	overlayItem int
 	status      string
+	agentStatus string
 	loading     bool
 }
 
@@ -81,12 +103,11 @@ func New(options Options) *Model {
 	if options.Context == nil {
 		options.Context = context.Background()
 	}
-	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, splitRatio: 55, loading: true}
-	m.messages = []chatLine{{role: "agent", text: "Ask about the selected session or search across Mimir."}}
+	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, focus: focusAgent, agentStatus: "ready", loading: true}
 	if options.Agent != nil {
 		go m.readAgent(options.Agent.Events())
 	} else {
-		m.status = "Agent unavailable"
+		m.agentStatus = "unavailable"
 	}
 	go m.reload()
 	return m
@@ -147,6 +168,16 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 	if key.Kind == bentotui.KeyInterrupt {
 		return true
 	}
+	if m.overlay == overlayThemes || m.overlay == overlayHelp {
+		if m.overlay == overlayHelp {
+			if key.Kind == bentotui.KeyEscape || key.Kind == bentotui.KeyEnter {
+				m.overlay = overlayNone
+			}
+			return false
+		}
+		m.handleThemePickerLocked(key)
+		return false
+	}
 	if m.focus == focusFilter {
 		m.handleFilterLocked(key)
 		return false
@@ -167,17 +198,8 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 
 func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool {
 	if key.Kind == bentotui.KeyTab {
-		m.screen = screenSplit
+		m.screen = screenHome
 		m.focus = focusAgent
-		return false
-	}
-	if key.Modifiers&bentotui.KeyModifierCtrl != 0 && (key.Kind == bentotui.KeyUp || key.Kind == bentotui.KeyDown) {
-		if key.Kind == bentotui.KeyUp {
-			m.splitRatio -= 5
-		} else {
-			m.splitRatio += 5
-		}
-		m.splitRatio = max(25, min(75, m.splitRatio))
 		return false
 	}
 	switch key.Kind {
@@ -228,19 +250,19 @@ func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool
 func (m *Model) handleDetailLocked(key bentotui.Key) {
 	switch key.Kind {
 	case bentotui.KeyEscape:
-		m.screen = screenSplit
+		m.screen = screenHome
 		m.focus = focusSessions
 		m.detailOffset = 0
 	case bentotui.KeyUp, bentotui.KeyMouseUp:
-		m.detailOffset++
-	case bentotui.KeyDown, bentotui.KeyMouseDown:
 		m.detailOffset = max(0, m.detailOffset-1)
+	case bentotui.KeyDown, bentotui.KeyMouseDown:
+		m.detailOffset++
 	case bentotui.KeyRune:
 		switch key.Rune {
 		case 'k':
-			m.detailOffset++
-		case 'j':
 			m.detailOffset = max(0, m.detailOffset-1)
+		case 'j':
+			m.detailOffset++
 		case 'o':
 			if m.currentIDLocked() != "" {
 				m.focus = focusOutcome
@@ -306,20 +328,51 @@ func (m *Model) handleOutcomeLocked(ctx context.Context, key bentotui.Key) {
 }
 
 func (m *Model) handleAgentLocked(ctx context.Context, key bentotui.Key) bool {
+	if m.overlay == overlayCommands {
+		matches := m.commandMatchesLocked()
+		switch key.Kind {
+		case bentotui.KeyUp, bentotui.KeyMouseUp:
+			if len(matches) > 0 {
+				m.overlayItem = (m.overlayItem - 1 + len(matches)) % len(matches)
+			}
+			return false
+		case bentotui.KeyDown, bentotui.KeyMouseDown:
+			if len(matches) > 0 {
+				m.overlayItem = (m.overlayItem + 1) % len(matches)
+			}
+			return false
+		case bentotui.KeyTab:
+			if len(matches) > 0 {
+				m.input = matches[min(m.overlayItem, len(matches)-1)].name + " "
+			}
+			return false
+		case bentotui.KeyEnter:
+			if len(matches) > 0 && strings.TrimSpace(m.input) == "/" {
+				m.input = matches[min(m.overlayItem, len(matches)-1)].name
+			}
+			return m.submitLocked(ctx)
+		}
+	}
 	switch key.Kind {
 	case bentotui.KeyTab:
-		if m.screen == screenSplit {
+		if m.screen == screenHome {
 			m.focus = focusSessions
 		}
 	case bentotui.KeyEscape:
+		if m.overlay == overlayCommands {
+			m.overlay = overlayNone
+			m.input = ""
+			return false
+		}
 		if m.screen == screenAgent && m.busy && m.options.Agent != nil {
 			go m.abortAgent(ctx)
-			m.status = "Agent paused"
+			m.agentStatus = "paused"
 		}
-		m.screen = screenSplit
+		m.screen = screenHome
 		m.focus = focusSessions
 	case bentotui.KeyBackspace:
 		m.input = trimLastRune(m.input)
+		m.syncCommandOverlayLocked()
 	case bentotui.KeyUp, bentotui.KeyMouseUp:
 		m.agentOffset++
 	case bentotui.KeyDown, bentotui.KeyMouseDown:
@@ -328,11 +381,12 @@ func (m *Model) handleAgentLocked(ctx context.Context, key bentotui.Key) bool {
 		return m.submitLocked(ctx)
 	case bentotui.KeyRune:
 		if key.Rune == 'z' && m.screen == screenAgent && m.input == "" {
-			m.screen = screenSplit
+			m.screen = screenHome
 			m.focus = focusSessions
 			return false
 		}
 		m.input += string(key.Rune)
+		m.syncCommandOverlayLocked()
 	}
 	return false
 }
@@ -344,23 +398,24 @@ func (m *Model) submitLocked(ctx context.Context) bool {
 	}
 	m.input = ""
 	if strings.HasPrefix(input, "/") {
+		m.overlay = overlayNone
 		fields := strings.Fields(input)
 		switch fields[0] {
 		case "/quit":
 			return true
 		case "/theme":
-			m.theme = (m.theme + 1) % len(bentotui.Themes())
-			m.status = "Theme: " + bentotui.Themes()[m.theme].Name
+			m.overlay = overlayThemes
+			m.overlayItem = m.theme
 			return false
 		case "/help":
-			m.messages = append(m.messages, chatLine{role: "agent", text: "/model provider/model · /theme · /help · /quit"})
+			m.overlay = overlayHelp
 			return false
 		case "/model":
 			if len(fields) != 2 || m.options.Agent == nil {
 				m.status = "Usage: /model provider/model"
 				return false
 			}
-			m.status = "Switching model to " + fields[1]
+			m.agentStatus = "switching model..."
 			go m.setAgentModel(ctx, fields[1])
 			return false
 		default:
@@ -368,9 +423,10 @@ func (m *Model) submitLocked(ctx context.Context) bool {
 			return false
 		}
 	}
+	m.overlay = overlayNone
 	m.messages = append(m.messages, chatLine{role: "you", text: input})
 	if m.options.Agent == nil {
-		m.status = "Agent unavailable"
+		m.agentStatus = "unavailable"
 		return false
 	}
 	contextPrompt := "Mimir terminal context:\n"
@@ -383,9 +439,50 @@ func (m *Model) submitLocked(ctx context.Context) bool {
 	contextPrompt += "Use the Mimir tools for factual claims and mutations.\n\nUser: " + input
 	m.busy = true
 	m.streaming = ""
-	m.status = "Agent working..."
+	m.screen = screenAgent
+	m.focus = focusAgent
+	m.agentStatus = "working..."
 	go m.promptAgent(ctx, contextPrompt)
 	return false
+}
+
+func (m *Model) syncCommandOverlayLocked() {
+	if strings.HasPrefix(strings.TrimSpace(m.input), "/") {
+		m.overlay = overlayCommands
+		m.overlayItem = 0
+		return
+	}
+	m.overlay = overlayNone
+}
+
+func (m *Model) commandMatchesLocked() []slashCommand {
+	query := strings.ToLower(strings.TrimSpace(m.input))
+	if query == "" || query == "/" {
+		return append([]slashCommand(nil), slashCommands...)
+	}
+	matches := make([]slashCommand, 0, len(slashCommands))
+	for _, command := range slashCommands {
+		if strings.HasPrefix(command.name, query) {
+			matches = append(matches, command)
+		}
+	}
+	return matches
+}
+
+func (m *Model) handleThemePickerLocked(key bentotui.Key) {
+	themes := bentotui.Themes()
+	switch key.Kind {
+	case bentotui.KeyEscape:
+		m.overlay = overlayNone
+	case bentotui.KeyUp:
+		m.overlayItem = (m.overlayItem - 1 + len(themes)) % len(themes)
+	case bentotui.KeyDown:
+		m.overlayItem = (m.overlayItem + 1) % len(themes)
+	case bentotui.KeyEnter:
+		m.theme = m.overlayItem
+		m.overlay = overlayNone
+		m.status = "Theme: " + themes[m.theme].Name
+	}
 }
 
 func (m *Model) promptAgent(ctx context.Context, prompt string) {
@@ -395,7 +492,7 @@ func (m *Model) promptAgent(ctx context.Context, prompt string) {
 	}
 	m.mu.Lock()
 	m.busy = false
-	m.status = "Agent send failed: " + err.Error()
+	m.agentStatus = "send failed: " + err.Error()
 	m.mu.Unlock()
 	m.notify()
 }
@@ -403,19 +500,22 @@ func (m *Model) promptAgent(ctx context.Context, prompt string) {
 func (m *Model) abortAgent(ctx context.Context) {
 	if _, err := m.options.Agent.Abort(ctx); err != nil {
 		m.mu.Lock()
-		m.status = "Agent pause failed: " + err.Error()
+		m.agentStatus = "pause failed: " + err.Error()
 		m.mu.Unlock()
 		m.notify()
 	}
 }
 
 func (m *Model) setAgentModel(ctx context.Context, model string) {
-	if _, err := m.options.Agent.SetModel(ctx, model); err != nil {
-		m.mu.Lock()
-		m.status = "Model switch failed: " + err.Error()
-		m.mu.Unlock()
-		m.notify()
+	_, err := m.options.Agent.SetModel(ctx, model)
+	m.mu.Lock()
+	if err != nil {
+		m.agentStatus = "model switch failed: " + err.Error()
+	} else {
+		m.agentStatus = "ready · " + model
 	}
+	m.mu.Unlock()
+	m.notify()
 }
 
 func (m *Model) loadDetail(id string) {
@@ -436,43 +536,113 @@ func (m *Model) loadDetail(id string) {
 func (m *Model) readAgent(events <-chan pi.Envelope) {
 	for event := range events {
 		m.mu.Lock()
-		switch event.Type {
-		case "message_update":
-			var payload struct {
-				Assistant struct {
-					Type  string `json:"type"`
-					Delta string `json:"delta"`
-				} `json:"assistantMessageEvent"`
-			}
-			if json.Unmarshal(event.Raw, &payload) == nil && payload.Assistant.Type == "text_delta" {
-				m.streaming += payload.Assistant.Delta
-			}
-		case "agent_end":
-			if strings.TrimSpace(m.streaming) != "" {
-				m.messages = append(m.messages, chatLine{role: "agent", text: strings.TrimSpace(m.streaming)})
-				m.streaming = ""
-			}
-		case "agent_settled":
-			m.busy = false
-			m.status = "Agent ready"
-		case "extension_error":
-			m.status = "Agent tool error"
-		case "response":
-			if event.Success != nil && !*event.Success {
-				m.status = "Agent error: " + event.Error
-				m.busy = false
-			}
-		}
+		m.applyAgentEventLocked(event)
 		m.mu.Unlock()
 		m.notify()
 	}
 	m.mu.Lock()
 	if m.options.Context.Err() == nil {
 		m.busy = false
-		m.status = "Agent stopped"
+		m.agentStatus = "stopped"
 	}
 	m.mu.Unlock()
 	m.notify()
+}
+
+func (m *Model) applyAgentEventLocked(event pi.Envelope) {
+	payload := agentEventPayload(event.Raw)
+	switch event.Type {
+	case "agent_start", "turn_start", "message_start":
+		m.busy = true
+		m.agentStatus = "working..."
+	case "message_update":
+		assistant := mapValue(payload["assistantMessageEvent"])
+		switch stringValue(assistant["type"]) {
+		case "text_delta":
+			delta := stringValue(assistant["delta"])
+			if delta == "" {
+				delta = messageText(mapValue(assistant["partial"]))
+			}
+			m.streaming += delta
+		case "text_end":
+			if content := stringValue(assistant["content"]); content != "" {
+				m.streaming = content
+			}
+		}
+	case "message_end":
+		message := mapValue(payload["message"])
+		if stringValue(message["role"]) == "assistant" {
+			if final := messageText(message); final != "" {
+				m.streaming = final
+			}
+			m.flushStreamingLocked()
+		}
+	case "turn_end", "agent_end", "agent_settled":
+		m.flushStreamingLocked()
+		m.busy = false
+		m.agentStatus = "ready"
+	case "tool_execution_start":
+		name := stringValue(payload["toolName"])
+		if name == "" {
+			name = "tool"
+		}
+		m.agentStatus = "running " + name + "..."
+	case "tool_execution_end":
+		m.agentStatus = "working..."
+	case "extension_error":
+		m.agentStatus = "tool error"
+		m.busy = false
+	case "response":
+		if event.Success != nil && !*event.Success {
+			m.agentStatus = "error: " + event.Error
+			m.busy = false
+		}
+	}
+}
+
+func (m *Model) flushStreamingLocked() {
+	if text := strings.TrimSpace(m.streaming); text != "" {
+		m.messages = append(m.messages, chatLine{role: "agent", text: text})
+	}
+	m.streaming = ""
+}
+
+func agentEventPayload(raw json.RawMessage) map[string]any {
+	root := map[string]any{}
+	if len(raw) == 0 || json.Unmarshal(raw, &root) != nil {
+		return root
+	}
+	if payload := mapValue(root["payload"]); len(payload) > 0 {
+		return payload
+	}
+	return root
+}
+
+func mapValue(value any) map[string]any {
+	result, _ := value.(map[string]any)
+	if result == nil {
+		return map[string]any{}
+	}
+	return result
+}
+
+func stringValue(value any) string {
+	result, _ := value.(string)
+	return result
+}
+
+func messageText(message map[string]any) string {
+	content, _ := message["content"].([]any)
+	parts := make([]string, 0, len(content))
+	for _, value := range content {
+		part := mapValue(value)
+		if stringValue(part["type"]) == "text" {
+			if text := stringValue(part["text"]); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m *Model) applyFilterLocked() {

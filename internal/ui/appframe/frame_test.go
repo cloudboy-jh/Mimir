@@ -68,6 +68,20 @@ func TestFullScreenLayoutUsesMeasuredDimensions(t *testing.T) {
 	}
 }
 
+func TestHomeFrameAnchorsFooterToMeasuredScreen(t *testing.T) {
+	layout := FullScreenForScreen(bentotui.Screen{Width: 80, Height: 20})
+	view := (HomeFrame{Lines: []string{"home"}, Footer: "enter submit"}).RenderLayout(bentotui.Context{Theme: bentotui.Mimir}, bentotui.Screen{Width: 80, Height: 20}, layout)
+	lines := strings.Split(view, "\n")
+	if len(lines) != 20 || !strings.Contains(lines[19], "enter submit") || !strings.Contains(lines[18], "─") {
+		t.Fatalf("unexpected home frame:\n%s", view)
+	}
+	for _, line := range lines {
+		if bentotui.VisibleWidth(line) != 80 {
+			t.Fatalf("width %d: %q", bentotui.VisibleWidth(line), line)
+		}
+	}
+}
+
 func TestSmallScreenViewPreservesMeasuredDimensions(t *testing.T) {
 	view := SmallScreen(bentotui.Screen{Width: 40, Height: 10})
 	lines := strings.Split(view, "\n")

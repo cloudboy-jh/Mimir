@@ -5,10 +5,12 @@ import (
 )
 
 type Style struct {
-	Color   Color
-	Bold    bool
-	Dim     bool
-	Enabled bool
+	Color         Color
+	Background    Color
+	HasBackground bool
+	Bold          bool
+	Dim           bool
+	Enabled       bool
 }
 
 func (s Style) Render(text string) string {
@@ -21,5 +23,9 @@ func (s Style) Render(text string) string {
 	} else if s.Dim {
 		weight = "2;"
 	}
-	return fmt.Sprintf("\x1b[%s38;2;%d;%d;%dm%s\x1b[0m", weight, s.Color.R, s.Color.G, s.Color.B, text)
+	background := ""
+	if s.HasBackground {
+		background = fmt.Sprintf("48;2;%d;%d;%d;", s.Background.R, s.Background.G, s.Background.B)
+	}
+	return fmt.Sprintf("\x1b[%s%s38;2;%d;%d;%dm%s\x1b[0m", weight, background, s.Color.R, s.Color.G, s.Color.B, text)
 }
