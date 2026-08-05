@@ -168,6 +168,21 @@ export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | nul
   }
 }
 
+// Outcome updates often refine the reason without replacing the Git result.
+// Keep explicit replacement evidence authoritative, but recover the latest
+// commit for the same outcome when an update contains only a note or nothing.
+export function currentOutcomeEvidence(events: OutcomeEvent[], outcome: Outcome): OutcomeEvidence | null {
+  const latest = events[0];
+  if (!latest) return null;
+  const current = parseOutcomeEvidence(latest.evidence_json);
+  if (current?.commit || current?.commit_url || current?.url) return current;
+  if (latest.source === "user") return current;
+  const prior = events.slice(1).find((event) => event.outcome === outcome && parseOutcomeEvidence(event.evidence_json)?.commit);
+  const git = prior ? parseOutcomeEvidence(prior.evidence_json) : null;
+  if (!git) return current;
+  return current?.note ? { ...git, note: current.note } : git;
+}
+
 export type SessionDetail = {
   session: Omit<Session, "capture" | "liveness">;
   capture: CaptureSummary;

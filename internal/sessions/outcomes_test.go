@@ -8,9 +8,12 @@ import (
 )
 
 type fakeGitEvidence struct {
-	commits  []string
-	changed  map[string][]string
-	branches map[string][]string
+	commits    []string
+	changed    map[string][]string
+	branches   map[string][]string
+	patches    map[string]string
+	repository string
+	ref        string
 }
 
 func (g fakeGitEvidence) CommitsSince(context.Context, time.Time) ([]string, error) {
@@ -24,6 +27,12 @@ func (g fakeGitEvidence) FilesChanged(_ context.Context, commit string) ([]strin
 func (g fakeGitEvidence) RemoteBranchesContaining(_ context.Context, commit string) ([]string, error) {
 	return g.branches[commit], nil
 }
+
+func (g fakeGitEvidence) Patch(_ context.Context, commit string) (string, error) {
+	return g.patches[commit], nil
+}
+func (g fakeGitEvidence) RepositoryURL(context.Context) (string, error) { return g.repository, nil }
+func (g fakeGitEvidence) Ref(context.Context) (string, error)           { return g.ref, nil }
 
 func TestSetGitOutcomeRecordsLandedEvidence(t *testing.T) {
 	var outcomePath string
@@ -40,9 +49,12 @@ func TestSetGitOutcomeRecordsLandedEvidence(t *testing.T) {
 		return []byte(`{"ok":true}`), nil
 	}))
 	data, err := service.SetGitOutcome(context.Background(), "owner/session", fakeGitEvidence{
-		commits:  []string{"abc123"},
-		changed:  map[string][]string{"abc123": {"src/auth/login.go"}},
-		branches: map[string][]string{"abc123": {"origin/main"}},
+		commits:    []string{"abc123"},
+		changed:    map[string][]string{"abc123": {"src/auth/login.go"}},
+		branches:   map[string][]string{"abc123": {"origin/main"}},
+		patches:    map[string]string{"abc123": "diff --git a/src/auth/login.go b/src/auth/login.go\n+fixed\n"},
+		repository: "https://github.com/owner/repo",
+		ref:        "main",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +62,8 @@ func TestSetGitOutcomeRecordsLandedEvidence(t *testing.T) {
 	if string(data) != `{"ok":true}` || outcomePath != "/sessions/owner%2Fsession/outcome" {
 		t.Fatalf("data=%s path=%q", data, outcomePath)
 	}
-	if outcomeBody["outcome"] != "landed" || outcomeBody["source"] != "agent" || outcomeBody["evidence"] != "commit abc123" {
+	evidence, ok := outcomeBody["evidence"].(map[string]any)
+	if outcomeBody["outcome"] != "landed" || outcomeBody["source"] != "agent" || !ok || evidence["commit"] != "abc123" || evidence["repository_url"] != "https://github.com/owner/repo" || evidence["ref"] != "main" || evidence["patch"] == "" {
 		t.Fatalf("body = %#v", outcomeBody)
 	}
 }

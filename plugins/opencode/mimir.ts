@@ -470,6 +470,12 @@ function mergeOutcomeEvidence(agentEvidence: string | undefined, git: GitEvidenc
   return git ?? undefined;
 }
 
+function workspaceGitEvidence(worktree: string | undefined, directory: string | undefined, run: GitRunner = spawnGit): GitEvidence | null {
+  const primary = gitEvidence(worktree ?? directory, run);
+  if (primary || !worktree || worktree === directory) return primary;
+  return gitEvidence(directory, run);
+}
+
 function createDeliveryQueue(
   send: (event: SessionEvent) => Promise<boolean>,
   schedule: (callback: () => void, delay: number) => unknown = setTimeout,
@@ -675,7 +681,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         },
         async execute(args, context) {
           context.metadata?.({ title: "Mimir receipt" });
-          const evidence = mergeOutcomeEvidence(args.evidence, gitEvidence(worktree ?? directory));
+          const evidence = mergeOutcomeEvidence(args.evidence, workspaceGitEvidence(worktree, directory));
           await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
@@ -725,4 +731,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

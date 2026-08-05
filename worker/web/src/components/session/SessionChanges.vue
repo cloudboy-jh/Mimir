@@ -15,6 +15,7 @@ const totals = computed(() => ({
 }));
 const visibleDiffs = computed(() => showAll.value ? diffs.value : diffs.value.slice(0, PREVIEW_LIMIT));
 const commitHref = computed(() => commitUrl(props.evidence));
+const evidenceHref = computed(() => commitHref.value ?? props.evidence?.url ?? null);
 
 watch(() => props.evidence?.commit, () => { showAll.value = false; });
 </script>
@@ -38,7 +39,7 @@ watch(() => props.evidence?.commit, () => { showAll.value = false; });
       <span v-if="evidence.base_commit">on {{ shortCommit(evidence.base_commit) }}</span>
       <span v-if="evidence.provenance">via {{ evidence.provenance }}</span>
     </div>
-    <p v-else-if="evidence?.url" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="evidence.url" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ evidence.url }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /></a></p>
+    <p v-else-if="evidenceHref" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="evidenceHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ evidenceHref }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /></a></p>
     <p v-else-if="evidence?.note" class="border-b border-zinc-200 py-2.5 text-xs leading-5 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">{{ evidence.note }}</p>
     <p v-else class="pt-3 text-sm text-zinc-500">No committed changes recorded.</p>
 

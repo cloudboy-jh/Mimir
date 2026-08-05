@@ -9,7 +9,7 @@ import SessionHeader from "@/components/session/SessionHeader.vue";
 import SessionOutcome from "@/components/session/SessionOutcome.vue";
 import SessionChanges from "@/components/session/SessionChanges.vue";
 import LiveSessionTurns from "@/components/session/LiveSessionTurns.vue";
-import { ApiError, connectSessionLive, errorMessage, getSession, getSessionObjectState, listSessionExchanges, parseOutcomeEvidence, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
+import { ApiError, connectSessionLive, currentOutcomeEvidence, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
 import { markdownExportLimit, sessionMarkdown } from "@/lib/markdown";
 
@@ -161,12 +161,10 @@ function applyTitleUpdate(update: SessionTitleUpdate) {
   if (detail.value?.session.id === update.id) Object.assign(detail.value.session, update);
 }
 
-// Only the newest recorded evidence describes the current outcome. Falling back
-// to older commits would show a diff that no longer matches the session result.
 const commitEvidence = computed(() => {
-  const event = detail.value?.outcome_events[0];
-  const parsed = parseOutcomeEvidence(event?.evidence_json ?? null);
-  return parsed?.commit ? parsed : null;
+  if (!detail.value) return null;
+  const evidence = currentOutcomeEvidence(detail.value.outcome_events, detail.value.session.outcome);
+  return evidence?.commit ? evidence : null;
 });
 
 const exporting = ref(false);
@@ -219,7 +217,7 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
       <SessionCapture :capture="detail.capture" />
     </div>
     <div class="grid gap-x-8 gap-y-7 pt-8 xl:grid-cols-[minmax(0,1fr)_360px] xl:grid-rows-[auto_1fr] xl:items-start">
-      <SessionChanges class="xl:col-start-2 xl:row-start-1" :evidence="parseOutcomeEvidence(detail.outcome_events[0]?.evidence_json ?? null)" :source-ref="detail.session.source_ref" />
+      <SessionChanges class="xl:col-start-2 xl:row-start-1" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
       <div class="grid gap-8 xl:col-start-1 xl:row-span-2 xl:row-start-1">
         <LiveSessionTurns v-if="hasSessionObject" :turns="liveTurns" :liveness="liveness" />
         <RequestTimeline :session-id="detail.session.id" />

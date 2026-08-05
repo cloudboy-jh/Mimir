@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -487,6 +487,22 @@ describe("gitEvidence", () => {
     const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": huge });
     const patch = gitEvidence("/repo", run)!.patch!;
     expect(new TextEncoder().encode(patch).byteLength).toBeLessThanOrEqual(20 * 1024);
+  });
+});
+
+describe("workspaceGitEvidence", () => {
+  it("falls back to the OpenCode directory when its worktree is unusable", () => {
+    const head = "a".repeat(40);
+    const calls: string[] = [];
+    const run = (_command: string, args: string[], cwd: string) => {
+      calls.push(`${cwd}:${args.join(" ")}`);
+      return cwd === "/repo" && args.join(" ") === "rev-parse HEAD"
+        ? { status: 0, stdout: head }
+        : { status: 1, stdout: "" };
+    };
+    expect(workspaceGitEvidence("/stale-worktree", "/repo", run)?.commit).toBe(head);
+    expect(calls).toContain("/stale-worktree:rev-parse HEAD");
+    expect(calls).toContain("/repo:rev-parse HEAD");
   });
 });
 

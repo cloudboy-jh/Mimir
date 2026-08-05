@@ -27,6 +27,9 @@ type GitEvidence interface {
 	CommitsSince(context.Context, time.Time) ([]string, error)
 	FilesChanged(context.Context, string) ([]string, error)
 	RemoteBranchesContaining(context.Context, string) ([]string, error)
+	Patch(context.Context, string) (string, error)
+	RepositoryURL(context.Context) (string, error)
+	Ref(context.Context) (string, error)
 }
 
 type remoteSession struct {
@@ -114,7 +117,17 @@ func (s Service) SetGitOutcome(ctx context.Context, id string, git GitEvidence) 
 		if err == nil && durableBranch(branches) {
 			options.Outcome = "landed"
 			options.Reason = "a commit touching captured session files is reachable from a durable remote branch"
-			options.Evidence = "commit " + commit
+			evidence := map[string]any{"commit": commit, "provenance": "git"}
+			if repository, repositoryErr := git.RepositoryURL(ctx); repositoryErr == nil && repository != "" {
+				evidence["repository_url"] = repository
+			}
+			if ref, refErr := git.Ref(ctx); refErr == nil && ref != "" && ref != "HEAD" {
+				evidence["ref"] = ref
+			}
+			if patch, patchErr := git.Patch(ctx, commit); patchErr == nil && patch != "" {
+				evidence["patch"] = patch
+			}
+			options.Evidence = evidence
 			break
 		}
 	}

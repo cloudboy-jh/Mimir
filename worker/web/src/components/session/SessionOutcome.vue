@@ -6,7 +6,7 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka
 import OutcomeBadge from "@/components/OutcomeBadge.vue";
 import Button from "@/components/ui/Button.vue";
 import Select from "@/components/ui/Select.vue";
-import { errorMessage, parseOutcomeEvidence, setSessionOutcome, type Outcome, type OutcomeEvidence, type SessionDetail } from "@/lib/api";
+import { currentOutcomeEvidence, errorMessage, setSessionOutcome, type Outcome, type OutcomeEvidence, type SessionDetail } from "@/lib/api";
 import { shortDate } from "@/lib/format";
 import { evidenceKindOptions } from "@/lib/options";
 import { outcomeMeta, outcomeOrder } from "@/lib/outcomes";
@@ -39,7 +39,12 @@ const evidence = computed<OutcomeEvidence | undefined>(() => {
   const current = recordedEvidence.value;
   if (evidenceKind.value === "commit" && value) {
     if (current?.commit === value) return { ...current };
-    return { commit: value, provenance: "user" };
+    return {
+      commit: value,
+      ...(current?.repository_url ? { repository_url: current.repository_url } : {}),
+      ...(current?.ref ? { ref: current.ref } : {}),
+      provenance: "user",
+    };
   }
   if (evidenceKind.value === "url" && value) return current?.url === value ? { ...current } : { url: value };
   if (evidenceKind.value === "note" && value) return current?.note === value ? { ...current } : { note: value };
@@ -58,8 +63,7 @@ const evidenceKindModel = computed({
   set: (value: string) => { evidenceKind.value = value as EvidenceKind; },
 });
 
-const latestEvent = computed(() => props.detail.outcome_events[0] ?? null);
-const recordedEvidence = computed(() => parseOutcomeEvidence(latestEvent.value?.evidence_json ?? null));
+const recordedEvidence = computed(() => currentOutcomeEvidence(props.detail.outcome_events, props.detail.session.outcome));
 const editorOpen = computed({
   get: () => editing.value,
   set: (value: boolean) => {
