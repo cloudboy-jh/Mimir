@@ -20,6 +20,20 @@ Requirements: a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
 with npm, and Bun. To connect another machine to the same deployment, install
 the CLI there and run `mimir login`.
 
+## Dashboard and terminal
+
+The private dashboard keeps sessions, outcomes, capture state, harnesses, models,
+and token usage visible in one place.
+
+![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
+
+The persistent TUI provides the same session-first workflow in the terminal,
+with inline evidence and Ask Mimir for questions grounded in your saved work.
+
+<p align="center">
+  <img src="assets/images/mimir-tui-screenshot.png" width="860" alt="Mimir terminal UI showing the session list, Ask Mimir, contextual status, and keyboard commands.">
+</p>
+
 ## What Mimir remembers
 
 A session is one episode of agent work, not a bag of disconnected requests.

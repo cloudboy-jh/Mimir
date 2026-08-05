@@ -26,7 +26,10 @@ func (a *recordingAgent) Prompt(_ context.Context, prompt string) (string, error
 }
 func (a *recordingAgent) Abort(context.Context) (string, error)            { return "req-2", nil }
 func (a *recordingAgent) SetModel(context.Context, string) (string, error) { return "req-3", nil }
-func (a *recordingAgent) Close() error                                     { return nil }
+func (a *recordingAgent) AvailableModels(context.Context) ([]pi.Model, error) {
+	return []pi.Model{{Provider: "openrouter", ID: "test/model", Name: "Test model"}}, nil
+}
+func (a *recordingAgent) Close() error { return nil }
 
 func testModel() *Model {
 	m := New(Options{Context: context.Background(), Out: io.Discard, Load: func(context.Context) ([]sessionui.BrowserSession, error) {
@@ -44,13 +47,13 @@ func testModel() *Model {
 func TestHomeAndFullscreenAgentViews(t *testing.T) {
 	m := testModel()
 	view := m.View(bentotui.Screen{Width: 80, Height: 20})
-	if !strings.Contains(view, "Sessions") || !strings.Contains(view, "Pi agent") || len(strings.Split(view, "\n")) != 20 {
+	if !strings.Contains(view, "Sessions") || !strings.Contains(view, "Ask Mimir") || len(strings.Split(view, "\n")) != 20 {
 		t.Fatalf("unexpected home view:\n%s", view)
 	}
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyTab})
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: 'z'})
 	view = m.View(bentotui.Screen{Width: 80, Height: 20})
-	if strings.Contains(view, "Sessions") || !strings.Contains(view, "◆ Pi agent") {
+	if strings.Contains(view, "recent sessions") || !strings.Contains(view, "◆ Ask Mimir") {
 		t.Fatalf("unexpected fullscreen view:\n%s", view)
 	}
 }
@@ -83,7 +86,7 @@ func TestHomeViewIncludesFullWordmark(t *testing.T) {
 			t.Fatalf("wordmark row %q missing:\n%s", row, view)
 		}
 	}
-	if !strings.Contains(view, "Sessions") || !strings.Contains(view, "Pi agent") || !strings.Contains(view, "Ask about your memory") {
+	if !strings.Contains(view, "Sessions") || !strings.Contains(view, "Ask Mimir") || !strings.Contains(view, "Ask Mimir anything about your sessions.") {
 		t.Fatalf("home surfaces missing:\n%s", view)
 	}
 }
@@ -135,6 +138,43 @@ func TestMinimumScreenIsBounded(t *testing.T) {
 	}
 }
 
+func TestExpandedDetailStaysBoundedAndKeepsListContext(t *testing.T) {
+	for _, screen := range []bentotui.Screen{{Width: 48, Height: 12}, {Width: 80, Height: 20}, {Width: 120, Height: 40}} {
+		m := testModel()
+		m.mu.Lock()
+		m.focus = focusSessions
+		m.expanded = true
+		m.mu.Unlock()
+		view := m.View(screen)
+		if !strings.Contains(view, "Sessions") || !strings.Contains(view, "Evidence") {
+			t.Fatalf("expanded list context missing at %#v:\n%s", screen, view)
+		}
+		lines := strings.Split(view, "\n")
+		if len(lines) != screen.Height {
+			t.Fatalf("height %d for %#v", len(lines), screen)
+		}
+		for _, line := range lines {
+			if bentotui.VisibleWidth(line) != screen.Width {
+				t.Fatalf("width %d for %#v: %q", bentotui.VisibleWidth(line), screen, line)
+			}
+		}
+	}
+}
+
+func TestUnavailableAssistantDoesNotBlockSessionBrowsing(t *testing.T) {
+	m := New(Options{Context: context.Background(), Out: io.Discard, AgentStatus: "Mimir unavailable: executable not found", Load: func(context.Context) ([]sessionui.BrowserSession, error) {
+		return []sessionui.BrowserSession{{ID: "ses-1", Title: "still browseable"}}, nil
+	}})
+	m.mu.Lock()
+	m.items = []sessionui.BrowserSession{{ID: "ses-1", Title: "still browseable"}}
+	m.applyFilterLocked()
+	m.mu.Unlock()
+	view := m.View(bentotui.Screen{Width: 80, Height: 20})
+	if !strings.Contains(view, "still browseable") || !strings.Contains(view, "Mimir unavailable") {
+		t.Fatalf("degraded TUI missing sessions or diagnostics:\n%s", view)
+	}
+}
+
 func TestCleanTextStripsTerminalControls(t *testing.T) {
 	got := cleanText("safe\x1b]52;c;ZXZpbA==\x07\x1b[2J text")
 	if got != "safe text" {
@@ -148,24 +188,24 @@ func TestVisibleTailKeepsNewestInput(t *testing.T) {
 	}
 }
 
-func TestEnterOpensFullDetailAndEscapeReturnsToSplit(t *testing.T) {
+func TestEnterExpandsDetailInsideSessionList(t *testing.T) {
 	m := testModel()
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyTab})
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
 	m.mu.Lock()
-	if m.screen != screenDetail {
-		t.Fatalf("screen %d, want detail", m.screen)
+	if !m.expanded || m.screen != screenHome {
+		t.Fatalf("expanded=%v screen=%d", m.expanded, m.screen)
 	}
 	m.mu.Unlock()
 	view := m.View(bentotui.Screen{Width: 80, Height: 20})
-	if !strings.Contains(view, "Session detail") || strings.Contains(view, "recent sessions") {
+	if !strings.Contains(view, "Evidence") || !strings.Contains(view, "recent sessions") || !strings.Contains(view, "Ask Mimir") {
 		t.Fatalf("unexpected detail view:\n%s", view)
 	}
-	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEscape})
+	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.screen != screenHome || m.focus != focusSessions {
-		t.Fatalf("screen=%d focus=%d after escape", m.screen, m.focus)
+	if m.expanded {
+		t.Fatal("detail did not collapse")
 	}
 }
 
@@ -193,7 +233,7 @@ func TestSessionOutcomeBadgesUseSemanticColors(t *testing.T) {
 func TestSlashOpensCommandsAndThemePicker(t *testing.T) {
 	m := testModel()
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: '/'})
-	if view := m.View(bentotui.Screen{Width: 80, Height: 20}); !strings.Contains(view, "Commands") || !strings.Contains(view, "/theme") {
+	if view := m.View(bentotui.Screen{Width: 80, Height: 20}); !strings.Contains(view, "Commands") || !strings.Contains(view, "/model") {
 		t.Fatalf("command overlay missing:\n%s", view)
 	}
 	for _, r := range "theme" {
@@ -212,8 +252,68 @@ func TestSlashHelpOpensTUIHelp(t *testing.T) {
 	}
 	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
 	view := m.View(bentotui.Screen{Width: 80, Height: 20})
-	if !strings.Contains(view, "Mimir help") || !strings.Contains(view, "Sessions") || !strings.Contains(view, "Pi") {
+	if !strings.Contains(view, "Mimir help") || !strings.Contains(view, "Sessions") || !strings.Contains(view, "Ask Mimir") {
 		t.Fatalf("help overlay missing:\n%s", view)
+	}
+}
+
+func TestModelCommandOpensPickerAndSwitchesSelection(t *testing.T) {
+	agent := &recordingAgent{prompts: make(chan string, 1), events: make(chan pi.Envelope)}
+	m := New(Options{Context: context.Background(), Out: io.Discard, Agent: agent, Load: func(context.Context) ([]sessionui.BrowserSession, error) {
+		return nil, nil
+	}})
+	for _, r := range "/model" {
+		m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyRune, Rune: r})
+	}
+	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		loaded := len(m.models) == 1
+		m.mu.Unlock()
+		if loaded {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	view := m.View(bentotui.Screen{Width: 80, Height: 20})
+	if !strings.Contains(view, "Choose model") || !strings.Contains(view, "openrouter/test/model") {
+		t.Fatalf("model picker missing:\n%s", view)
+	}
+	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		selected := m.currentModel
+		m.mu.Unlock()
+		if selected == "openrouter/test/model" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("model was not switched")
+}
+
+func TestPromptSeparatesUIContextFromUserRequest(t *testing.T) {
+	agent := &recordingAgent{prompts: make(chan string, 1), events: make(chan pi.Envelope)}
+	m := New(Options{Context: context.Background(), Out: io.Discard, Agent: agent, CurrentModel: "anthropic/test", Load: func(context.Context) ([]sessionui.BrowserSession, error) {
+		return []sessionui.BrowserSession{{ID: "ses-1", Title: "my work", Outcome: "landed"}}, nil
+	}})
+	m.mu.Lock()
+	m.items = []sessionui.BrowserSession{{ID: "ses-1", Title: "my work", Outcome: "landed"}}
+	m.applyFilterLocked()
+	m.input = "what happened?"
+	m.mu.Unlock()
+	m.Handle(context.Background(), bentotui.Key{Kind: bentotui.KeyEnter})
+	select {
+	case prompt := <-agent.prompts:
+		for _, value := range []string{"<mimir_ui_context>", "Selected session: ses-1", "Current model: anthropic/test", "<user_request>\nwhat happened?\n</user_request>"} {
+			if !strings.Contains(prompt, value) {
+				t.Fatalf("prompt missing %q: %s", value, prompt)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prompt was not sent")
 	}
 }
 
@@ -239,7 +339,7 @@ func TestPiPromptOpensAgentViewAndReceivesReply(t *testing.T) {
 		t.Fatalf("screen=%d busy=%v", m.screen, m.busy)
 	}
 	m.applyAgentEventLocked(pi.Envelope{Type: "message_update", Raw: []byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"It landed."}}`)})
-	m.applyAgentEventLocked(pi.Envelope{Type: "turn_end", Raw: []byte(`{"type":"turn_end"}`)})
+	m.applyAgentEventLocked(pi.Envelope{Type: "agent_settled", Raw: []byte(`{"type":"agent_settled"}`)})
 	if m.busy || len(m.messages) != 2 || m.messages[1].text != "It landed." {
 		t.Fatalf("unexpected pi state: busy=%v messages=%#v", m.busy, m.messages)
 	}

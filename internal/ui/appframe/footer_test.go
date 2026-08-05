@@ -28,3 +28,16 @@ func TestFooterShowsAtMostFourBindings(t *testing.T) {
 		t.Fatalf("unexpected binding priority %q", footer)
 	}
 }
+
+func TestFooterStatusKeepsActionsAndShowsRuntimeState(t *testing.T) {
+	footer := FooterStatus(bentotui.Context{Width: 120, Theme: bentotui.Mimir},
+		[]Binding{{Key: "↑↓", Label: "Browse"}, {Key: "↵", Label: "Details"}},
+		"3/25 · LANDED · Mimir ready · anthropic/sonnet",
+		[]Binding{{Key: "/", Label: "Filter"}, {Key: "Tab", Label: "Ask"}},
+	)
+	for _, value := range []string{"↑↓ Browse", "↵ Details", "3/25 · LANDED", "/ Filter", "Tab Ask"} {
+		if !strings.Contains(footer, value) {
+			t.Fatalf("missing %q in %q", value, footer)
+		}
+	}
+}

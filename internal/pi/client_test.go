@@ -95,6 +95,25 @@ func TestSetModelValidation(t *testing.T) {
 	}
 }
 
+func TestStateAndAvailableModelsHandshake(t *testing.T) {
+	c := startHelper(t, "echo")
+	defer c.Close()
+	state, err := c.GetState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Model == nil || state.Model.Provider != "anthropic" || state.Model.ID != "claude-test" {
+		t.Fatalf("state model = %#v", state.Model)
+	}
+	models, err := c.AvailableModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Provider != "openrouter" || models[0].ID != "vendor/model" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
 func TestLargeEventAndWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
 	c := startHelperConfig(t, Config{
@@ -182,6 +201,12 @@ func TestRPCHelperProcess(t *testing.T) {
 				"id":      command["id"],
 				"command": command["type"],
 				"success": true,
+			}
+			switch command["type"] {
+			case "get_state":
+				response["data"] = map[string]any{"model": map[string]any{"provider": "anthropic", "id": "claude-test", "name": "Claude Test"}}
+			case "get_available_models":
+				response["data"] = map[string]any{"models": []map[string]any{{"provider": "openrouter", "id": "vendor/model", "name": "Model"}}}
 			}
 			if err := encoder.Encode(response); err != nil {
 				os.Exit(2)

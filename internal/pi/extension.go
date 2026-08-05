@@ -22,13 +22,13 @@ func WriteMimirExtension(dir, executable string) (string, error) {
 import { Type } from "typebox";
 
 const mimir = %s;
-const outputLimit = 8 * 1024 * 1024;
+	const outputLimit = 7 * 1024 * 1024;
 function run(args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(mimir, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "", stderr = "";
-    child.stdout.on("data", chunk => { stdout += chunk; if (stdout.length > outputLimit) { child.kill(); reject(new Error("mimir tool output exceeded 8 MiB")); } });
-    child.stderr.on("data", chunk => { stderr += chunk; if (stderr.length > outputLimit) { child.kill(); reject(new Error("mimir tool diagnostics exceeded 8 MiB")); } });
+    child.stdout.on("data", chunk => { stdout += chunk; if (stdout.length > outputLimit) { child.kill(); reject(new Error("mimir tool output exceeded 7 MiB")); } });
+    child.stderr.on("data", chunk => { stderr += chunk; if (stderr.length > outputLimit) { child.kill(); reject(new Error("mimir tool diagnostics exceeded 7 MiB")); } });
     signal?.addEventListener("abort", () => child.kill(), { once: true });
     child.on("error", reject);
     child.on("close", code => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr.trim() || "mimir exited " + code)));

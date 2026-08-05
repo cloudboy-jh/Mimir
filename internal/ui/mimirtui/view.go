@@ -31,16 +31,13 @@ func (m *Model) View(screen bentotui.Screen) string {
 	render.Theme = themes[m.theme%len(themes)].Theme
 	bodyHeight := max(1, screen.Height-2)
 	var body []string
-	if m.screen == screenDetail {
-		work := render.WithWidth(min(84, max(40, screen.Width-4)))
-		body = m.centeredWorkView(work, m.detailLinesLocked(work, bodyHeight), screen.Width, bodyHeight)
-	} else if m.screen == screenAgent {
+	if m.screen == screenAgent {
 		work := render.WithWidth(min(84, max(40, screen.Width-4)))
 		body = m.centeredWorkView(work, m.agentLinesLocked(work, bodyHeight), screen.Width, bodyHeight)
 	} else {
 		body = m.homeLinesLocked(render, screen.Width, bodyHeight)
 	}
-	if m.overlay == overlayThemes || m.overlay == overlayHelp {
+	if m.overlay == overlayThemes || m.overlay == overlayHelp || m.overlay == overlayModels {
 		body = m.drawOverlayLocked(render, body, screen.Width, bodyHeight)
 	}
 	layout := appframe.FullScreenForScreen(screen)
@@ -49,6 +46,9 @@ func (m *Model) View(screen bentotui.Screen) string {
 
 func (m *Model) homeLinesLocked(render appframe.Renderer, width, height int) []string {
 	contentWidth := min(84, max(40, width*3/5))
+	if m.expanded {
+		contentWidth = min(104, max(contentWidth, width*4/5))
+	}
 	contentWidth = min(contentWidth, max(1, width-4))
 	local := render.WithWidth(contentWidth)
 	mark := wordmarkLines(local, bentotui.Screen{Width: width, Height: height + 2})
@@ -72,7 +72,7 @@ func (m *Model) homeLinesLocked(render appframe.Renderer, width, height int) []s
 	content := append([]string{}, mark...)
 	content = append(content, "")
 	content = append(content, fillWidth(sessions, contentWidth)...)
-	content = append(content, "", m.piHeaderLineLocked(local))
+	content = append(content, "", m.mimirHeaderLineLocked(local))
 	content = append(content, fillWidth(conversation, contentWidth)...)
 	content = append(content, input...)
 	content = append(content, commands...)
@@ -86,8 +86,8 @@ func (m *Model) homeLinesLocked(render appframe.Renderer, width, height int) []s
 	return centerBlock(content, width, height)
 }
 
-func (m *Model) piHeaderLineLocked(render appframe.Renderer) string {
-	heading := render.Heading("Pi agent")
+func (m *Model) mimirHeaderLineLocked(render appframe.Renderer) string {
+	heading := render.Heading("Ask Mimir")
 	status := cleanText(m.agentStatus)
 	if status == "" {
 		status = "ready"
@@ -175,11 +175,58 @@ func (m *Model) homeSessionLinesLocked(render appframe.Renderer, rows int) []str
 		tail = bentotui.PadRight(bentotui.Truncate(tail, tailWidth), tailWidth)
 		rendered := rowStyle.Render(marker) + outcomeStyle.Render(outcome) + rowStyle.Render(tail)
 		lines = append(lines, border.Render("│")+rendered+border.Render("│"))
+		if position == m.selected && m.expanded {
+			for _, detailLine := range m.inlineDetailLinesLocked(render, 6) {
+				lines = append(lines, panelRow("    "+detailLine, muted))
+			}
+		}
 	}
 	for len(lines) < rows+3 {
 		lines = append(lines, panelRow("", base))
 	}
 	return append(lines, border.Render("╰"+strings.Repeat("─", inner)+"╯"))
+}
+
+func (m *Model) inlineDetailLinesLocked(render appframe.Renderer, limit int) []string {
+	item, ok := m.currentLocked()
+	if !ok {
+		return nil
+	}
+	lines := []string{
+		strings.Join(nonempty("Evidence", displayValue(item.Repo, ""), displayValue(item.Harness, ""), displayValue(item.Model, "")), " · "),
+	}
+	if detail, loaded := m.details[item.ID]; loaded {
+		lines = append(lines, fmt.Sprintf("%d exchanges · %s · %d saved · %d failed", len(detail.Exchanges), displayValue(detail.Session.State, "unknown"), detail.Capture.SavedExchanges, detail.Capture.FailedExchanges))
+		if detail.Session.OutcomeReason != nil && strings.TrimSpace(*detail.Session.OutcomeReason) != "" {
+			lines = append(lines, "Outcome: "+cleanText(*detail.Session.OutcomeReason))
+		}
+		if len(detail.Files) > 0 {
+			lines = append(lines, "Files: "+cleanText(strings.Join(detail.Files, ", ")))
+		}
+		if len(detail.Errors) > 0 {
+			lines = append(lines, "Errors: "+cleanText(strings.Join(detail.Errors, "; ")))
+		}
+		if len(detail.Exchanges) > 0 {
+			exchange := detail.Exchanges[len(detail.Exchanges)-1]
+			finish := ""
+			if exchange.FinishReason != nil {
+				finish = *exchange.FinishReason
+			}
+			lines = append(lines, strings.Join(nonempty("Latest", exchange.Model, fmt.Sprintf("%dms", exchange.LatencyMS), finish), " · "))
+			if excerpt := strings.TrimSpace(exchange.ResponseExcerpt); excerpt != "" {
+				lines = append(lines, "↳ "+cleanText(excerpt))
+			}
+		}
+	} else {
+		lines = append(lines, "Loading captured evidence...")
+	}
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	for index := range lines {
+		lines[index] = bentotui.Truncate(lines[index], max(1, render.Width-8))
+	}
+	return lines
 }
 
 func outcomeBadgeColor(theme bentotui.Theme, outcome string) bentotui.Color {
@@ -254,7 +301,7 @@ func (m *Model) homeInputLinesLocked(render appframe.Renderer) []string {
 	inputWidth := max(1, inner-3)
 	value := visibleTail(cleanText(m.input), inputWidth)
 	if value == "" {
-		value = muted.Render("Ask about your memory…")
+		value = muted.Render("Ask Mimir anything about your sessions.")
 	}
 	if m.focus == focusAgent {
 		value += "_"
@@ -294,6 +341,23 @@ func (m *Model) drawOverlayLocked(render appframe.Renderer, body []string, width
 			items = append(items, marker+theme.Name)
 		}
 		items = append(items, "", "↑↓ choose · enter apply · esc close")
+	} else if m.overlay == overlayModels {
+		title = "Choose model"
+		if len(m.models) == 0 {
+			items = []string{"Loading available models...", "", "esc close"}
+		} else {
+			start := max(0, min(m.overlayItem-4, len(m.models)-8))
+			end := min(len(m.models), start+8)
+			for index := start; index < end; index++ {
+				model := m.models[index]
+				marker := "  "
+				if index == m.overlayItem {
+					marker = "› "
+				}
+				items = append(items, marker+model.Provider+"/"+model.ID)
+			}
+			items = append(items, "", "↑↓ choose · enter switch · esc close")
+		}
 	} else {
 		title = "Mimir help"
 		items = []string{
@@ -302,7 +366,7 @@ func (m *Model) drawOverlayLocked(render appframe.Renderer, body []string, width
 			"Sessions",
 			"  ↑↓ browse · / filter · enter detail",
 			"  o outcome · r reload · z fullscreen agent",
-			"Pi",
+			"Ask Mimir",
 			"  enter send · ↑↓ scroll · / commands",
 			"  esc sessions",
 			"",
@@ -441,7 +505,7 @@ func (m *Model) agentLinesLocked(render appframe.Renderer, height int) []string 
 		status = "Agent ready"
 	}
 	muted := bentotui.Style{Color: render.Theme.Muted, Enabled: render.Color}
-	lines := []string{render.Heading("Pi agent"), muted.Render(status), ""}
+	lines := []string{render.Heading("Ask Mimir"), muted.Render(status), ""}
 	for _, message := range m.messages {
 		prefix := "◆ "
 		if message.role == "you" {
@@ -504,21 +568,46 @@ func (m *Model) detailLinesLocked(render appframe.Renderer, height int) []string
 
 func (m *Model) footerLocked(render appframe.Renderer) string {
 	if m.focus == focusOutcome {
-		return "Outcome: l landed · d discarded · a abandoned · u unresolved · Esc cancel"
+		return appframe.Footer(render.Context(), []appframe.Binding{{Key: "l", Label: "Landed"}, {Key: "d", Label: "Discarded"}}, []appframe.Binding{{Key: "a", Label: "Abandoned"}, {Key: "u", Label: "Unresolved"}})
 	}
 	if m.focus == focusFilter {
-		return "Type to filter · Enter keep · Esc clear"
+		return appframe.FooterStatus(render.Context(), []appframe.Binding{{Key: "Type", Label: "Filter"}}, cleanText(m.query), []appframe.Binding{{Key: "Enter", Label: "Apply"}, {Key: "Esc", Label: "Clear"}})
 	}
-	if m.screen == screenDetail {
-		return appframe.Footer(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Scroll"}, {Key: "Esc", Label: "Back"}}, []appframe.Binding{{Key: "o", Label: "Outcome"}, {Key: "q", Label: "Quit"}})
-	}
+	status := m.footerStatusLocked()
 	if m.focus == focusAgent || m.screen == screenAgent {
 		if m.screen == screenAgent {
-			return appframe.Footer(render.Context(), []appframe.Binding{{Key: "Enter", Label: "Send"}, {Key: "Esc", Label: "Home"}}, []appframe.Binding{{Key: "/", Label: "Commands"}, {Key: "^C", Label: "Quit"}})
+			escapeLabel := "Sessions"
+			if m.busy {
+				escapeLabel = "Stop"
+			}
+			return appframe.FooterStatus(render.Context(), []appframe.Binding{{Key: "Enter", Label: "Send"}, {Key: "Esc", Label: escapeLabel}}, status, []appframe.Binding{{Key: "/", Label: "Commands"}, {Key: "^C", Label: "Quit"}})
 		}
-		return appframe.Footer(render.Context(), []appframe.Binding{{Key: "Enter", Label: "Send"}, {Key: "Tab", Label: "Sessions"}}, []appframe.Binding{{Key: "/", Label: "Commands"}, {Key: "^C", Label: "Quit"}})
+		return appframe.FooterStatus(render.Context(), []appframe.Binding{{Key: "Enter", Label: "Send"}, {Key: "Tab", Label: "Sessions"}}, status, []appframe.Binding{{Key: "/", Label: "Commands"}, {Key: "^C", Label: "Quit"}})
 	}
-	return appframe.Footer(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Browse"}, {Key: "↵", Label: "Detail"}}, []appframe.Binding{{Key: "Tab", Label: "Agent"}, {Key: "q", Label: "Quit"}})
+	detailLabel := "Details"
+	if m.expanded {
+		detailLabel = "Collapse"
+	}
+	return appframe.FooterStatus(render.Context(), []appframe.Binding{{Key: "↑↓", Label: "Browse"}, {Key: "↵", Label: detailLabel}}, status, []appframe.Binding{{Key: "/", Label: "Filter"}, {Key: "Tab", Label: "Ask"}})
+}
+
+func (m *Model) footerStatusLocked() string {
+	parts := make([]string, 0, 4)
+	if len(m.visible) > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d", m.selected+1, len(m.visible)))
+		if current, ok := m.currentLocked(); ok && strings.TrimSpace(current.Outcome) != "" {
+			parts = append(parts, strings.ToUpper(current.Outcome))
+		}
+	}
+	if m.focus == focusAgent || m.screen == screenAgent {
+		parts = append(parts, cleanText(m.agentStatus))
+		if m.currentModel != "" {
+			parts = append(parts, m.currentModel)
+		}
+	} else if strings.TrimSpace(m.status) != "" {
+		parts = append(parts, cleanText(m.status))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func fitLines(lines []string, width, height int) []string {

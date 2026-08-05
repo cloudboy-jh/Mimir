@@ -23,7 +23,7 @@ Mimir's data with an embedded agent for natural language querying.
   visible at the same time.
 - **Stateful navigation** — arrow keys, mouse, or search all update the same
   cursor. No re-invocation.
-- **Agent is context-aware** — the agent sees what session you're looking at
+- **Ask Mimir is context-aware** — the assistant sees what session you're looking at
   and can answer questions about it without you specifying the ID.
 - **Two layouts** — split view (default) and fullscreen agent (toggle). No
   modal, no overlap, no third layout.
@@ -49,7 +49,7 @@ Default (split view):
 │  [UNRES] perf review            hermes    0  │
 │                                              │
 ├──────────────────────────────────────────────┤
-│ ◆ Agent                                      │
+│ ◆ Ask Mimir                                  │
 │                                              │
 │  > what happened in this session?            │
 │                                              │
@@ -63,11 +63,11 @@ Default (split view):
 └──────────────────────────────────────────────┘
 ```
 
-Fullscreen agent (toggled with `z`):
+Fullscreen Ask Mimir (toggled with `z`):
 
 ```
 ┌──────────────────────────────────────────────┐
-│ ◆ Agent                                      │
+│ ◆ Ask Mimir                                  │
 │                                              │
 │  > show me all sessions from this week       │
 │                                              │
@@ -98,16 +98,16 @@ Fullscreen agent (toggled with `z`):
 - `o` to set outcome (inline prompt: "Landed / Discarded / Abandoned / Unresolved")
 - Selected session is highlighted; its ID is the agent's contextual reference
 
-### Agent (bottom panel)
+### Ask Mimir (bottom panel)
 
 - Type a question or command at the `> _` prompt
-- The agent knows the current session context (selected ID, search filter)
+- Mimir knows the current session context (selected ID, search filter)
 - Examples:
   - "what's the evidence for this session?"
   - "summarize everything I landed this week"
   - "show me the model switches in this session"
   - "mark this as landed with reason: dashboard shipped"
-- Agent responses render inline with styled blocks (badges, cards, lists)
+- Responses render inline with styled blocks (badges, cards, lists)
 
 ### Layout switching
 
@@ -116,9 +116,10 @@ Fullscreen agent (toggled with `z`):
 
 ## Technical approach
 
-### Embedded pi agent
+### Private agent runtime
 
-Spawn `pi --mode rpc` as a subprocess through Mimir's standard-library-only
+Pi is private implementation plumbing, not a product surface. Spawn
+`pi --mode rpc` as a subprocess through Mimir's standard-library-only
 `internal/pi` client:
 
 - Communicate over JSONL stdin/stdout

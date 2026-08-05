@@ -20,16 +20,19 @@ type Agent interface {
 	Prompt(context.Context, string) (string, error)
 	Abort(context.Context) (string, error)
 	SetModel(context.Context, string) (string, error)
+	AvailableModels(context.Context) ([]pi.Model, error)
 	Close() error
 }
 
 type Options struct {
-	Context    context.Context
-	Out        io.Writer
-	Agent      Agent
-	Load       func(context.Context) ([]sessionui.BrowserSession, error)
-	GetDetail  func(context.Context, string) (domainsessions.Detail, error)
-	SetOutcome func(context.Context, string, domainsessions.SetOutcomeOptions) error
+	Context      context.Context
+	Out          io.Writer
+	Agent        Agent
+	Load         func(context.Context) ([]sessionui.BrowserSession, error)
+	GetDetail    func(context.Context, string) (domainsessions.Detail, error)
+	SetOutcome   func(context.Context, string, domainsessions.SetOutcomeOptions) error
+	AgentStatus  string
+	CurrentModel string
 }
 
 type screen uint8
@@ -37,7 +40,6 @@ type screen uint8
 const (
 	screenHome screen = iota
 	screenAgent
-	screenDetail
 )
 
 type focus uint8
@@ -58,6 +60,7 @@ const (
 	overlayCommands
 	overlayThemes
 	overlayHelp
+	overlayModels
 )
 
 type slashCommand struct {
@@ -65,7 +68,13 @@ type slashCommand struct {
 }
 
 var slashCommands = []slashCommand{
-	{name: "/model", description: "Switch model: /model provider/model"},
+	{name: "/model", description: "Choose the model"},
+	{name: "/sessions", description: "Focus the session list"},
+	{name: "/search", description: "Filter sessions: /search query"},
+	{name: "/outcome", description: "Set the selected session outcome"},
+	{name: "/context", description: "Show what Mimir currently sees"},
+	{name: "/clear", description: "Clear this conversation"},
+	{name: "/doctor", description: "Show Mimir assistant health"},
 	{name: "/theme", description: "Open the Mimir theme picker"},
 	{name: "/help", description: "Show TUI controls"},
 	{name: "/quit", description: "Exit Mimir"},
@@ -85,29 +94,34 @@ type Model struct {
 	screen       screen
 	details      map[string]domainsessions.Detail
 	detailOffset int
+	expanded     bool
 
-	input       string
-	messages    []chatLine
-	streaming   string
-	agentOffset int
-	busy        bool
-	theme       int
-	overlay     overlay
-	overlayItem int
-	status      string
-	agentStatus string
-	loading     bool
+	input        string
+	messages     []chatLine
+	streaming    string
+	agentOffset  int
+	busy         bool
+	theme        int
+	overlay      overlay
+	overlayItem  int
+	models       []pi.Model
+	status       string
+	agentStatus  string
+	currentModel string
+	loading      bool
 }
 
 func New(options Options) *Model {
 	if options.Context == nil {
 		options.Context = context.Background()
 	}
-	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, focus: focusAgent, agentStatus: "ready", loading: true}
+	status := strings.TrimSpace(options.AgentStatus)
+	if status == "" {
+		status = "Mimir ready"
+	}
+	m := &Model{options: options, updates: make(chan struct{}, 1), details: map[string]domainsessions.Detail{}, focus: focusAgent, agentStatus: status, currentModel: options.CurrentModel, loading: true}
 	if options.Agent != nil {
 		go m.readAgent(options.Agent.Events())
-	} else {
-		m.agentStatus = "unavailable"
 	}
 	go m.reload()
 	return m
@@ -168,11 +182,15 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 	if key.Kind == bentotui.KeyInterrupt {
 		return true
 	}
-	if m.overlay == overlayThemes || m.overlay == overlayHelp {
+	if m.overlay == overlayThemes || m.overlay == overlayHelp || m.overlay == overlayModels {
 		if m.overlay == overlayHelp {
 			if key.Kind == bentotui.KeyEscape || key.Kind == bentotui.KeyEnter {
 				m.overlay = overlayNone
 			}
+			return false
+		}
+		if m.overlay == overlayModels {
+			m.handleModelPickerLocked(ctx, key)
 			return false
 		}
 		m.handleThemePickerLocked(key)
@@ -184,10 +202,6 @@ func (m *Model) Handle(ctx context.Context, key bentotui.Key) bool {
 	}
 	if m.focus == focusOutcome {
 		m.handleOutcomeLocked(ctx, key)
-		return false
-	}
-	if m.screen == screenDetail {
-		m.handleDetailLocked(key)
 		return false
 	}
 	if m.focus == focusAgent || m.screen == screenAgent {
@@ -209,9 +223,11 @@ func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool
 		m.moveLocked(1)
 	case bentotui.KeyEnter:
 		if id := m.currentIDLocked(); id != "" {
-			m.screen = screenDetail
+			m.expanded = !m.expanded
 			m.detailOffset = 0
-			go m.loadDetail(id)
+			if m.expanded {
+				go m.loadDetail(id)
+			}
 		}
 	case bentotui.KeyEscape:
 		if m.query != "" {
@@ -245,30 +261,6 @@ func (m *Model) handleSessionsLocked(ctx context.Context, key bentotui.Key) bool
 		}
 	}
 	return false
-}
-
-func (m *Model) handleDetailLocked(key bentotui.Key) {
-	switch key.Kind {
-	case bentotui.KeyEscape:
-		m.screen = screenHome
-		m.focus = focusSessions
-		m.detailOffset = 0
-	case bentotui.KeyUp, bentotui.KeyMouseUp:
-		m.detailOffset = max(0, m.detailOffset-1)
-	case bentotui.KeyDown, bentotui.KeyMouseDown:
-		m.detailOffset++
-	case bentotui.KeyRune:
-		switch key.Rune {
-		case 'k':
-			m.detailOffset = max(0, m.detailOffset-1)
-		case 'j':
-			m.detailOffset++
-		case 'o':
-			if m.currentIDLocked() != "" {
-				m.focus = focusOutcome
-			}
-		}
-	}
 }
 
 func (m *Model) handleFilterLocked(key bentotui.Key) {
@@ -411,12 +403,55 @@ func (m *Model) submitLocked(ctx context.Context) bool {
 			m.overlay = overlayHelp
 			return false
 		case "/model":
-			if len(fields) != 2 || m.options.Agent == nil {
-				m.status = "Usage: /model provider/model"
+			if m.options.Agent == nil {
+				m.status = "Mimir assistant unavailable"
+				return false
+			}
+			if len(fields) == 1 {
+				m.overlay = overlayModels
+				m.overlayItem = 0
+				m.status = "Loading models..."
+				go m.loadModels(ctx)
+				return false
+			}
+			if len(fields) != 2 {
+				m.status = "Usage: /model [provider/model]"
 				return false
 			}
 			m.agentStatus = "switching model..."
 			go m.setAgentModel(ctx, fields[1])
+			return false
+		case "/sessions":
+			m.screen = screenHome
+			m.focus = focusSessions
+			return false
+		case "/search":
+			m.query = strings.TrimSpace(strings.TrimPrefix(input, "/search"))
+			m.applyFilterLocked()
+			m.screen = screenHome
+			m.focus = focusSessions
+			return false
+		case "/outcome":
+			if m.currentIDLocked() == "" {
+				m.status = "No session selected"
+			} else {
+				m.screen = screenHome
+				m.focus = focusOutcome
+			}
+			return false
+		case "/context":
+			m.messages = append(m.messages, chatLine{role: "mimir", text: m.contextSummaryLocked()})
+			return false
+		case "/clear":
+			m.messages = nil
+			m.streaming = ""
+			m.status = "Conversation cleared"
+			return false
+		case "/doctor":
+			m.status = m.agentStatus
+			if m.currentModel != "" {
+				m.status += " · " + m.currentModel
+			}
 			return false
 		default:
 			m.status = "Unknown command; use /help"
@@ -429,19 +464,23 @@ func (m *Model) submitLocked(ctx context.Context) bool {
 		m.agentStatus = "unavailable"
 		return false
 	}
-	contextPrompt := "Mimir terminal context:\n"
+	contextPrompt := "<mimir_ui_context>\n"
 	if current, ok := m.currentLocked(); ok {
-		contextPrompt += fmt.Sprintf("Selected session: %s (%s), title %q.\n", current.ID, current.Outcome, current.Title)
+		contextPrompt += fmt.Sprintf("Selected session: %s (%s), title %q\n", current.ID, current.Outcome, current.Title)
 	}
 	if m.query != "" {
-		contextPrompt += fmt.Sprintf("Current session filter: %q.\n", m.query)
+		contextPrompt += fmt.Sprintf("Active filter: %q\n", m.query)
 	}
-	contextPrompt += "Use the Mimir tools for factual claims and mutations.\n\nUser: " + input
+	contextPrompt += fmt.Sprintf("Visible sessions: %d of %d\n", len(m.visible), len(m.items))
+	if m.currentModel != "" {
+		contextPrompt += "Current model: " + m.currentModel + "\n"
+	}
+	contextPrompt += "</mimir_ui_context>\n\n<user_request>\n" + input + "\n</user_request>"
 	m.busy = true
 	m.streaming = ""
 	m.screen = screenAgent
 	m.focus = focusAgent
-	m.agentStatus = "working..."
+	m.agentStatus = "Thinking..."
 	go m.promptAgent(ctx, contextPrompt)
 	return false
 }
@@ -485,6 +524,43 @@ func (m *Model) handleThemePickerLocked(key bentotui.Key) {
 	}
 }
 
+func (m *Model) handleModelPickerLocked(ctx context.Context, key bentotui.Key) {
+	switch key.Kind {
+	case bentotui.KeyEscape:
+		m.overlay = overlayNone
+	case bentotui.KeyUp, bentotui.KeyMouseUp:
+		if len(m.models) > 0 {
+			m.overlayItem = (m.overlayItem - 1 + len(m.models)) % len(m.models)
+		}
+	case bentotui.KeyDown, bentotui.KeyMouseDown:
+		if len(m.models) > 0 {
+			m.overlayItem = (m.overlayItem + 1) % len(m.models)
+		}
+	case bentotui.KeyEnter:
+		if len(m.models) > 0 {
+			model := m.models[min(m.overlayItem, len(m.models)-1)]
+			m.overlay = overlayNone
+			m.agentStatus = "switching model..."
+			go m.setAgentModel(ctx, model.Provider+"/"+model.ID)
+		}
+	}
+}
+
+func (m *Model) loadModels(ctx context.Context) {
+	models, err := m.options.Agent.AvailableModels(ctx)
+	m.mu.Lock()
+	if err != nil {
+		m.status = "Models unavailable: " + err.Error()
+		m.overlay = overlayNone
+	} else {
+		m.models = models
+		m.overlayItem = 0
+		m.status = fmt.Sprintf("%d models", len(models))
+	}
+	m.mu.Unlock()
+	m.notify()
+}
+
 func (m *Model) promptAgent(ctx context.Context, prompt string) {
 	_, err := m.options.Agent.Prompt(ctx, prompt)
 	if err == nil {
@@ -512,7 +588,8 @@ func (m *Model) setAgentModel(ctx context.Context, model string) {
 	if err != nil {
 		m.agentStatus = "model switch failed: " + err.Error()
 	} else {
-		m.agentStatus = "ready · " + model
+		m.currentModel = model
+		m.agentStatus = "Mimir ready"
 	}
 	m.mu.Unlock()
 	m.notify()
@@ -543,7 +620,7 @@ func (m *Model) readAgent(events <-chan pi.Envelope) {
 	m.mu.Lock()
 	if m.options.Context.Err() == nil {
 		m.busy = false
-		m.agentStatus = "stopped"
+		m.agentStatus = "Mimir assistant stopped"
 	}
 	m.mu.Unlock()
 	m.notify()
@@ -554,7 +631,7 @@ func (m *Model) applyAgentEventLocked(event pi.Envelope) {
 	switch event.Type {
 	case "agent_start", "turn_start", "message_start":
 		m.busy = true
-		m.agentStatus = "working..."
+		m.agentStatus = "Thinking..."
 	case "message_update":
 		assistant := mapValue(payload["assistantMessageEvent"])
 		switch stringValue(assistant["type"]) {
@@ -576,21 +653,26 @@ func (m *Model) applyAgentEventLocked(event pi.Envelope) {
 				m.streaming = final
 			}
 			m.flushStreamingLocked()
+			if errorMessage := stringValue(message["errorMessage"]); errorMessage != "" {
+				m.agentStatus = "Mimir error: " + errorMessage
+			}
 		}
-	case "turn_end", "agent_end", "agent_settled":
+	case "turn_end", "agent_end":
+		m.flushStreamingLocked()
+	case "agent_settled":
 		m.flushStreamingLocked()
 		m.busy = false
-		m.agentStatus = "ready"
+		m.agentStatus = "Mimir ready"
 	case "tool_execution_start":
 		name := stringValue(payload["toolName"])
 		if name == "" {
 			name = "tool"
 		}
-		m.agentStatus = "running " + name + "..."
+		m.agentStatus = "Searching sessions..."
 	case "tool_execution_end":
-		m.agentStatus = "working..."
+		m.agentStatus = "Thinking..."
 	case "extension_error":
-		m.agentStatus = "tool error"
+		m.agentStatus = "Mimir tool error"
 		m.busy = false
 	case "response":
 		if event.Success != nil && !*event.Success {
@@ -661,13 +743,34 @@ func (m *Model) applyFilterLocked() {
 func (m *Model) moveLocked(delta int) {
 	if len(m.visible) > 0 {
 		m.selected = min(len(m.visible)-1, max(0, m.selected+delta))
-		if m.screen == screenDetail {
+		if m.expanded {
 			id := m.currentIDLocked()
 			if _, loaded := m.details[id]; !loaded {
 				go m.loadDetail(id)
 			}
 		}
 	}
+}
+
+func (m *Model) contextSummaryLocked() string {
+	parts := []string{fmt.Sprintf("Visible sessions: %d of %d", len(m.visible), len(m.items))}
+	if current, ok := m.currentLocked(); ok {
+		parts = append(parts, fmt.Sprintf("Selected: %s (%s, %s)", displayContext(current.Title, current.ID), current.ID, current.Outcome))
+	}
+	if m.query != "" {
+		parts = append(parts, "Filter: "+m.query)
+	}
+	if m.currentModel != "" {
+		parts = append(parts, "Model: "+m.currentModel)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func displayContext(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (m *Model) currentLocked() (sessionui.BrowserSession, bool) {

@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
+	"time"
 
-	doctorpkg "github.com/cloudboy-jh/mimir/internal/doctor"
 	"github.com/cloudboy-jh/mimir/internal/pi"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
 	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
@@ -24,41 +23,58 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 	if !inputOK || !outputOK || !appframe.Interactive(in, out) {
 		return fmt.Errorf("mimir tui requires an interactive terminal of at least 48x12")
 	}
-	readiness := doctorpkg.New(apiRequester{}).TUIReadiness()
-	if !readiness.OK {
-		problems := make([]string, 0, len(readiness.Checks))
-		for _, check := range readiness.Checks {
-			if check.Status == "failed" {
-				problems = append(problems, check.Detail+"; "+check.Repair)
+	var agent *pi.Client
+	agentStatus := "Mimir assistant unavailable"
+	currentModel := ""
+	extensionDir, extensionErr := os.MkdirTemp("", "mimir-pi-")
+	if extensionErr == nil {
+		defer os.RemoveAll(extensionDir)
+		executable, executableErr := os.Executable()
+		if executableErr == nil {
+			extension, writeErr := pi.WriteMimirExtension(extensionDir, executable)
+			if writeErr == nil {
+				agent, extensionErr = pi.Start(ctx, pi.Config{Dir: ".", Args: []string{
+					"--no-session", "--no-extensions", "--no-builtin-tools", "--no-skills",
+					"--no-prompt-templates", "--no-context-files", "--extension", extension,
+					"--system-prompt", mimirtui.SystemPrompt,
+				}})
+			} else {
+				extensionErr = writeErr
+			}
+		} else {
+			extensionErr = executableErr
+		}
+	}
+	if agent != nil {
+		handshakeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		state, handshakeErr := agent.GetState(handshakeCtx)
+		cancel()
+		if handshakeErr != nil {
+			closeErr := agent.Close()
+			diagnostic := handshakeErr
+			if closeErr != nil {
+				diagnostic = closeErr
+			}
+			agentStatus = "Mimir unavailable: " + diagnostic.Error()
+			agent = nil
+		} else {
+			agentStatus = "Mimir ready"
+			if state.Model != nil {
+				currentModel = state.Model.Provider + "/" + state.Model.ID
 			}
 		}
-		return fmt.Errorf("TUI prerequisites failed: %s", strings.Join(problems, "; "))
-	}
-
-	extensionDir, err := os.MkdirTemp("", "mimir-pi-")
-	if err != nil {
-		return fmt.Errorf("preparing Pi tools: %w", err)
-	}
-	defer os.RemoveAll(extensionDir)
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locating Mimir executable: %w", err)
-	}
-	extension, err := pi.WriteMimirExtension(extensionDir, executable)
-	if err != nil {
-		return err
-	}
-	agent, err := pi.Start(ctx, pi.Config{Dir: ".", Args: []string{"--no-extensions", "--no-builtin-tools", "--extension", extension}})
-	if err != nil {
-		return fmt.Errorf("starting terminal agent: %w; run `mimir doctor --tui`", err)
+	} else if extensionErr != nil {
+		agentStatus = "Mimir unavailable: " + extensionErr.Error()
 	}
 
 	service := currentSessionService()
 	pointer, _ := loadPointer()
 	model := mimirtui.New(mimirtui.Options{
-		Context: ctx,
-		Out:     out,
-		Agent:   agent,
+		Context:      ctx,
+		Out:          out,
+		Agent:        agent,
+		AgentStatus:  agentStatus,
+		CurrentModel: currentModel,
 		Load: func(ctx context.Context) ([]sessionui.BrowserSession, error) {
 			values, err := service.FetchReceipts(ctx, "", "")
 			if err != nil {

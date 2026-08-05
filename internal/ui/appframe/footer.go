@@ -11,6 +11,13 @@ type Binding struct {
 }
 
 func Footer(ctx bentotui.Context, left, right []Binding) string {
+	return FooterStatus(ctx, left, "", right)
+}
+
+// FooterStatus renders up to four contextual actions around a compact status
+// segment. Status is chrome, not another key binding, and disappears first on
+// constrained terminals.
+func FooterStatus(ctx bentotui.Context, left []Binding, status string, right []Binding) string {
 	for len(left)+len(right) > 4 {
 		if len(left) > 2 {
 			left = append([]Binding(nil), left[:len(left)-1]...)
@@ -24,9 +31,18 @@ func Footer(ctx bentotui.Context, left, right []Binding) string {
 	for {
 		leftText := renderBindings(ctx, left)
 		rightText := renderBindings(ctx, right)
-		gap := max(1, available-bentotui.VisibleWidth(leftText)-bentotui.VisibleWidth(rightText))
-		if bentotui.VisibleWidth(leftText)+gap+bentotui.VisibleWidth(rightText) <= available {
-			return leftText + strings.Repeat(" ", gap) + rightText
+		bindingWidth := bentotui.VisibleWidth(leftText) + bentotui.VisibleWidth(rightText)
+		statusWidth := max(0, available-bindingWidth-4)
+		statusText := ""
+		if statusWidth >= 8 && strings.TrimSpace(status) != "" {
+			muted := bentotui.Style{Color: ctx.Theme.Muted, Enabled: ctx.Color}
+			statusText = muted.Render(bentotui.Truncate(status, statusWidth))
+		}
+		used := bindingWidth + bentotui.VisibleWidth(statusText)
+		if used+2 <= available {
+			leftGap := max(1, (available-used)/2)
+			rightGap := max(1, available-used-leftGap)
+			return leftText + strings.Repeat(" ", leftGap) + statusText + strings.Repeat(" ", rightGap) + rightText
 		}
 		if len(left) > 1 {
 			left = append([]Binding(nil), left[:len(left)-1]...)

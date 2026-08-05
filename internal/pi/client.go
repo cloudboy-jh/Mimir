@@ -57,6 +57,8 @@ type Client struct {
 	writeToken chan struct{}
 	nextID     atomic.Uint64
 	closed     atomic.Bool
+	pendingMu  sync.Mutex
+	pending    map[string]chan Envelope
 	stopOnce   sync.Once
 	waitMu     sync.Mutex
 	waitErr    error
@@ -105,6 +107,7 @@ func Start(ctx context.Context, config Config) (*Client, error) {
 		stop:       make(chan struct{}),
 		ctx:        ctx,
 		writeToken: make(chan struct{}, 1),
+		pending:    make(map[string]chan Envelope),
 		stderr:     stderr,
 	}
 	c.writeToken <- struct{}{}
@@ -117,12 +120,12 @@ func (c *Client) Events() <-chan Envelope { return c.events }
 
 // Prompt submits a user message and returns its correlation ID.
 func (c *Client) Prompt(ctx context.Context, message string) (string, error) {
-	return c.send(ctx, map[string]any{"type": "prompt", "message": message})
+	return c.request(ctx, map[string]any{"type": "prompt", "message": message})
 }
 
 // Abort asks Pi to abort its current operation.
 func (c *Client) Abort(ctx context.Context) (string, error) {
-	return c.send(ctx, map[string]any{"type": "abort"})
+	return c.request(ctx, map[string]any{"type": "abort"})
 }
 
 // SetModel switches to a provider/model pair such as "anthropic/claude-sonnet".
@@ -131,49 +134,118 @@ func (c *Client) SetModel(ctx context.Context, model string) (string, error) {
 	if !ok || provider == "" || modelID == "" {
 		return "", fmt.Errorf("invalid model %q: expected provider/model", model)
 	}
-	return c.send(ctx, map[string]any{
+	return c.request(ctx, map[string]any{
 		"type":     "set_model",
 		"provider": provider,
 		"modelId":  modelID,
 	})
 }
 
-func (c *Client) send(ctx context.Context, command map[string]any) (string, error) {
+// Model describes a selectable Pi model without exposing provider credentials.
+type Model struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
+// State is the subset of Pi runtime state used by Mimir.
+type State struct {
+	Model       *Model `json:"model"`
+	IsStreaming bool   `json:"isStreaming"`
+}
+
+// GetState verifies that the RPC process is responsive and returns its model.
+func (c *Client) GetState(ctx context.Context) (State, error) {
+	envelope, err := c.requestEnvelope(ctx, map[string]any{"type": "get_state"})
+	if err != nil {
+		return State{}, err
+	}
+	var state State
+	if err := json.Unmarshal(envelope.Data, &state); err != nil {
+		return State{}, fmt.Errorf("decoding pi state: %w", err)
+	}
+	return state, nil
+}
+
+// AvailableModels returns models Pi can select. Only display-safe fields are decoded.
+func (c *Client) AvailableModels(ctx context.Context) ([]Model, error) {
+	envelope, err := c.requestEnvelope(ctx, map[string]any{"type": "get_available_models"})
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Models []Model `json:"models"`
+	}
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		return nil, fmt.Errorf("decoding pi models: %w", err)
+	}
+	return data.Models, nil
+}
+
+func (c *Client) request(ctx context.Context, command map[string]any) (string, error) {
+	envelope, err := c.requestEnvelope(ctx, command)
+	return envelope.ID, err
+}
+
+func (c *Client) requestEnvelope(ctx context.Context, command map[string]any) (Envelope, error) {
 	if ctx == nil {
-		return "", errors.New("sending pi RPC command: nil context")
+		return Envelope{}, errors.New("sending pi RPC command: nil context")
 	}
 	if c.closed.Load() {
-		return "", ErrClosed
+		return Envelope{}, ErrClosed
 	}
 	id := fmt.Sprintf("req-%d", c.nextID.Add(1))
 	command["id"] = id
+	response := make(chan Envelope, 1)
+	c.pendingMu.Lock()
+	c.pending[id] = response
+	c.pendingMu.Unlock()
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
+	}()
 	data, err := json.Marshal(command)
 	if err != nil {
-		return "", fmt.Errorf("encoding pi RPC command: %w", err)
+		return Envelope{}, fmt.Errorf("encoding pi RPC command: %w", err)
 	}
 	data = append(data, '\n')
 
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return Envelope{}, ctx.Err()
 	case <-c.done:
-		return "", ErrClosed
+		return Envelope{}, ErrClosed
 	case <-c.writeToken:
 	}
 	defer func() { c.writeToken <- struct{}{} }()
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return Envelope{}, err
 	}
 	if c.closed.Load() {
-		return "", ErrClosed
+		return Envelope{}, ErrClosed
 	}
 	if err := writeAll(c.stdin, data); err != nil {
 		if c.closed.Load() {
-			return "", ErrClosed
+			return Envelope{}, ErrClosed
 		}
-		return "", fmt.Errorf("writing pi RPC command: %w", err)
+		return Envelope{}, fmt.Errorf("writing pi RPC command: %w", err)
 	}
-	return id, nil
+	select {
+	case <-ctx.Done():
+		return Envelope{}, ctx.Err()
+	case <-c.done:
+		return Envelope{}, ErrClosed
+	case envelope := <-response:
+		if envelope.Success == nil || !*envelope.Success {
+			message := strings.TrimSpace(envelope.Error)
+			if message == "" {
+				message = "RPC command failed"
+			}
+			return envelope, errors.New(message)
+		}
+		return envelope, nil
+	}
 }
 
 func writeAll(w io.Writer, data []byte) error {
@@ -197,6 +269,14 @@ func (c *Client) run(stdout io.Reader) {
 			return fmt.Errorf("decoding pi RPC output: %w", err)
 		}
 		envelope.Raw = append(json.RawMessage(nil), line...)
+		if envelope.IsResponse() && envelope.ID != "" {
+			c.pendingMu.Lock()
+			pending := c.pending[envelope.ID]
+			c.pendingMu.Unlock()
+			if pending != nil {
+				pending <- envelope
+			}
+		}
 		select {
 		case c.events <- envelope:
 			return nil
