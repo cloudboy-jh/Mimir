@@ -367,6 +367,43 @@ func TestCursorHookConflictIsPreservedAndNotOwned(t *testing.T) {
 	}
 }
 
+func TestRefreshArtifactsEnrollsMissingHooksAndPreservesForeignHooks(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	foreignCodex := []byte(`{"hooks":{"SessionStart":[]}}`)
+	codex := filepath.Join(paths.CodexHome, "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(codex), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codex, foreignCodex, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := RefreshArtifacts("update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+	} {
+		if result := resultForPath(t, report, target); result.Status != artifactInstalled {
+			t.Fatalf("%s status = %s, want installed", target, result.Status)
+		}
+	}
+	if result := resultForPath(t, report, codex); result.Status != artifactConflict {
+		t.Fatalf("Codex status = %s, want conflict", result.Status)
+	}
+	if got := mustReadFile(t, codex); !bytes.Equal(got, foreignCodex) {
+		t.Fatal("foreign Codex hooks were rewritten")
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, owned := receipt.Artifacts[codex]; owned {
+		t.Fatal("foreign Codex hooks were claimed")
+	}
+}
+
 func TestSyncManagedArtifactsUpdatesOwnedPriorBytes(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	target := filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts")

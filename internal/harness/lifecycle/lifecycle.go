@@ -317,11 +317,6 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	report.ClaudeCode = hookArtifactState(artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
 	report.Codex = hookArtifactState(artifacts, paths.CodexHome, "plugins/codex/", "Codex")
 	report.Cursor = hookArtifactState(artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
-	for _, state := range []harness.IntegrationState{report.ClaudeCode, report.Codex, report.Cursor} {
-		if state.State == "failed" {
-			failures = append(failures, state.Detail)
-		}
-	}
 	if _, found, discoverErr := s.Hermes.Discover(); discoverErr != nil {
 		failures = append(failures, discoverErr.Error())
 	} else if !found {
@@ -355,7 +350,7 @@ func hookArtifactState(artifacts install.ArtifactReport, root, prefix, label str
 		}
 		return state
 	}
-	return harness.IntegrationState{State: "failed", Scope: "hooks", Detail: "conflicting or modified " + label + " hook files were preserved"}
+	return harness.IntegrationState{State: "preserved", Scope: "hooks", Detail: "existing " + label + " hook files are user-owned or modified; Mimir hooks were not installed"}
 }
 
 func integrationStaged(states ...harness.IntegrationState) bool {

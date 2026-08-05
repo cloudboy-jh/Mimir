@@ -60,7 +60,7 @@ func Paths() (InstallationPaths, error)       { return managedInstallationPaths(
 func LoadReceipt() (Receipt, error)           { return loadInstallReceipt() }
 func CheckArtifacts() (ArtifactReport, error) { return checkManagedArtifacts() }
 func RefreshArtifacts(operation string) (ArtifactReport, error) {
-	return syncManagedArtifacts(false, operation)
+	return syncManagedArtifacts(true, operation)
 }
 func RefreshPreviouslyManagedArtifacts(operation string) (ArtifactReport, error) {
 	return syncPreviouslyManagedArtifacts(operation)
