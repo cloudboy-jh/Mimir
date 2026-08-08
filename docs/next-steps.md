@@ -9,9 +9,12 @@ specification rather than an expanding completion log.
 ### Adaptive full-terminal Mimir TUI
 
 The adaptive AltScreen transition, measured full-terminal layout, centered
-sessions-and-Pi home surface, state-preserving reload behavior, and
-small-terminal fallback are implemented. The remaining work is hardening and
-validation.
+sessions-and-Ask-Mimir home surface, state-preserving reload behavior, and
+small-terminal fallback are implemented. Ask Mimir now opens a dedicated
+conversation view, carries selected-session context into prompts, streams Pi
+events, exposes Mimir tools and model selection, and leaves session browsing
+available when Pi cannot start. The remaining work is terminal hardening and
+cross-platform validation.
 
 The compact `80x20` constraint remains appropriate for temporary install,
 deploy, update, login, and lightweight session-browser surfaces, but it wastes
@@ -21,7 +24,8 @@ now uses the measured terminal dimensions and AltScreen lifecycle.
 Remaining work:
 
 1. **Finish deterministic resize coverage.**
-   - Assert exact frames at `48x12`, `80x20`, `120x40`, and `200x60`.
+   - Existing tests verify bounded output at `48x12`, `80x20`, `120x40`, and
+     `200x60`; add complete-frame assertions at each size.
    - Exercise large-to-small, small-to-large, supported-to-unsupported-to-supported,
      and home-to-fullscreen-to-resized-to-home transitions.
    - Verify no stale lines, wrapping, broken borders, or displaced footer.
@@ -52,8 +56,9 @@ Remaining work:
 - Complete first deployed desktop/TUI verification for Hermes and real
   install, activation, capture, resume, compaction, offline retry, update, and
   uninstall validation for Claude Code, Codex, and Cursor on each supported
-  operating system. Hook installation remains staged until doctor observes a
-  matching harness load.
+  operating system. Include Ask Mimir startup, generated extension loading,
+  model switching, streaming, and the Pi-unavailable fallback. Hook
+  installation remains staged until doctor observes a matching harness load.
 - Define a recommended reconciliation cadence and an explicit policy for stale
   accepted rows and orphaned R2 objects.
 - Keep `docs/Spec.md` synchronized with the live Access-protected dashboard and
@@ -71,38 +76,17 @@ Remaining work:
 
 ## Recently Closed
 
-- Added Access-protected dashboard session-object state and WebSocket routes,
-  live turn rendering, finalization updates, and verified liveness badges.
-  Historical D1-only sessions remain additive fallbacks and never receive a
-  false active state.
-- Added native macOS and Windows CI coverage for the receipt-owned installer,
-  hook outbox, lifecycle integration, diagnostics, and CLI build.
-- Removed the unused lifecycle-retention setting from the public configuration
-  contract; automatic retention or abandonment remains out of scope.
-- Added receipt-owned Claude Code, Codex, and Cursor command-hook integrations
-  with bounded reconstructed exchanges, private retry outboxes, lifecycle
-  events, and active-source diagnostics. OpenCode direct-provider exchanges are
-  reconstructed from its session store; Hermes direct providers remain
-  event-only.
-- Added first-class session titles with explicit source precedence: manual,
-  harness, generated title exchange, then derived primary intent.
-- Live Access-protected dashboard data, request-log cursor pagination, R2
-  payload detail, and outcome updates.
-- Exact Cloudflare Access destinations for `/dashboard/auth`,
-  `/dashboard/api/*`, and `/dashboard/log-objects/*`; machine API routes remain
-  outside Access.
-- Tagged GoReleaser delivery with checksummed cross-platform assets and GitHub
-  build provenance, exercised successfully through `v0.3.2`.
-- Windows setup-test portability and installed-version reporting.
-- Human-readable Worker logs for successful exchange capture.
-- Automatic refresh for live Sessions, Requests, and Overview dashboard data.
-- Explicit idempotent session ending through the machine API, CLI, and
-  `/mimir-end-session <session-id>`, including safe handling of late capture
-  finalization and concurrent retries.
-- Release CI now verifies migrations, the dashboard production build, the
-  deployable Worker bundle, Go modules, and GoReleaser configuration. Release
-  archives are self-contained and carry GitHub build provenance attestations.
-- The managed installer lifecycle now owns only exact receipt-tracked binaries,
-  plugins, and skills; preserves conflicts, local edits, connection state, and
-  deployment state; and rejects unsafe symlink targets. The `v0.3.2` release
-  includes the first public `mimir install` command and macOS bootstrap support.
+- Made Ask Mimir session-native with selected-session context, private Mimir
+  tools, model discovery and switching, streaming conversation state, and a
+  dedicated conversation view.
+- Made TUI startup resilient: Mimir now loads its generated Pi extension and
+  keeps session browsing usable with an actionable status when Pi is absent or
+  fails its startup handshake.
+- Enrolled newly introduced managed hook artifacts during update without
+  weakening receipt ownership or conflict preservation.
+- Preserved commit and diff evidence through outcome normalization, OpenCode
+  reporting, CLI presentation, and dashboard rendering.
+- Shipped receipt-owned Claude Code, Codex, and Cursor hooks, first-class
+  session titles, Access-protected live session state, and native macOS and
+  Windows CI coverage. Canonical macOS `/var`, `/tmp`, and `/etc` filesystem
+  aliases are accepted without allowing user-controlled symlink targets.
