@@ -20,3 +20,9 @@ func TestTUIRequiresTerminal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestTUINilClientProducesNilAgent(t *testing.T) {
+	if tuiAgent(nil) != nil {
+		t.Fatal("nil Pi client produced a non-nil TUI agent")
+	}
+}

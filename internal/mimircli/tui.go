@@ -34,7 +34,7 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 			extension, writeErr := pi.WriteMimirExtension(extensionDir, executable)
 			if writeErr == nil {
 				agent, extensionErr = pi.Start(ctx, pi.Config{Dir: ".", Args: []string{
-					"--no-session", "--no-extensions", "--no-builtin-tools", "--no-skills",
+					"--no-session", "--no-extensions", "--no-tools", "--no-skills",
 					"--no-prompt-templates", "--no-context-files", "--extension", extension,
 					"--system-prompt", mimirtui.SystemPrompt,
 				}})
@@ -72,7 +72,7 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 	model := mimirtui.New(mimirtui.Options{
 		Context:      ctx,
 		Out:          out,
-		Agent:        agent,
+		Agent:        tuiAgent(agent),
 		AgentStatus:  agentStatus,
 		CurrentModel: currentModel,
 		Load: func(ctx context.Context) ([]sessionui.BrowserSession, error) {
@@ -90,4 +90,11 @@ func cmdTUI(ctx context.Context, args []string, ioctx IO) error {
 	})
 	defer model.Close()
 	return bentotui.RunWithOptions(ctx, in, out, model, bentotui.RunOptions{AlternateScreen: true, Mouse: true})
+}
+
+func tuiAgent(client *pi.Client) mimirtui.Agent {
+	if client == nil {
+		return nil
+	}
+	return client
 }
