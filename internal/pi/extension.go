@@ -19,7 +19,7 @@ func WriteMimirExtension(dir, executable string) (string, error) {
 	}
 	bin, _ := json.Marshal(executable)
 	source := fmt.Sprintf(`import { spawn } from "node:child_process";
-import { Type } from "typebox";
+import { Type } from "@sinclair/typebox";
 
 const mimir = %s;
 	const outputLimit = 7 * 1024 * 1024;

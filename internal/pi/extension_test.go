@@ -16,7 +16,7 @@ func TestWriteMimirExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"list_sessions", "get_session", "search_memory", "set_outcome", "doctor_check", `C:\\Program Files\\mimir.exe`} {
+	for _, want := range []string{`from "@sinclair/typebox"`, "list_sessions", "get_session", "search_memory", "set_outcome", "doctor_check", `C:\\Program Files\\mimir.exe`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("extension missing %q", want)
 		}
