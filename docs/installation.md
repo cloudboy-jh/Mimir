@@ -4,7 +4,7 @@
 
 ```bash
 # Fresh installation or repair
-go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
+curl -fsSL https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.sh | sh
 
 # Upgrade a managed installation
 mimir update
@@ -12,6 +12,18 @@ mimir update
 # Reconcile the installed version
 mimir install
 ```
+
+On Windows, run the release bootstrap from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
+```
+
+The bootstrap resolves the latest stable release, verifies its GoReleaser
+checksum, and delegates ownership-safe installation to the downloaded binary.
+Set `MIMIR_VERSION` to install an explicit release or `MIMIR_INSTALL_DIR` to
+select the binary directory. If that directory is outside `PATH`, the bootstrap
+prints the exact command needed to add it.
 
 The update receipt distinguishes files installed on disk from plugins loaded by
 running harnesses and the Worker bundle deployed to Cloudflare. When plugin

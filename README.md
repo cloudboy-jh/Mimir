@@ -9,16 +9,24 @@ involved, what failed, and whether the work actually landed. The Worker,
 storage, and private dashboard run inside your Cloudflare account.
 
 ```bash
-go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
+curl -fsSL https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.sh | sh
+mimir setup
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
 mimir setup
 ```
 
 Setup provisions D1 and R2, builds and deploys the Worker and dashboard, stores
 your OpenRouter key through a masked prompt, and connects the current machine.
 
-Requirements: a Cloudflare account, an OpenRouter API key, Go 1.25+, Node.js 22
-with npm, and Bun. To connect another machine to the same deployment, install
-the CLI there and run `mimir login`.
+Fresh deployment requires a Cloudflare account, an OpenRouter API key, Node.js
+22 with npm, and Bun. Go 1.25+ is required only for source builds and
+contribution. To connect another machine to the same deployment, install the CLI
+there and run `mimir login`.
 
 ## Dashboard and terminal
 

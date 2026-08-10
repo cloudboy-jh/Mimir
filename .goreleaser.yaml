@@ -51,11 +51,18 @@ changelog:
 release:
   prerelease: auto
   make_latest: true
+  extra_files:
+    - glob: ./install.sh
+    - glob: ./install.ps1
   header: |
     ## Install
 
     ```sh
-    go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install
+    curl -fsSL https://github.com/cloudboy-jh/mimir/releases/download/{{ .Tag }}/install.sh | sh -s -- --version '{{ .Tag }}'
+    ```
+
+    ```powershell
+    & ([scriptblock]::Create((irm https://github.com/cloudboy-jh/mimir/releases/download/{{ .Tag }}/install.ps1))) -Version '{{ .Tag }}'
     ```
 
     Prebuilt archives are available below for macOS, Linux, and Windows. Verify downloads with `checksums.txt`.

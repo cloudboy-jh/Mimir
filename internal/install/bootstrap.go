@@ -143,6 +143,9 @@ func bootstrapExecutable(explicitDir string, executable func() (string, error)) 
 	source := "executable"
 	if temporary {
 		source = "go-run"
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("MIMIR_INSTALL_SOURCE")), "release") {
+			source = "release"
+		}
 	}
 	targetHash := hashBytes(sourceData)
 	if status == "current" {
