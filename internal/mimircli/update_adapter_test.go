@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 	}
 }
 
-func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
+func TestCmdUpdatePrintsOnlyIssuesAndRequiredActions(t *testing.T) {
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -65,9 +66,12 @@ func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 			Artifacts: installpkg.ArtifactReport{ReceiptPath: "/receipt.json", Artifacts: []installpkg.ArtifactResult{
 				{Status: installpkg.ArtifactUpdated, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts", Detail: "replaced managed plugin"},
 				{Status: installpkg.ArtifactCurrent, Source: "skills/mimir-use/SKILL.md", Path: "/skills/SKILL.md"},
+				{Status: installpkg.ArtifactUpdated, Source: "plugins/claude-code/hooks/hooks.json", Path: "/claude/managed-hooks.json"},
+				{Status: installpkg.ArtifactConflict, Source: "plugins/claude-code/hooks/hooks.json", Path: "/claude/hooks.json", Detail: "existing hook preserved"},
 			}},
 			Integrations: harness.IntegrationReport{
-				OpenCode: harness.IntegrationState{State: "installed", RestartRequired: true},
+				OpenCode:   harness.IntegrationState{State: "installed", RestartRequired: true},
+				ClaudeCode: harness.IntegrationState{State: "installed", RestartRequired: true},
 			},
 		}, nil
 	}
@@ -75,20 +79,80 @@ func TestCmdUpdateListsArtifactsAndPluginActivation(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"/opencode/mimir.ts",
-		"plugins/opencode/mimir.ts · replaced managed plugin",
-		"/skills/SKILL.md",
-		"skills/mimir-use/SKILL.md",
-		"Activation required",
-		"OpenCode · restart OpenCode to load the updated managed plugin",
-		"Deployment",
-		"Worker bundle may be behind this CLI version",
-		"[mimir deploy] Deploy the bundled Worker and dashboard.",
-	} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("output missing %q:\n%s", want, output.String())
+	want := "Updating Mimir...\n" +
+		"Mimir updated: 1.0.0 -> 1.1.0\n" +
+		"Needs attention:\n" +
+		"  /claude/hooks.json (conflict): existing hook preserved\n" +
+		"Restart required: OpenCode, Claude Code\n" +
+		"Next: mimir deploy\n"
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+	for _, hidden := range []string{"/opencode/mimir.ts", "/skills/SKILL.md", "/claude/managed-hooks.json", "/receipt.json"} {
+		if strings.Contains(output.String(), hidden) {
+			t.Fatalf("successful artifact noise %q remained:\n%s", hidden, output.String())
 		}
+	}
+}
+
+func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{
+			Binary: installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0", Latest: "1.1.0"},
+			Artifacts: installpkg.ArtifactReport{Artifacts: []installpkg.ArtifactResult{
+				{Status: installpkg.ArtifactCurrent, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts"},
+			}},
+			Integrations: harness.IntegrationReport{OpenCode: harness.IntegrationState{RestartRequired: true}},
+		}, nil
+	}
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Updating Mimir...\nMimir is up to date: 1.1.0\n"; output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestUpdateRestartNamesTrackContentChanges(t *testing.T) {
+	integrations := harness.IntegrationReport{OpenCode: harness.IntegrationState{RestartRequired: true}}
+	for _, test := range []struct {
+		name   string
+		status installpkg.ArtifactStatus
+		want   int
+	}{
+		{name: "adopted ownership", status: installpkg.ArtifactAdopted, want: 0},
+		{name: "current content", status: installpkg.ArtifactCurrent, want: 0},
+		{name: "installed content", status: installpkg.ArtifactInstalled, want: 1},
+		{name: "updated content", status: installpkg.ArtifactUpdated, want: 1},
+		{name: "removed content", status: installpkg.ArtifactRemoved, want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			artifacts := installpkg.ArtifactReport{Artifacts: []installpkg.ArtifactResult{{
+				Status: test.status, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts",
+			}}}
+			if got := len(updateRestartNames(artifacts, integrations)); got != test.want {
+				t.Fatalf("restart count = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCmdUpdateFailureLeavesOneActivityLine(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{}, errors.New("update failed")
+	}
+	var output bytes.Buffer
+	err := cmdUpdate(context.Background(), nil, &output)
+	if err == nil || err.Error() != "update failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if want := "Updating Mimir...\n"; output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }
 
@@ -134,13 +198,11 @@ func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"update to mimir 1.1.0 scheduled (current 1.0.0)",
-		"blocked by Mimir process(es) 42; the update will apply after they exit",
-		"[mimir update --force] Stop running Mimir processes and apply the update now.",
-	} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("output missing %q:\n%s", want, output.String())
-		}
+	want := "Updating Mimir...\n" +
+		"Mimir update scheduled: 1.0.0 -> 1.1.0\n" +
+		"blocked by Mimir process(es) 42; the update will apply after they exit\n" +
+		"Next: mimir update --force\n"
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }

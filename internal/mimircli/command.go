@@ -266,24 +266,20 @@ func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
 		return fmt.Errorf("--bin-dir requires a value")
 	}
-	var progress *setupProgress
-	operationCtx, cancelOperation := context.WithCancel(ctx)
-	defer cancelOperation()
-	ctx = operationCtx
+	guard := startInterruptGuard(ctx)
+	defer guard.Stop()
+	ctx = guard.Context()
+	guard.Commit()
 	if !jsonOutput {
-		progress = startOperationProgress(ctx, ioctx, "Mimir install", []string{"Installing CLI and managed artifacts", "Configuring OpenCode", "Checking Hermes"}, cancelOperation)
-		defer progress.Stop()
+		fmt.Fprintln(ioctx.Out, "Installing Mimir...")
 	}
-	report, err := installManaged(ctx, binDir, func(message string) { setupStep(progress, ioctx.Out, jsonOutput, message) })
+	report, err := runLifecycleInstall(ctx, binDir, nil)
 	if err != nil {
-		progress.Fail()
 		return err
 	}
 	if jsonOutput {
 		return json.NewEncoder(ioctx.Out).Encode(report)
 	}
-	progress.Finish("Installation complete")
-	progress.Stop()
 	return renderInstall(ioctx.Out, report)
 }
 

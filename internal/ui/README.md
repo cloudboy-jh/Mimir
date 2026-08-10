@@ -16,9 +16,10 @@ mimircli -> sessions / operations / receipts -> appframe -> bentotui
 - `mimirtui/` owns the persistent centered home surface, sessions, Ask Mimir
   input and scrollback, command/model/theme overlays, outcome prompts, and the
   private agent-runtime event mapping.
-- `operations/` owns deploy, update, setup, install, and login progress,
-  bounded command output, scrolling, follow mode, cancellation, and the stable
-  line-oriented fallback.
+- `operations/` owns deploy, setup, and login progress, bounded command output,
+  scrolling, follow mode, cancellation, and the stable line-oriented fallback.
+  Install and update deliberately bypass terminal UI and render stable plain
+  lines from `mimircli`.
 - `receipts/` maps canonical session receipts into static CLI and session
   browser models.
 
@@ -30,7 +31,8 @@ scrolls inside the body.
 
 Command files choose TUI, static, or JSON mode and map domain events. They must
 not implement borders, dimensions, key handling, wrapping, or ANSI behavior.
-Domain packages must not import UI packages.
+Line-oriented commands may own process-signal cancellation without becoming UI
+surfaces. Domain packages must not import UI packages.
 
 To add a stateful command surface:
 

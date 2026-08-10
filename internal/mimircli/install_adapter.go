@@ -20,3 +20,5 @@ func installManaged(ctx context.Context, explicitDir string, step func(string)) 
 	service.Step = step
 	return service.Install(ctx, explicitDir, executablePath)
 }
+
+var runLifecycleInstall = installManaged

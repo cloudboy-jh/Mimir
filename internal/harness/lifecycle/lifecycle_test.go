@@ -144,6 +144,52 @@ func TestInstallMaterializesBeforeReadinessAndProviderConfiguration(t *testing.T
 	}
 }
 
+func TestInstallStopsBeforeMechanicalCommitWhenAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	service := New()
+	calls := 0
+	service.InstallFiles = func(string, func() (string, error)) (install.InstallReport, error) {
+		calls++
+		return install.InstallReport{}, nil
+	}
+	_, err := service.Install(ctx, "", func() (string, error) { return "", nil })
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("error=%v install calls=%d", err, calls)
+	}
+}
+
+func TestInstallFinishesIntegrationReconciliationAfterMechanicalCommit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	root, hermesHome := t.TempDir(), t.TempDir()
+	service := New()
+	service.InstallFiles = func(string, func() (string, error)) (install.InstallReport, error) {
+		cancel()
+		return install.InstallReport{Artifacts: install.ArtifactReport{Artifacts: []install.ArtifactResult{
+			{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactInstalled},
+			{Path: filepath.Join(hermesHome, "plugins", "mimir", "plugin.yaml"), Source: "plugins/hermes/plugin.yaml", Status: install.ArtifactInstalled},
+		}}}, nil
+	}
+	service.Paths = func() (install.InstallationPaths, error) {
+		return install.InstallationPaths{OpenCodeHome: root, HermesHome: hermesHome, HermesDetected: true}, nil
+	}
+	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
+	called := false
+	service.Hermes.RunPluginCommand = func(callCtx context.Context, _ string, _ ...string) error {
+		called = true
+		if err := callCtx.Err(); err != nil {
+			t.Fatalf("post-commit context was cancelled: %v", err)
+		}
+		return nil
+	}
+	if _, err := service.Install(ctx, "", func() (string, error) { return "", nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("post-commit integration reconciliation did not run")
+	}
+}
+
 func TestHookArtifactStateIsStagedUntilLoadAndCursorDoesNotRequireRestart(t *testing.T) {
 	root := t.TempDir()
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{Path: filepath.Join(root, "hooks.json"), Source: "plugins/cursor/hooks.json", Status: install.ArtifactCurrent}}}

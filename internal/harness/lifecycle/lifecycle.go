@@ -80,11 +80,15 @@ func New() Service {
 }
 
 func (s Service) Install(ctx context.Context, explicitDir string, executable func() (string, error)) (InstallReport, error) {
+	if err := ctx.Err(); err != nil {
+		return InstallReport{}, err
+	}
 	mechanical, err := s.InstallFiles(explicitDir, executable)
 	if err != nil {
 		return InstallReport{}, err
 	}
 	s.step("CLI and managed artifacts installed")
+	ctx = context.WithoutCancel(ctx)
 	paths, err := s.Paths()
 	if err != nil {
 		return InstallReport{}, err

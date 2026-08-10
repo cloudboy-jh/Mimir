@@ -6,6 +6,50 @@ specification rather than an expanding completion log.
 
 ## Active Implementation Work
 
+### Binary-first onboarding
+
+Land the remaining onboarding work as four reviewable commits, in order:
+
+1. **`feat(install): add release bootstrap scripts`**
+   - Add POSIX shell and PowerShell installers that resolve the latest stable
+     GitHub release, detect the supported OS and architecture, and select the
+     existing versioned GoReleaser archive.
+   - Download `checksums.txt`, verify SHA-256 before extraction, handle wrapped
+     tar archives and Windows zip archives, then run the verified binary's
+     existing `mimir install` command.
+   - Fail clearly on unsupported platforms, missing host tools, release API
+     failures, checksum mismatches, and extraction failures.
+   - Replace the README and GoReleaser `go run ...@latest` instructions and add
+     installer smoke coverage. Do not publish or tag a release as part of this
+     commit.
+2. **`feat(demo): embed and serve fixture dashboard`**
+   - Build the fixture-mode dashboard during release validation and embed the
+     generated static assets in the Go binary.
+   - Add `mimir demo`, serve the assets on a random loopback port, open the
+     browser when possible, and print the URL as a fallback.
+   - Require no Cloudflare account, Mimir connection, machine credentials,
+     Node.js, or Bun at runtime, and visibly identify all fixture data as sample
+     data.
+3. **`refactor(deploy): embed production dashboard and reduce prerequisites`**
+   - Build and embed the production dashboard instead of installing dashboard
+     dependencies and compiling it during ordinary setup and deploy.
+   - Remove Bun from binary-based setup and deploy while retaining Node.js and
+     npm for the packaged Wrangler workflow.
+   - Make `mimir login` discover and connect to an existing deployment without
+     installing dashboard or Worker build dependencies.
+4. **`docs(onboarding): rewrite setup and recovery guidance`**
+   - Lead with the binary installers and local demo, then describe fresh
+     deployment and existing-deployment connection separately.
+   - Split prerequisites by workflow and document capture fidelity, current
+     Cloudflare free-tier units, Access configuration, harness reload behavior,
+     and the first real-session verification flow accurately.
+   - Add concise after-setup and troubleshooting paths. Keep `mimir doctor`
+     read-only and direct users to its exact repair commands.
+
+OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
+retention cleanup are separate follow-ups because they change setup or session
+lifecycle contracts. Do not fold them into these four commits.
+
 ### Adaptive full-terminal Mimir TUI
 
 The adaptive AltScreen transition, measured full-terminal layout, centered
@@ -16,10 +60,11 @@ events, exposes Mimir tools and model selection, and leaves session browsing
 available when Pi cannot start. The remaining work is terminal hardening and
 cross-platform validation.
 
-The compact `80x20` constraint remains appropriate for temporary install,
-deploy, update, login, and lightweight session-browser surfaces, but it wastes
-space and complicates the persistent sessions-and-Pi application. `mimir tui`
-now uses the measured terminal dimensions and AltScreen lifecycle.
+The compact `80x20` constraint remains appropriate for temporary setup, deploy,
+login, and lightweight session-browser surfaces, but it wastes space and
+complicates the persistent sessions-and-Pi application. Install and update use
+plain line-oriented output; `mimir tui` uses the measured terminal dimensions
+and AltScreen lifecycle.
 
 Remaining work:
 

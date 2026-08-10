@@ -41,12 +41,15 @@ session listing, detail, search, outcomes, and diagnostics. Run
 `mimir doctor --tui` to validate Pi and provider credentials. The centered home
 surface keeps recent sessions above the Pi prompt.
 
-Temporary stateful human commands use one top-left-anchored 80x20 application frame
-(48x12 minimum). Session browsing, deploy, update, setup, install, and login
-share its header, scrollable body, and contextual footer. Arrow keys or `j`/`k`
-scroll, `g`/`G` jump to either end, `f` resumes following live output, and
-Ctrl+C cancels while it is still safe to stop. Redirected and JSON output
-remain line-oriented and non-interactive; `mimir update --check` stays concise.
+Temporary stateful human commands use one top-left-anchored 80x20 application
+frame (48x12 minimum). Session browsing, deploy, setup, and login share its
+header, scrollable body, and contextual footer. Arrow keys or `j`/`k` scroll,
+`g`/`G` jump to either end, `f` resumes following live output, and Ctrl+C
+cancels while it is still safe to stop. Install and update always use concise,
+line-oriented output. Install protects its receipt-owned reconciliation from
+interruption; update accepts Ctrl+C before binary replacement and ignores it
+while post-commit reconciliation finishes. JSON output remains machine-readable
+and `mimir update --check` stays concise.
 
 The OpenCode integration renders authoritative status and outcome tool results
 as compact Mimir receipts in the agent transcript. Agents still consume the

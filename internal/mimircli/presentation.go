@@ -31,23 +31,34 @@ func renderDoctor(out io.Writer, report doctorpkg.Report) error {
 }
 
 func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
-	render := cliui.New(out)
-	fields := []bentotui.Field{
-		{Label: "Binary", Value: report.Binary.Status + " · " + report.Binary.Path},
-		{Label: "OpenCode", Value: report.OpenCode.State},
-		{Label: "Hermes", Value: report.Hermes.State},
-		{Label: "Install log", Value: report.Artifacts.LogPath},
+	version := strings.TrimSpace(report.Binary.Version)
+	if version != "" {
+		version = " " + version
 	}
-	if _, err := fmt.Fprintln(out, render.Card("Installation complete", fields...)); err != nil {
+	verb := "install complete"
+	switch report.Binary.Status {
+	case "installed":
+		verb = "installed"
+	case "updated":
+		verb = "updated"
+	case "current":
+		verb = "already installed"
+	}
+	if _, err := fmt.Fprintf(out, "Mimir%s %s: %s\n", version, verb, report.Binary.Path); err != nil {
 		return err
 	}
-	rows := make([]cliui.StatusItem, 0, len(report.Artifacts.Artifacts))
-	for _, artifact := range report.Artifacts.Artifacts {
-		status := string(artifact.Status)
-		rows = append(rows, cliui.StatusItem{Title: artifact.Path, Stat: status, Tone: cliui.ToneForStatus(status)})
+	integrations := []namedIntegration{
+		{name: "OpenCode", state: report.OpenCode},
+		{name: "Hermes", state: report.Hermes},
+		{name: "Claude Code", state: report.ClaudeCode},
+		{name: "Codex", state: report.Codex},
+		{name: "Cursor", state: report.Cursor},
 	}
-	if len(rows) > 0 {
-		_, err := fmt.Fprintf(out, "\n%s\n", render.StatusItems(rows))
+	if err := writeAttention(out, report.Artifacts, integrations); err != nil {
+		return err
+	}
+	if restarts := restartNames(integrations); len(restarts) > 0 {
+		_, err := fmt.Fprintf(out, "Next: restart %s to load Mimir.\n", strings.Join(restarts, ", "))
 		return err
 	}
 	return nil
