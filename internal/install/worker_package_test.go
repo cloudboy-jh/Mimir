@@ -24,7 +24,7 @@ func TestMaterializeWorker(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "assets", "images"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"mimir-readme.png", "mimir-wordmark.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
+	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
 		if err := os.WriteFile(filepath.Join(root, "assets", "images", name), []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestMaterializeWorker(t *testing.T) {
 	if !pathExists(filepath.Join(target, "src", "index.ts")) {
 		t.Fatal("worker source was not materialized")
 	}
-	for _, name := range []string{"mimir-readme.png", "mimir-wordmark.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
+	for _, name := range []string{"mimir-readme.png", "mimir-favicon-32.png", "mimir-favicon-180.png"} {
 		data, err := os.ReadFile(filepath.Join(filepath.Dir(target), "assets", "images", name))
 		if err != nil || string(data) != name {
 			t.Fatalf("shared asset %s was not materialized: %q, %v", name, data, err)

@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { ArrowRight, LockKeyhole } from "lucide-vue-next";
 import { useRoute } from "vue-router";
-import wordmark from "../../../../assets/images/mimir-wordmark.png";
+import wordmark from "../../../../assets/images/mimir-readme.png";
 import ThemeToggle from "@/app/ThemeToggle.vue";
 
 const route = useRoute();

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/images/mimir-readme.png" width="700" alt="Mimir pixel wordmark on a dark field">
+  <img src="assets/images/mimir-readme.png" width="620" alt="Mimir">
 </p>
 
 # Private memory for coding agents
@@ -125,7 +125,7 @@ Mimir deliberately keeps two facts separate:
 
 ## How Mimir works
 
-![Coding agents send proxied model traffic, reconstructed harness exchanges, and lightweight lifecycle events into a private Mimir Worker. The Worker redacts and organizes the data, stores durable exchanges in R2 and session metadata in D1, and serves the CLI and private dashboard.](assets/images/mimir-system-map.svg)
+![Three agent evidence paths enter the private Mimir Worker, which coordinates sessions and stores redacted exchanges in R2 and searchable metadata in D1 for the dashboard and CLI.](assets/images/mimir-system-map.png)
 
 There are three inputs to one session record:
 
