@@ -24,7 +24,7 @@ var LogoPNG []byte
 //go:embed worker/migrations
 //go:embed worker/package.json worker/package-lock.json worker/tsconfig.json worker/worker-configuration.d.ts worker/wrangler.jsonc
 //go:embed worker/web/dist
-//go:embed assets/images/mimir-readme.png assets/images/mimir-favicon-32.png assets/images/mimir-favicon-180.png
+//go:embed assets/images/mimir-readme.png assets/images/mimir-wordmark.png assets/images/mimir-favicon-32.png assets/images/mimir-favicon-180.png
 var Bundle embed.FS
 
 // BundleFile describes an embedded file. SHA256 is calculated from the bytes

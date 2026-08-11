@@ -58,6 +58,9 @@ func TestMaterializeEmbeddedWorkerPreservesStateAndAccessVars(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.SharedAssets, "mimir-readme.png")); err != nil {
 		t.Fatalf("shared asset missing: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(paths.SharedAssets, "mimir-wordmark.png")); err != nil {
+		t.Fatalf("shared wordmark missing: %v", err)
+	}
 }
 
 func TestWorkerDirDefaultsToEmbeddedWorker(t *testing.T) {

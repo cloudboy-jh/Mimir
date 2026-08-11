@@ -6,22 +6,9 @@ specification rather than an expanding completion log.
 
 ## Active Implementation Work
 
-### Binary-first onboarding
-
-Land the remaining onboarding work as one reviewable commit:
-
-1. **`docs(onboarding): rewrite setup and recovery guidance`**
-   - Lead with the binary installers and local demo, then describe fresh
-     deployment and existing-deployment connection separately.
-   - Split prerequisites by workflow and document capture fidelity, current
-     Cloudflare free-tier units, Access configuration, harness reload behavior,
-     and the first real-session verification flow accurately.
-   - Add concise after-setup and troubleshooting paths. Keep `mimir doctor`
-     read-only and direct users to its exact repair commands.
-
 OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
 retention cleanup are separate follow-ups because they change setup or session
-lifecycle contracts. Do not fold them into these two commits.
+lifecycle contracts.
 
 ### Adaptive full-terminal Mimir TUI
 

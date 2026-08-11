@@ -570,25 +570,28 @@ and dashboard copy emit canonical values.
    development checkout, is available only through explicit `--worker-dir`.
    The current directory, parent directories, and Go module cache are never
    searched for an implicit Worker source.
-2. Installs Worker and dashboard dependencies.
-3. Builds dashboard assets.
-4. Authenticates Wrangler.
-5. Creates or reuses D1 and R2.
-6. Rewrites deployment binding identifiers.
-7. Applies D1 migrations.
-8. Registers the local machine token.
-9. Stores the OpenRouter Worker secret.
-10. Deploys and verifies the Worker.
-11. Saves the local URL/token pointer.
-12. Refreshes exact receipt-owned OpenCode, Claude Code, Codex, Cursor, and,
+2. Installs packaged Worker/Wrangler dependencies with npm. Dashboard
+   dependencies and Bun are used only for an explicit `--worker-dir`
+   development override; packaged setup uses the embedded compiled dashboard.
+3. Authenticates Wrangler.
+4. Creates or reuses D1 and R2.
+5. Rewrites deployment binding identifiers.
+6. Applies D1 migrations.
+7. Registers the local machine token.
+8. Reuses or stores the OpenRouter Worker secret.
+9. Deploys and verifies the Worker.
+10. Saves the local URL/token pointer.
+11. Refreshes exact receipt-owned OpenCode, Claude Code, Codex, Cursor, and,
     when detected, Hermes artifacts without rewriting general harness config.
     Without an existing receipt containing managed artifacts, setup does not
     create an installation identity, install log, or global harness files.
-13. Returns a harness-neutral connection manifest.
+12. Returns a harness-neutral connection manifest.
 
-`mimir login` reconnects another machine by authenticating with Cloudflare,
-discovering the deployment, registering a new machine token, and returning the
-same connection manifest. Managed installation and update may touch exact
+`mimir login` first accepts an already healthy saved connection. Its discovery
+path materializes configuration without proactively installing dependencies,
+then uses Wrangler to authenticate with Cloudflare, discover the deployment,
+register a new machine token, and return the same connection manifest. Managed
+installation and update may touch exact
 opted-in plugin and skill files recorded in `install-receipt.json`; they do not
 modify general OpenCode JSON/JSONC, providers, credentials, or commands.
 OpenCode integration uses the managed plugin and OpenCode's supported plugin

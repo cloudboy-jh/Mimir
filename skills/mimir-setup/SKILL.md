@@ -5,23 +5,61 @@ description: Set up or reconnect the self-hosted Mimir Cloudflare memory plane a
 
 # Mimir Setup
 
-Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in chat and never print `~/.mimir/token`.
+Mimir is a personal Cloudflare Worker memory plane. Never ask for credentials in
+chat, print `$MIMIR_HOME/token`, or pass secrets as command arguments.
 
 ## Procedure
 
-1. Verify Go, Node.js with npm, and Bun are available. Setup needs all three toolchains to materialize and build the Worker package.
-2. Run `go run github.com/cloudboy-jh/mimir/cmd/mimir@latest install --json` even when `mimir` already exists. The installed binary embeds the Worker, plugins, and skills; do not locate a Worker in the Go module cache. Stop if `action_required` is true instead of treating a partial harness installation as ready.
-3. Run `mimir login --json`.
-4. If it returns `cloudflare_auth_required`, tell the user browser approval is required and run interactive `mimir login`.
-5. If it returns `deployment_missing`, run `mimir setup --json` only when `OPENROUTER_API_KEY` exists in the process environment.
-6. If setup returns `openrouter_key_required`, tell the user to run interactive `mimir setup` and enter the key at the masked prompt. Never request or transfer the key through chat.
-7. Read the `connection` object from setup/login, or run the internal `mimir connection` command after an existing setup.
-8. If the active harness is Hermes, run `mimir doctor --json`. Setup/login transparently redirect its built-in OpenRouter provider; never create a custom provider. If doctor reports stale local wiring, run `mimir update`; if it reports an older Worker API or missing Hermes endpoints, run `mimir deploy`. Tell the user to restart Hermes after repair.
-9. For OpenCode, allow the installer to manage only its exact receipt-owned plugin and skill files. The managed plugin reports capture and lifecycle events over HTTP without rewriting general OpenCode JSON/JSONC. Restart OpenCode after installation.
-10. For harnesses without a bundled integration, apply the returned proxy base URL and credential source through the harness's supported configuration flow. Never directly rewrite general harness configuration, providers, credentials, or commands.
-11. If the harness supports dynamic request headers, derive and add any names listed in `optional_headers`. Never use header names or placeholder text as literal values. These improve grouping but are not required.
-12. Verify that the installer enrolled `mimir-use`. Install it manually only for unsupported harnesses, then validate the harness configuration using its native validation command or schema.
+1. Determine the requested path: local demo, fresh deployment, Cloudflare
+   discovery login, or direct URL/token connection. Do not run login first when
+   the user explicitly requested a fresh deployment.
+2. If `mimir` is absent, install the checksum-verified release with the platform
+   bootstrap from the repository README. Do not require Go or build from the Go
+   module cache. If Mimir exists, run `mimir install --json` to reconcile managed
+   files. Stop when `action_required` is true and preserve every reported
+   conflict.
+3. For a local preview, run `mimir demo --no-open`, return the loopback URL, and
+   stop. Demo needs no Cloudflare, model credential, Node.js, Bun, or Go.
+4. For a fresh deployment, verify Node.js 22 with npm/npx is available, then run
+   `mimir setup --json` only when `OPENROUTER_API_KEY` is already in the process
+   environment. Packaged setup uses the embedded Worker and compiled dashboard;
+   it does not require Bun or Go.
+5. If setup returns `cloudflare_auth_required`, tell the user browser approval is
+   required and run interactive `mimir setup`. If it returns
+   `openrouter_key_required`, tell the user to rerun interactive setup and enter
+   the key at the masked prompt. Never request or transfer the key through chat.
+6. For another machine or a reconnect, verify Node.js with npm/npx is available
+   and run `mimir login --json`. If it returns `cloudflare_auth_required`, run
+   interactive `mimir login`. If it returns `deployment_missing`, do not create
+   resources unless the user asked for a fresh deployment. If it returns
+   `deployment_url_missing`, run `mimir deploy`, then rerun login. If deploy
+   still cannot recover the URL, find it in Cloudflare and run
+   `mimir login --url <url>`.
+7. For a direct endpoint, use `mimir setup --url <https-url>`. Supply
+   `MIMIR_TOKEN` only through the process environment or interactive secure
+   prompt. This path does not require Wrangler or Node.js.
+8. Read the `connection` object from setup/login, or run the internal
+   `mimir connection` command after an existing setup. For unsupported harnesses,
+   apply only the returned proxy URL, credential source, and optional dynamic
+   header names through the harness's supported configuration flow.
+9. Run `mimir doctor --json` and apply only its exact repair. Common repairs are
+   `mimir login` for connection state, `mimir deploy` for stale Worker state,
+   `mimir install` for missing managed artifacts, `mimir update` for stale Hermes
+   wiring, and `hermes plugins enable mimir` for a disabled Hermes plugin.
+10. Apply the harness activation action reported by doctor: restart OpenCode or
+    Hermes, run `/reload-plugins` or restart Claude Code, restart Codex, or open
+    or continue a Cursor session. Run doctor again to verify the active hash.
+11. Verify the first normal agent session with `mimir list --json`,
+    `mimir session get <id> --json`, and `mimir session status <id> --json`.
+    Never call a paid model endpoint merely to test deployment connectivity.
 
-Mimir may update or uninstall exact opted-in files only when ownership is recorded in `$MIMIR_HOME/install-receipt.json`; preserve conflicts and locally modified files. `mimir uninstall` keeps connection, token, Worker, install-log, and Cloudflare deployment state. Manual plugin copying is recovery-only. The connection manifest remains the contract for provider configuration; do not invent additional harness-specific Worker behavior.
+Mimir may update or uninstall exact opted-in files only when ownership is
+recorded in `$MIMIR_HOME/install-receipt.json`. Preserve conflicts and locally
+modified files. Setup/login refresh only an existing managed installation and do
+not silently enroll global hook files. The connection manifest remains the
+contract for provider configuration; do not invent additional harness-specific
+Worker behavior.
 
-Do not create Git session repositories, session Markdown, Mimir accounts, alternate storage, lifecycle hooks, or routine user workflows.
+Do not create Git session repositories, session Markdown, Mimir accounts,
+alternate storage, lifecycle hooks, custom Hermes providers, or routine user
+workflows.

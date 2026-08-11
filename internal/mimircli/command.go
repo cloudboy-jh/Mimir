@@ -609,7 +609,7 @@ func printRemoteData(out io.Writer, data []byte) error {
 func usage(out io.Writer) error {
 	render := cliui.New(out)
 	commands := []cliui.CommandItem{
-		{Usage: "mimir setup [--quick] [--json]", Description: "Provision or reconnect Mimir."},
+		{Usage: "mimir setup [--json]", Description: "Provision or reconnect Mimir."},
 		{Usage: "mimir install [--bin-dir <dir>] [--json]", Description: "Install the CLI and managed harness files."},
 		{Usage: "mimir uninstall [--keep-binary] [--json]", Description: "Remove owned local files without deleting memory."},
 		{Usage: "mimir deploy [--json]", Description: "Deploy the bundled Worker and dashboard."},

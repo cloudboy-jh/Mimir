@@ -11,8 +11,9 @@ import (
 )
 
 // deploy is the single supported way to ship Worker code and dashboard assets.
-// It materializes the packaged Worker, builds the dashboard, writes the real
-// D1 database ID into the materialized config, and runs wrangler deploy.
+// It materializes the packaged Worker and compiled dashboard, writes the real
+// D1 database ID into the materialized config, and runs wrangler deploy. An
+// explicit development Worker override builds its dashboard before deployment.
 func deploy(ctx context.Context, args []string, ioctx IO) error {
 	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
 	for i := 0; i < len(args); i++ {

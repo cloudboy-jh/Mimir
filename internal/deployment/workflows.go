@@ -88,7 +88,7 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	hooks.step("Worker deployed")
 	url := workerURL(output)
 	if url == "" {
-		return ProvisionResult{}, fmt.Errorf("deployment succeeded but its workers.dev URL was not found; reconnect with mimir setup --url <url> --token <token>")
+		return ProvisionResult{}, fmt.Errorf("deployment succeeded but its workers.dev URL was not found; find the Worker URL in Cloudflare, then run mimir login --url <url>")
 	}
 	if hooks.Verify != nil {
 		if err := hooks.Verify(ctx, url, token); err != nil {

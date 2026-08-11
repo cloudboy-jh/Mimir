@@ -32,8 +32,9 @@ func (i *workflowInstaller) BuildDashboard(context.Context, string) error {
 }
 
 type workflowWrangler struct {
-	calls  [][]string
-	config Config
+	calls         [][]string
+	config        Config
+	hideDeployURL bool
 }
 
 func (w *workflowWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...string) (string, error) {
@@ -46,6 +47,9 @@ func (w *workflowWrangler) Run(_ context.Context, _ string, _ io.Reader, args ..
 	case slices.Equal(args, []string{"secret", "list", "--format", "json"}):
 		return `[{"name":"OPENROUTER_API_KEY"}]`, nil
 	case slices.Equal(args, []string{"deploy"}):
+		if w.hideDeployURL {
+			return "deployed", nil
+		}
 		return "Deployed to https://mimir.example.workers.dev", nil
 	case len(args) > 2 && args[0] == "d1" && args[1] == "execute" && strings.Contains(strings.Join(args, " "), "SELECT value FROM config"):
 		return `[{"results":[{"value":"https://mimir.example.workers.dev"}]}]`, nil
@@ -124,6 +128,17 @@ func TestPreparationUsesPrebuiltDashboardForPackagedDeployments(t *testing.T) {
 				t.Fatalf("preparation calls = %v, want %v", installer.calls, test.want)
 			}
 		})
+	}
+}
+
+func TestProvisionMissingWorkerURLRecommendsSupportedLogin(t *testing.T) {
+	wrangler := &workflowWrangler{hideDeployURL: true}
+	service := testWorkflowService(wrangler)
+	opts := DefaultOptions()
+	opts.DatabaseID = "database-uuid"
+	_, err := service.Provision(context.Background(), opts, Hooks{})
+	if err == nil || !strings.Contains(err.Error(), "mimir login --url <url>") || strings.Contains(err.Error(), "--token") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

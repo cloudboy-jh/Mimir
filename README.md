@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/images/mimir-readme.png" width="620" alt="Mimir">
+  <img src="assets/images/mimir-readme.png" width="700" alt="Mimir pixel wordmark on a dark field">
 </p>
 
 # Private memory for coding agents
@@ -8,34 +8,73 @@ Mimir records what your coding agents attempted, which models and files were
 involved, what failed, and whether the work actually landed. The Worker,
 storage, and private dashboard run inside your Cloudflare account.
 
+## Start here
+
+Install the latest checksum-verified release:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.sh | sh
-mimir setup
 ```
 
 Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
-mimir setup
 ```
 
-Explore the dashboard with synthetic local data before deploying anything:
+### Try it locally
+
+Explore the dashboard with synthetic data before deploying anything:
 
 ```bash
 mimir demo
 ```
 
 The demo binds only to loopback, opens in your browser, and requires no
-Cloudflare account, connection, model credentials, Node.js, or Bun.
+Cloudflare account, connection, model credentials, Node.js, Bun, or Go.
 
-Setup provisions D1 and R2, deploys the Worker and dashboard, stores
-your OpenRouter key through a masked prompt, and connects the current machine.
+### Create a deployment
 
-Fresh deployment requires a Cloudflare account, an OpenRouter API key, and
-Node.js 22 with npm. Bun and Go 1.25+ are required only for source builds and
-contribution. To connect another machine to the same deployment, install the
-CLI there and run `mimir login`.
+A fresh deployment needs a Cloudflare account, an OpenRouter API key, Node.js
+22 with npm, and network access to npm and Cloudflare. It does not need Bun, Go,
+or a source checkout.
+
+```bash
+mimir setup
+```
+
+Setup deploys the embedded Worker and production dashboard, creates or reuses
+D1 and R2, applies migrations, registers this machine, and stores the OpenRouter
+key as a Worker secret. It reads `OPENROUTER_API_KEY` first, reuses an existing
+Worker secret when present, or asks through a masked interactive prompt.
+Cloudflare Access configuration is optional and can be completed later with
+`mimir access`.
+
+### Connect another machine
+
+Install the CLI on the other machine, then run:
+
+```bash
+mimir login
+```
+
+Discovery login needs Node.js 22 with npm/npx and Cloudflare access to the
+account containing the deployment. It does not need the OpenRouter key, Bun, Go,
+or dashboard build dependencies. An already healthy local connection takes a
+fast path without Cloudflare discovery. See [installation and connection
+paths](docs/installation.md) for direct URL/token recovery.
+
+### Verify the first session
+
+1. Run `mimir doctor --json` and apply the harness activation action it prints.
+2. Run `mimir doctor --json` again and resolve every failed check.
+3. Start a normal coding-agent session and send one real prompt.
+4. Find it with `mimir list --json` or open it with `mimir dashboard`.
+5. Confirm durable persistence with `mimir session status <id> --json`.
+
+Use `/whoami` and direct session APIs for deployment health checks. Do not call
+`/v1/chat/completions`, `/v1/messages`, or another paid model route just to test
+connectivity.
 
 ## Dashboard and terminal
 
@@ -176,8 +215,9 @@ The installer enrolls receipt-owned hook manifests in each harness's supported
 location. Their start, prompt, completion, and end hooks invoke the hidden
 `mimir _hook` adapter, which reconstructs bounded prompt/assistant exchanges and
 queues delivery when the Worker is unavailable. Existing different hook files
-are preserved as conflicts rather than merged or overwritten. Restart the named
-harness after installation or update.
+are preserved as conflicts rather than merged or overwritten. Claude Code uses
+`/reload-plugins` or a restart; Codex requires a restart; Cursor reloads
+`hooks.json` when you open or continue an agent session.
 
 ### Other harnesses and tools
 
@@ -211,6 +251,26 @@ machine-token storage.
   JWTs. Machine APIs use independent per-machine bearer tokens.
 - Local code recall stays in `<repo>/.mimir/index.json` and is never uploaded.
 
+### Cloudflare Free plan usage
+
+Mimir uses account-level Workers, D1, R2, Durable Objects, and optional Access.
+As of August 2026, Cloudflare documents these Free plan units:
+
+| Product | Included usage relevant to Mimir |
+| --- | --- |
+| Workers | 100,000 requests/day; 10 ms CPU/invocation |
+| D1 | 5 million rows read/day; 100,000 rows written/day; 5 GB total storage |
+| R2 Standard | 10 GB-month/month; 1 million Class A and 10 million Class B operations/month; free egress |
+| SQLite Durable Objects | 100,000 requests/day; 13,000 GB-s/day; 5 million rows read and 100,000 rows written/day; 5 GB total storage |
+
+These are shared account limits, not a promise that every workload remains
+free. Daily metered operations can fail after their limit is reached. Check the
+current [Workers](https://developers.cloudflare.com/workers/platform/pricing/),
+[D1](https://developers.cloudflare.com/d1/platform/pricing/),
+[R2](https://developers.cloudflare.com/r2/pricing/), and [Durable
+Objects](https://developers.cloudflare.com/durable-objects/platform/pricing/)
+pricing pages before relying on the numbers.
+
 Redaction runs before R2 persistence and excerpt generation. It reduces
 accidental retention, but it cannot guarantee removal of every secret.
 
@@ -218,7 +278,7 @@ accidental retention, but it cannot guarantee removal of every secret.
 
 ```text
 mimir install                         reconcile managed local artifacts
-mimir setup [--quick]                 provision and deploy Mimir
+mimir setup                           provision and deploy Mimir
 mimir login                           connect another machine
 mimir demo [--no-open]                explore sample sessions locally
 mimir deploy [--worker-dir DIR]       deploy packaged Worker and dashboard changes

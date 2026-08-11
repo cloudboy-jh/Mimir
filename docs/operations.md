@@ -22,12 +22,13 @@ paid completion endpoints for a health check.
 mimir doctor --json
 ```
 
-Doctor validates managed artifacts, the receipt-owned executable, Worker API
-version/capabilities, OpenCode plugin load, Hermes plugin enablement, Hermes
-credentials, and compatibility routes. It also reports stale files next to the
-owned executable (swap leftovers and foreign junk) without deleting them. A
-Worker missing required capabilities requires `mimir deploy`; invalid machine
-credentials require `mimir login`.
+Doctor is read-only. It validates managed artifacts, Worker API
+version/capabilities and bundle identity, active harness loads, Hermes plugin
+enablement, Hermes credentials, and compatibility routes. It also reports stale
+files next to the owned executable without deleting them. Use the exact repair
+it reports: connection failures use `mimir login`, stale Worker state uses
+`mimir deploy`, and missing or outdated managed artifacts use `mimir install`.
+See [troubleshooting](troubleshooting.md) for activation and recovery states.
 
 ## Update
 
@@ -62,3 +63,7 @@ When `--email` is supplied, automation accepts only one exact Allow policy for
 that email. Existing conflicting, permissive, additional, or Bypass policies
 cause an action-required error; Mimir does not modify them or report Access as
 configured.
+
+Do not protect the bare Worker host. `/login` remains public for the browser
+handoff, while machine routes remain outside Access and continue to use
+per-machine bearer tokens.
