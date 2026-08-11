@@ -3,7 +3,7 @@ import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
 import { ingestReportedExchange } from "../reported-exchanges";
 import { parseSessionEvent, SESSION_ID } from "../session-events";
-import { canonicalOutcome, endSession, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
+import { canonicalOutcome, endSession, expireSessions, ROOT_SESSION_ACTIVITY_AT, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
 import { attachCaptureSummary, captureSummary, captureTreeSummary, reconcile, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import { sessionTitleColumns, sessionTitleSearchClause } from "../session-titles";
 import type { AppEnv } from "../types";
@@ -72,7 +72,7 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
       values.push(to);
     }
     where.push("parent_session_id IS NULL");
-    const sql = `${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY sessions.started_at DESC LIMIT 100`;
+    const sql = `${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY ${ROOT_SESSION_ACTIVITY_AT} DESC, sessions.id DESC LIMIT 100`;
     const results = await c.env.DB.prepare(sql).bind(...values).all<Record<string, unknown>>();
     return c.json({ sessions: results.results.map(attachCaptureSummary) });
   });

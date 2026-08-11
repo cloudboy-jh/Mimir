@@ -90,7 +90,12 @@ try {
   execute(`
     INSERT INTO harness_loads(token_hash, token_label, harness, artifact_sha256, installation_id, client_loaded_at, reported_at)
     VALUES ('machine-hash', 'migration-test', 'claude-code', '${"b".repeat(64)}', 'install-1', '2026-07-15T12:01:00Z', '2026-07-15T12:01:00Z');
+    INSERT INTO sessions(id, started_at, boundary, state, last_active_at)
+    VALUES ('null-activity-session', '2026-07-15T12:02:00Z', 'header', 'inactive', NULL);
   `);
+
+  cpSync(join(root, "migrations", "0014_session_activity_order.sql"), join(migrations, "0014_session_activity_order.sql"));
+  applyMigrations();
 
   const output = JSON.parse(execute(`
     SELECT
@@ -118,7 +123,9 @@ try {
       (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('title', 'title_source', 'title_updated_at')) AS session_title_columns,
       (SELECT COUNT(*) FROM pragma_table_info('exchanges') WHERE name = 'title_candidate') AS exchange_title_column,
       (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash' AND harness = 'opencode') AS harness_artifact_sha256,
-      (SELECT COUNT(*) FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_load_count
+      (SELECT COUNT(*) FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_load_count,
+      (SELECT last_active_at FROM sessions WHERE id = 'null-activity-session') AS backfilled_activity_at,
+      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_parent_last_active') AS activity_index
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -152,6 +159,8 @@ try {
     exchange_title_column: 1,
     harness_artifact_sha256: "a".repeat(64),
     harness_load_count: 2,
+    backfilled_activity_at: "2026-07-15T12:02:00Z",
+    activity_index: 1,
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { canonicalOutcome, expireSessions, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
+import { canonicalOutcome, expireSessions, ROOT_SESSION_ACTIVITY_AT, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
 import { attachCaptureSummary, captureSummary, captureTreeSummary, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import type { AppEnv } from "../types";
 import { MAX_SESSION_TITLE_CHARS, normalizeSessionTitle, sessionTitleColumns, sessionTitleSearchClause, titleUpdateStatement } from "../session-titles";
@@ -174,15 +174,15 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
     const cursor = decodeCursor(cursorValue);
     if (cursorValue && !cursor) return c.json({ error: "invalid cursor" }, 400);
     if (cursor) {
-      where.push("(sessions.started_at < ? OR (sessions.started_at = ? AND sessions.id < ?))");
+      where.push(`(${ROOT_SESSION_ACTIVITY_AT} < ? OR (${ROOT_SESSION_ACTIVITY_AT} = ? AND sessions.id < ?))`);
       values.push(cursor.ts, cursor.ts, cursor.id);
     }
     const limit = boundedLimit(c.req.query("limit"));
-    const result = await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY sessions.started_at DESC, sessions.id DESC LIMIT ?`).bind(...values, limit + 1).all<Record<string, unknown>>();
+    const result = await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS}, ${TREE_CAPTURE_SUMMARY_COLUMNS} FROM sessions WHERE ${where.join(" AND ")} ORDER BY ${ROOT_SESSION_ACTIVITY_AT} DESC, sessions.id DESC LIMIT ?`).bind(...values, limit + 1).all<Record<string, unknown>>();
     const hasMore = result.results.length > limit;
     const sessions = await attachSessionLiveness(c.env, await attachSessionModels(c.env.DB, result.results.slice(0, limit).map(attachCaptureSummary)));
-    const last = sessions.at(-1) as { started_at?: string; id?: string } | undefined;
-    return c.json({ sessions, next_cursor: hasMore && last?.started_at && last.id ? encodeCursor(last.started_at, last.id) : null });
+    const last = sessions.at(-1) as { activity_at?: string; id?: string } | undefined;
+    return c.json({ sessions, next_cursor: hasMore && last?.activity_at && last.id ? encodeCursor(last.activity_at, last.id) : null });
   });
 
   app.get("/dashboard/api/sessions/:id/exchanges", async (c) => {

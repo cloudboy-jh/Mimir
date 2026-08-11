@@ -23,6 +23,7 @@ const route = useRoute();
 const router = useRouter();
 const sessions = ref<Session[]>([]);
 const nextCursor = ref<string | null>(null);
+const loadedPageCount = ref(1);
 const loading = ref(true);
 const loadingMore = ref(false);
 const error = ref("");
@@ -71,18 +72,38 @@ function currentFilters(cursor?: string): SessionFilters {
   };
 }
 
-async function load(silent = false) {
+async function load(silent = false, targetPages = 1) {
   controller?.abort();
   const active = new AbortController();
   controller = active;
   loadingMore.value = false;
-  nextCursor.value = null;
-  if (!silent) loading.value = true;
+  if (!silent) {
+    loading.value = true;
+    nextCursor.value = null;
+  }
   error.value = "";
   try {
-    const result = await listSessions(currentFilters(), active.signal);
-    sessions.value = result.sessions;
-    nextCursor.value = result.next_cursor;
+    const refreshed: Session[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    let refreshedCursor: string | null = null;
+    let pagesLoaded = 0;
+    for (let page = 0; page < targetPages; page++) {
+      const result = await listSessions(currentFilters(cursor), active.signal);
+      for (const session of result.sessions) {
+        if (!seen.has(session.id)) {
+          refreshed.push(session);
+          seen.add(session.id);
+        }
+      }
+      pagesLoaded++;
+      refreshedCursor = result.next_cursor;
+      if (!refreshedCursor) break;
+      cursor = refreshedCursor;
+    }
+    sessions.value = refreshed;
+    nextCursor.value = refreshedCursor;
+    loadedPageCount.value = pagesLoaded;
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "Sessions could not be loaded.");
   } finally {
@@ -98,8 +119,10 @@ async function loadMore() {
   controller = active;
   try {
     const result = await listSessions(currentFilters(nextCursor.value), active.signal);
-    sessions.value.push(...result.sessions);
+    const existing = new Set(sessions.value.map((session) => session.id));
+    sessions.value.push(...result.sessions.filter((session) => !existing.has(session.id)));
     nextCursor.value = result.next_cursor;
+    loadedPageCount.value++;
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "More sessions could not be loaded.");
   } finally {
@@ -139,7 +162,7 @@ watch(() => route.fullPath, () => {
   if (queryValue("q") !== search.value.trim()) search.value = queryValue("q");
   void load();
 }, { immediate: true });
-useAutoRefresh(() => sessions.value.length <= Number(limit.value) ? load(true) : undefined);
+useAutoRefresh(() => load(true, loadedPageCount.value));
 onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 </script>
 
@@ -192,7 +215,7 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
       <div v-else-if="error && !sessions.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load()"><RotateCw class="size-3.5" />Retry</button></div>
       <template v-else>
         <RouterLink v-for="session in sessions" :key="session.id" :to="`/sessions/${session.id}`" class="group grid gap-3 border-b border-zinc-200 px-4 py-4 transition-colors last:border-b-0 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_90px_28px] lg:items-center dark:border-zinc-800 dark:hover:bg-zinc-800/70">
-          <div class="min-w-0"><div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ displayTitle(session) }}</h2><SessionLivenessBadge class="shrink-0" :liveness="session.liveness" /></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>{{ relativeDate(session.started_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span v-if="session.child_session_count">{{ session.child_session_count }} supporting {{ session.child_session_count === 1 ? "run" : "runs" }}</span><span class="font-mono">{{ session.id }}</span></div></div>
+          <div class="min-w-0"><div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 truncate text-sm font-medium text-zinc-950 dark:text-zinc-100">{{ displayTitle(session) }}</h2><SessionLivenessBadge class="shrink-0" :liveness="session.liveness" /></div><div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</span><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ session.source_ref }}</span><span>Active {{ relativeDate(session.activity_at) }}</span><span>{{ duration(session.started_at, session.ended_at) }}</span><span v-if="session.child_session_count">{{ session.child_session_count }} supporting {{ session.child_session_count === 1 ? "run" : "runs" }}</span><span class="font-mono">{{ session.id }}</span></div></div>
           <SessionModelStack :app="session.harness" :primary="session.model_primary" :models="session.models" />
           <div><OutcomeBadge :outcome="session.outcome" /></div>
           <div class="text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ session.capture.status }}</strong> · {{ session.capture.saved_exchanges }} {{ session.capture.saved_exchanges === 1 ? "exchange" : "exchanges" }}<span v-if="session.capture.failed_exchanges"> · {{ session.capture.failed_exchanges }} failed</span></div>

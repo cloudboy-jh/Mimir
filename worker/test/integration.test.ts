@@ -84,6 +84,23 @@ describe("Worker integration", () => {
     expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'child-session'").first()).toMatchObject({ work_outcome: "unresolved" });
   });
 
+  it("orders root sessions by the latest activity in their session tree", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('older-root', '2026-07-27T10:00:00Z', 'inactive', '2026-07-27T10:05:00Z', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('reopened-supporting', 'older-root', '2026-07-27T10:01:00Z', 'active', '2026-07-27T12:00:00Z', 'header');
+      INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('newer-root', '2026-07-27T11:00:00Z', 'inactive', '2026-07-27T11:05:00Z', 'header');
+    `);
+
+    const dashboard = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; activity_at: string }> };
+    expect(dashboard.sessions).toEqual([
+      expect.objectContaining({ id: "older-root", activity_at: "2026-07-27T12:00:00Z" }),
+      expect.objectContaining({ id: "newer-root", activity_at: "2026-07-27T11:05:00Z" }),
+    ]);
+
+    const machine = await (await request("/sessions", { headers: { authorization: "Bearer machine-token" } })).json() as { sessions: Array<{ id: string; activity_at: string }> };
+    expect(machine.sessions.map((session) => session.id)).toEqual(["older-root", "newer-root"]);
+  });
+
   it("accepts an authorized OpenRouter key only on Hermes compatibility routes", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
     const hermesKey = "independent-hermes-openrouter-key";
@@ -629,8 +646,13 @@ describe("Worker integration", () => {
     const endTime = (await ended.json() as { session: { inactive_at: string } }).session.inactive_at;
     const later = new Date(Date.parse(endTime) + 1_000).toISOString();
     await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('reactivate-exchange', 'ended-reactivate', ?, 'chat', 'openai/test', 1, 'log/reactivate.json', 'accepted', ?, 1)").bind(later, later).run();
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('newer-unreopened', ?, 'inactive', ?, 'header')").bind(endTime, endTime).run();
     await finalizeAcceptedExchange(env.DB, "reactivate-exchange", "ended-reactivate", later, later, "opencode", "openai/test", 2, 1, 50, true);
     expect(await env.DB.prepare("SELECT state, inactive_at, last_active_at FROM sessions WHERE id = 'ended-reactivate'").first()).toEqual({ state: "active", inactive_at: null, last_active_at: later });
+    const dashboard = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string }> };
+    expect(dashboard.sessions.map((session) => session.id)).toEqual(["ended-reactivate", "newer-unreopened"]);
+    const machine = await (await request("/sessions", { headers: { authorization: "Bearer machine-token" } })).json() as { sessions: Array<{ id: string }> };
+    expect(machine.sessions.map((session) => session.id)).toEqual(["ended-reactivate", "newer-unreopened"]);
   });
 
   it("reconciles accepted objects and missing saved objects without deletion", async () => {
@@ -718,8 +740,8 @@ describe("Worker integration", () => {
     const filters = "q=NEEDLE&repo=mimir&outcome=landed&app=opencode&model=openai%2Fgpt-5&from=2026-07-27T10%3A02%3A00Z&to=2026-07-27T10%3A03%3A00Z&limit=1";
     const firstResponse = await dashboardRequest(`/dashboard/api/sessions?${filters}`);
     expect(firstResponse.status).toBe(200);
-    const first = await firstResponse.json() as { sessions: Array<{ id: string; child_session_count: number }>; next_cursor: string | null };
-    expect(first.sessions).toEqual([expect.objectContaining({ id: "match-new", child_session_count: 1 })]);
+    const first = await firstResponse.json() as { sessions: Array<{ id: string; child_session_count: number; activity_at: string }>; next_cursor: string | null };
+    expect(first.sessions).toEqual([expect.objectContaining({ id: "match-new", child_session_count: 1, activity_at: "2026-07-27T10:04:00Z" })]);
     expect(first.next_cursor).toEqual(expect.any(String));
 
     const second = await (await dashboardRequest(`/dashboard/api/sessions?${filters}&cursor=${encodeURIComponent(first.next_cursor!)}`)).json() as { sessions: Array<{ id: string }>; next_cursor: string | null };

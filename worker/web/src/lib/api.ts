@@ -26,6 +26,7 @@ export type Session = {
   state: "active" | "inactive";
   liveness: SessionLiveness;
   last_active_at: string | null;
+  activity_at: string;
   inactive_at: string | null;
   harness: string | null;
   boundary: string;
@@ -188,7 +189,7 @@ export function currentOutcomeEvidence(events: OutcomeEvent[], outcome: Outcome)
 export type SessionDetail = {
   session: Omit<Session, "capture" | "liveness">;
   capture: CaptureSummary;
-  supporting_sessions: Array<Omit<Session, "capture" | "child_session_count" | "liveness">>;
+  supporting_sessions: Array<Omit<Session, "capture" | "child_session_count" | "liveness" | "activity_at">>;
   outcome_events: OutcomeEvent[];
   files: string[];
   errors: SessionError[];
