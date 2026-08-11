@@ -24,6 +24,8 @@ jobs:
           cache: npm
           cache-dependency-path: worker/package-lock.json
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.1'
       - run: bun install --frozen-lockfile
       - run: bun run typecheck:plugins
       - run: bun install --frozen-lockfile
@@ -40,6 +42,8 @@ jobs:
         working-directory: worker
       - run: npm run build:dashboard && npx wrangler deploy --dry-run
         working-directory: worker
+      - run: bun run check:demo-assets
+      - run: bun run verify:dashboard-builds
       - run: go test ./...
       - run: go build -o /tmp/mimir ./cmd/mimir
       - run: go mod verify

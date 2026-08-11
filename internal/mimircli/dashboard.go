@@ -21,7 +21,12 @@ var openBrowser = func(ctx context.Context, target string) error {
 	default:
 		command, args = "xdg-open", []string{target}
 	}
-	return exec.CommandContext(ctx, command, args...).Start()
+	process := exec.CommandContext(ctx, command, args...)
+	if err := process.Start(); err != nil {
+		return err
+	}
+	go func() { _ = process.Wait() }()
+	return nil
 }
 
 func dashboard(ctx context.Context, ioctx IO) error {

@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "dev:api": "wrangler d1 migrations apply mimir --local && wrangler dev --port 8787",
     "build:dashboard": "bun --cwd=web run build",
+    "build:dashboard:demo": "bun --cwd=web run build:demo",
     "deploy": "bun run build:dashboard && wrangler deploy",
     "test": "vitest run",
     "test:migrations": "node scripts/verify-migrations.mjs",

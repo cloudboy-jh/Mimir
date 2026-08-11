@@ -232,7 +232,7 @@ func TestExecuteUsage(t *testing.T) {
 	if err := ExecuteIO(context.Background(), nil, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "mimir setup [--quick] [--json]") {
+	if !strings.Contains(output.String(), "mimir setup [--quick] [--json]") || !strings.Contains(output.String(), "mimir demo [--no-open]") {
 		t.Fatalf("usage output %q", output.String())
 	}
 }

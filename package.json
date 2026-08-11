@@ -1,6 +1,7 @@
 {
   "name": "mimir",
   "private": true,
+  "packageManager": "bun@1.3.1",
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev-dashboard.ts",
@@ -8,6 +9,9 @@
     "dev:web": "bun --cwd=worker/web run dev",
     "dev:api": "bun --cwd=worker run dev:api",
     "build": "bun --cwd=worker/web run build",
+    "build:demo": "bun --cwd=worker/web run build:demo",
+    "check:demo-assets": "bun scripts/check-demo-assets.ts",
+    "verify:dashboard-builds": "bun scripts/verify-dashboard-builds.ts",
     "typecheck": "bun --cwd=worker/web run typecheck",
     "typecheck:plugins": "tsc -p plugins/opencode/tsconfig.json",
     "test:plugins": "bun test plugins/opencode/"

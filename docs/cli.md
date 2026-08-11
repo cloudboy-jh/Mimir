@@ -30,6 +30,11 @@ terminals. Redirected output and `--no-interactive` retain the static text
 format. Agents and scripts should use `mimir list --json`; JSON mode never emits
 terminal control sequences.
 
+`mimir demo` serves the embedded fixture dashboard on a random loopback port and
+opens it in the default browser. It does not read connection state or machine
+credentials. `--no-open` leaves browser launch to the caller. The command runs
+until Ctrl+C and all in-browser changes reset on reload.
+
 `mimir tui` opens the persistent sessions and Pi home surface in the terminal's
 alternate screen. It consumes the current terminal dimensions, restores the
 original screen on exit, and shows a bounded message below 48x12. `Tab` moves

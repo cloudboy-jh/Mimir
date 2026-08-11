@@ -1,3 +1,5 @@
+import { fixtureDataEnabled } from "./data-source";
+
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
 export type SessionLiveness = "active" | "disconnected" | "finalized";
@@ -247,7 +249,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (import.meta.env.VITE_MIMIR_DATA_SOURCE === "fixtures") {
+  if (fixtureDataEnabled) {
     const { fixtureRequest } = await import("@/lib/dev-fixtures");
     return fixtureRequest<T>(path, init);
   }
@@ -302,7 +304,7 @@ export async function getSessionObjectState(id: string, signal?: AbortSignal) {
 }
 
 export function connectSessionLive(id: string, onMessage: (message: SessionLiveMessage) => void) {
-  if (import.meta.env.VITE_MIMIR_DATA_SOURCE === "fixtures" || typeof window === "undefined") return null;
+  if (fixtureDataEnabled || typeof window === "undefined") return null;
   const url = new URL(`/dashboard/api/sessions/${encodeURIComponent(id)}/live`, window.location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const socket = new WebSocket(url);

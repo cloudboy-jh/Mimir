@@ -8,24 +8,16 @@ specification rather than an expanding completion log.
 
 ### Binary-first onboarding
 
-Land the remaining onboarding work as three reviewable commits, in order:
+Land the remaining onboarding work as two reviewable commits, in order:
 
-1. **`feat(demo): embed and serve fixture dashboard`**
-   - Build the fixture-mode dashboard during release validation and embed the
-     generated static assets in the Go binary.
-   - Add `mimir demo`, serve the assets on a random loopback port, open the
-     browser when possible, and print the URL as a fallback.
-   - Require no Cloudflare account, Mimir connection, machine credentials,
-     Node.js, or Bun at runtime, and visibly identify all fixture data as sample
-     data.
-2. **`refactor(deploy): embed production dashboard and reduce prerequisites`**
+1. **`refactor(deploy): embed production dashboard and reduce prerequisites`**
    - Build and embed the production dashboard instead of installing dashboard
      dependencies and compiling it during ordinary setup and deploy.
    - Remove Bun from binary-based setup and deploy while retaining Node.js and
      npm for the packaged Wrangler workflow.
    - Make `mimir login` discover and connect to an existing deployment without
      installing dashboard or Worker build dependencies.
-3. **`docs(onboarding): rewrite setup and recovery guidance`**
+2. **`docs(onboarding): rewrite setup and recovery guidance`**
    - Lead with the binary installers and local demo, then describe fresh
      deployment and existing-deployment connection separately.
    - Split prerequisites by workflow and document capture fidelity, current
@@ -36,7 +28,7 @@ Land the remaining onboarding work as three reviewable commits, in order:
 
 OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
 retention cleanup are separate follow-ups because they change setup or session
-lifecycle contracts. Do not fold them into these three commits.
+lifecycle contracts. Do not fold them into these two commits.
 
 ### Adaptive full-terminal Mimir TUI
 

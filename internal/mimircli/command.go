@@ -41,7 +41,7 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	// helper. Any later CLI command is a second recovery path if that helper
 	// timed out or was interrupted. Update handles its own marker so it can
 	// report an applied deferred version accurately.
-	if len(args) == 0 || (args[0] != "update" && args[0] != "_apply-update") {
+	if len(args) == 0 || (args[0] != "update" && args[0] != "_apply-update" && args[0] != "demo") {
 		configureInstall()
 		if _, err := installpkg.FinalizePendingUpdate(); err != nil {
 			_, _ = fmt.Fprintf(ioctx.Err, "mimir: pending update: %v\n", err)
@@ -155,6 +155,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
 		return dashboard(ctx, ioctx)
+	case "demo":
+		return demo(ctx, args[1:], ioctx)
 	case "connection":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir connection")
@@ -613,6 +615,7 @@ func usage(out io.Writer) error {
 		{Usage: "mimir deploy [--json]", Description: "Deploy the bundled Worker and dashboard."},
 		{Usage: "mimir access [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
 		{Usage: "mimir login [--json]", Description: "Authenticate and register this machine."},
+		{Usage: "mimir demo [--no-open]", Description: "Explore sample sessions in a local browser."},
 		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
 		{Usage: "mimir tui", Description: "Open the persistent sessions and agent terminal."},
 		{Usage: "mimir list [filters] [--no-interactive] [--json]", Description: "Browse captured work sessions."},

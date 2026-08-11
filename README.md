@@ -20,6 +20,15 @@ irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
 mimir setup
 ```
 
+Explore the dashboard with synthetic local data before deploying anything:
+
+```bash
+mimir demo
+```
+
+The demo binds only to loopback, opens in your browser, and requires no
+Cloudflare account, connection, model credentials, Node.js, or Bun.
+
 Setup provisions D1 and R2, builds and deploys the Worker and dashboard, stores
 your OpenRouter key through a masked prompt, and connects the current machine.
 
@@ -211,6 +220,7 @@ accidental retention, but it cannot guarantee removal of every secret.
 mimir install                         reconcile managed local artifacts
 mimir setup [--quick]                 provision and deploy Mimir
 mimir login                           connect another machine
+mimir demo [--no-open]                explore sample sessions locally
 mimir deploy [--worker-dir DIR]       deploy packaged Worker and dashboard changes
 mimir dashboard                       open the private dashboard
 mimir tui                             open the persistent sessions + agent terminal
