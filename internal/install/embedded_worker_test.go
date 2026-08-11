@@ -48,8 +48,12 @@ func TestMaterializeEmbeddedWorkerPreservesStateAndAccessVars(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.Worker, "src", "capture.test.ts")); !os.IsNotExist(err) {
 		t.Fatal("Worker tests were materialized")
 	}
-	if _, err := os.Stat(filepath.Join(paths.Worker, "web", "dist")); !os.IsNotExist(err) {
-		t.Fatal("dashboard dist was materialized")
+	if _, err := os.Stat(filepath.Join(paths.Worker, "web", "dist", "index.html")); err != nil {
+		t.Fatalf("compiled dashboard was not materialized: %v", err)
+	}
+	assets, err := os.ReadDir(filepath.Join(paths.Worker, "web", "dist", "assets"))
+	if err != nil || len(assets) == 0 {
+		t.Fatalf("compiled dashboard assets missing: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.SharedAssets, "mimir-readme.png")); err != nil {
 		t.Fatalf("shared asset missing: %v", err)
@@ -185,12 +189,20 @@ func TestProductionBundleExcludesUnusedFiles(t *testing.T) {
 	for _, file := range metadata {
 		paths[file.Path] = true
 	}
-	for _, excluded := range []string{"assets/images/mimir-favicon.png", "worker/web/components.json"} {
+	for _, excluded := range []string{"assets/images/mimir-favicon.png", "worker/web/components.json", "worker/web/bun.lock"} {
 		if paths[excluded] {
 			t.Fatalf("unused file %s is embedded", excluded)
 		}
 	}
+	for path := range paths {
+		if strings.HasPrefix(path, "worker/web/src/") || strings.HasPrefix(path, "internal/demoassets/static/") || strings.Contains(path, "dev-fixtures-") {
+			t.Fatalf("non-production dashboard file %s is embedded", path)
+		}
+	}
 	if !paths["worker/worker-configuration.d.ts"] {
 		t.Fatal("worker-configuration.d.ts is not embedded")
+	}
+	if !paths["worker/web/dist/index.html"] {
+		t.Fatal("compiled production dashboard is not embedded")
 	}
 }

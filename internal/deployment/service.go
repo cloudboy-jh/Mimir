@@ -20,6 +20,7 @@ type WorkerInstaller interface {
 	WorkerDir(string) (string, error)
 	MaterializeWorker(string) (string, error)
 	EnsureWorkerDependencies(context.Context, string) error
+	EnsureDashboardDependencies(context.Context, string) error
 	BuildDashboard(context.Context, string) error
 }
 
@@ -31,6 +32,9 @@ func (installService) MaterializeWorker(source string) (string, error) {
 }
 func (installService) EnsureWorkerDependencies(ctx context.Context, dir string) error {
 	return install.EnsureWorkerDependencies(ctx, dir)
+}
+func (installService) EnsureDashboardDependencies(ctx context.Context, dir string) error {
+	return install.EnsureDashboardDependencies(ctx, dir)
 }
 func (installService) BuildDashboard(ctx context.Context, dir string) error {
 	return install.BuildDashboard(ctx, dir)
@@ -88,7 +92,14 @@ func (h Hooks) step(message string) {
 	}
 }
 
-func (s *Service) prepare(ctx context.Context, explicit string, dashboard bool) (string, error) {
+type preparation int
+
+const (
+	prepareLogin preparation = iota
+	prepareDeployment
+)
+
+func (s *Service) prepare(ctx context.Context, explicit string, mode preparation) (string, error) {
 	dir, err := s.Installer.WorkerDir(explicit)
 	if err != nil {
 		return "", err
@@ -97,10 +108,16 @@ func (s *Service) prepare(ctx context.Context, explicit string, dashboard bool) 
 	if err != nil {
 		return "", err
 	}
+	if mode == prepareLogin {
+		return dir, nil
+	}
 	if err := s.Installer.EnsureWorkerDependencies(ctx, dir); err != nil {
 		return "", fmt.Errorf("installing Worker dependencies: %w", err)
 	}
-	if dashboard {
+	if explicit != "" {
+		if err := s.Installer.EnsureDashboardDependencies(ctx, dir); err != nil {
+			return "", fmt.Errorf("installing dashboard dependencies: %w", err)
+		}
 		if err := s.Installer.BuildDashboard(ctx, dir); err != nil {
 			return "", fmt.Errorf("building dashboard: %w", err)
 		}

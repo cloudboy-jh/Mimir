@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -214,12 +215,6 @@ func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
 	if err := os.WriteFile(lock, []byte(`{"lockfileVersion":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "web", "bun.lock"), []byte("lockfile"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	first, err := workerDependencyHash(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -233,6 +228,43 @@ func TestWorkerDependencyHashTracksPackageLock(t *testing.T) {
 	}
 	if first == second {
 		t.Fatal("dependency hash did not change with package lock")
+	}
+}
+
+func TestEnsureWorkerDependenciesDoesNotInvokeBun(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(`{"lockfileVersion":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	npm := filepath.Join(bin, "npm")
+	script := "#!/bin/sh\necho npm \"$@\" >> \"$MIMIR_COMMAND_LOG\"\nmkdir -p node_modules/.bin\ntouch node_modules/.bin/wrangler\n"
+	bun := filepath.Join(bin, "bun")
+	bunScript := "#!/bin/sh\necho bun >> \"$MIMIR_COMMAND_LOG\"\nexit 9\n"
+	if runtime.GOOS == "windows" {
+		npm += ".cmd"
+		script = "@echo off\r\necho npm %*>>\"%MIMIR_COMMAND_LOG%\"\r\nif not exist node_modules\\.bin mkdir node_modules\\.bin\r\ntype nul > node_modules\\.bin\\wrangler.cmd\r\n"
+		bun += ".cmd"
+		bunScript = "@echo off\r\necho bun>>\"%MIMIR_COMMAND_LOG%\"\r\nexit /b 9\r\n"
+	}
+	for path, content := range map[string]string{npm: script, bun: bunScript} {
+		if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MIMIR_COMMAND_LOG", logPath)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for range 2 {
+		if err := ensureWorkerDependencies(context.Background(), dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commands, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(commands)); got != "npm ci --silent" {
+		t.Fatalf("dependency commands = %q", got)
 	}
 }
 

@@ -10,8 +10,8 @@ mimir deploy
 
 The checked-in Wrangler configuration contains placeholder resource IDs and is
 not a supported production deployment path. The CLI materializes the embedded
-Worker/dashboard bundle, preserves owned configuration, builds the dashboard,
-applies D1 migrations, and deploys.
+Worker and precompiled dashboard bundle, preserves owned configuration, applies
+D1 migrations, and deploys.
 
 Deployment verification must use `/whoami` and direct session APIs. Do not call
 paid completion endpoints for a health check.

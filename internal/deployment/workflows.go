@@ -14,7 +14,7 @@ type ProvisionResult struct {
 }
 
 func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (ProvisionResult, error) {
-	dir, err := s.prepare(ctx, opts.WorkerDir, true)
+	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return ProvisionResult{}, err
 	}
@@ -142,7 +142,7 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 type DeployResult struct{ URL string }
 
 func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbackURL string) (DeployResult, error) {
-	dir, err := s.prepare(ctx, opts.WorkerDir, true)
+	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return DeployResult{}, err
 	}
@@ -209,7 +209,7 @@ type LoginResult struct {
 }
 
 func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicitURL string) (LoginResult, error) {
-	dir, err := s.prepare(ctx, opts.WorkerDir, false)
+	dir, err := s.prepare(ctx, opts.WorkerDir, prepareLogin)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -275,7 +275,7 @@ type AccessOptions struct {
 }
 
 func (s *Service) ConfigureAccess(ctx context.Context, opts AccessOptions, hooks Hooks) (AccessOutcome, error) {
-	dir, err := s.prepare(ctx, opts.WorkerDir, false)
+	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return AccessOutcome{}, err
 	}

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "bun ../../scripts/build-production.ts",
     "build:demo": "bun ../../scripts/build-demo.ts",
     "typecheck": "vue-tsc --noEmit"
   },

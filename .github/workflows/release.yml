@@ -42,6 +42,7 @@ jobs:
         working-directory: worker
       - run: npm run build:dashboard && npx wrangler deploy --dry-run
         working-directory: worker
+      - run: bun run check:production-assets
       - run: bun run check:demo-assets
       - run: bun run verify:dashboard-builds
       - run: go test ./...

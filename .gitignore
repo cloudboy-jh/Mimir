@@ -1,5 +1,7 @@
 .mimir/
 dist/
+!worker/web/dist/
+!worker/web/dist/**
 build/
 coverage/
 node_modules/

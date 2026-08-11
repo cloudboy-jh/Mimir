@@ -20,9 +20,9 @@ type embeddedWorkerManifest struct {
 	Files  map[string]string `json:"files"`
 }
 
-// materializeEmbeddedWorker writes only bundled Worker inputs and required
-// shared assets. Generated dependencies, Wrangler state, dashboard output,
-// and unrelated files are left in place.
+// materializeEmbeddedWorker writes only bundled Worker inputs, the compiled
+// dashboard, and required shared assets. Generated dependencies, Wrangler
+// state, and unrelated files are left in place.
 func materializeEmbeddedWorker() (string, error) {
 	paths, err := managedInstallationPaths()
 	if err != nil {

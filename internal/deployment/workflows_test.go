@@ -8,12 +8,28 @@ import (
 	"testing"
 )
 
-type workflowInstaller struct{}
+type workflowInstaller struct{ calls []string }
 
-func (workflowInstaller) WorkerDir(dir string) (string, error)                   { return dir, nil }
-func (workflowInstaller) MaterializeWorker(dir string) (string, error)           { return dir, nil }
-func (workflowInstaller) EnsureWorkerDependencies(context.Context, string) error { return nil }
-func (workflowInstaller) BuildDashboard(context.Context, string) error           { return nil }
+func (i *workflowInstaller) WorkerDir(dir string) (string, error) {
+	i.calls = append(i.calls, "worker-dir")
+	return dir, nil
+}
+func (i *workflowInstaller) MaterializeWorker(dir string) (string, error) {
+	i.calls = append(i.calls, "materialize")
+	return dir, nil
+}
+func (i *workflowInstaller) EnsureWorkerDependencies(context.Context, string) error {
+	i.calls = append(i.calls, "worker-dependencies")
+	return nil
+}
+func (i *workflowInstaller) EnsureDashboardDependencies(context.Context, string) error {
+	i.calls = append(i.calls, "dashboard-dependencies")
+	return nil
+}
+func (i *workflowInstaller) BuildDashboard(context.Context, string) error {
+	i.calls = append(i.calls, "build-dashboard")
+	return nil
+}
 
 type workflowWrangler struct {
 	calls  [][]string
@@ -85,9 +101,35 @@ func TestDeployAndLoginUseDatabaseNameForD1CommandsAndIDForConfig(t *testing.T) 
 	}
 }
 
+func TestPreparationUsesPrebuiltDashboardForPackagedDeployments(t *testing.T) {
+	tests := []struct {
+		name     string
+		explicit string
+		mode     preparation
+		want     []string
+	}{
+		{name: "login", mode: prepareLogin, want: []string{"worker-dir", "materialize"}},
+		{name: "packaged deployment", mode: prepareDeployment, want: []string{"worker-dir", "materialize", "worker-dependencies"}},
+		{name: "development deployment", explicit: "development-worker", mode: prepareDeployment, want: []string{"worker-dir", "materialize", "worker-dependencies", "dashboard-dependencies", "build-dashboard"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			installer := &workflowInstaller{}
+			service := NewService(nil)
+			service.Installer = installer
+			if _, err := service.prepare(context.Background(), test.explicit, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(installer.calls, test.want) {
+				t.Fatalf("preparation calls = %v, want %v", installer.calls, test.want)
+			}
+		})
+	}
+}
+
 func testWorkflowService(wrangler *workflowWrangler) *Service {
 	service := NewService(nil)
-	service.Installer = workflowInstaller{}
+	service.Installer = &workflowInstaller{}
 	service.Wrangler = wrangler
 	service.Hostname = func() (string, error) { return "test-machine", nil }
 	return service

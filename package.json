@@ -10,6 +10,7 @@
     "dev:api": "bun --cwd=worker run dev:api",
     "build": "bun --cwd=worker/web run build",
     "build:demo": "bun --cwd=worker/web run build:demo",
+    "check:production-assets": "bun scripts/check-production-assets.ts",
     "check:demo-assets": "bun scripts/check-demo-assets.ts",
     "verify:dashboard-builds": "bun scripts/verify-dashboard-builds.ts",
     "typecheck": "bun --cwd=worker/web run typecheck",

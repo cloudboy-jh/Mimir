@@ -119,7 +119,10 @@ type setupInstaller struct{}
 func (setupInstaller) WorkerDir(dir string) (string, error)                   { return dir, nil }
 func (setupInstaller) MaterializeWorker(dir string) (string, error)           { return dir, nil }
 func (setupInstaller) EnsureWorkerDependencies(context.Context, string) error { return nil }
-func (setupInstaller) BuildDashboard(context.Context, string) error           { return nil }
+func (setupInstaller) EnsureDashboardDependencies(context.Context, string) error {
+	return nil
+}
+func (setupInstaller) BuildDashboard(context.Context, string) error { return nil }
 
 type setupWrangler struct{}
 

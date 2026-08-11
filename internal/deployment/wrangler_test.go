@@ -245,7 +245,10 @@ type fakeInstaller struct{ dir string }
 func (f fakeInstaller) WorkerDir(string) (string, error)                       { return f.dir, nil }
 func (f fakeInstaller) MaterializeWorker(string) (string, error)               { return f.dir, nil }
 func (f fakeInstaller) EnsureWorkerDependencies(context.Context, string) error { return nil }
-func (f fakeInstaller) BuildDashboard(context.Context, string) error           { return nil }
+func (f fakeInstaller) EnsureDashboardDependencies(context.Context, string) error {
+	return nil
+}
+func (f fakeInstaller) BuildDashboard(context.Context, string) error { return nil }
 
 func TestObserveWranglerCopiesCommandOutputAndErrors(t *testing.T) {
 	base := &fakeWrangler{vars: map[string]string{}}

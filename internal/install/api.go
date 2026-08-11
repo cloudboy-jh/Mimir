@@ -146,6 +146,9 @@ func MaterializeWorker(source string) (string, error) { return materializeWorker
 func EnsureWorkerDependencies(ctx context.Context, dir string) error {
 	return ensureWorkerDependencies(ctx, dir)
 }
+func EnsureDashboardDependencies(ctx context.Context, dir string) error {
+	return ensureDashboardDependencies(ctx, dir)
+}
 func BuildDashboard(ctx context.Context, dir string) error { return buildDashboard(ctx, dir) }
 func ArtifactCounts(report ArtifactReport) map[ArtifactStatus]int {
 	return managedArtifactCounts(report)

@@ -18,5 +18,9 @@ if (!demo.some((path) => path.includes("dev-fixtures-"))) {
 const demoScripts = demo.filter((path) => path.endsWith(".js") && !path.includes("dev-fixtures-"));
 const noticePresent = await Promise.all(demoScripts.map((path) => Bun.file(`${demoRoot}/${path}`).text())).then((contents) => contents.some((content) => content.includes("Sample data.")));
 if (!noticePresent) throw new Error("demo dashboard is missing the sample-data notice");
+const productionIndex = await Bun.file(`${productionRoot}/index.html`).text();
+if (!productionIndex.includes('src="/assets/') || !productionIndex.includes('href="/assets/')) {
+  throw new Error("production dashboard index does not reference compiled assets");
+}
 
 console.log("dashboard build modes verified");

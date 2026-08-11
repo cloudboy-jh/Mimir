@@ -8,16 +8,9 @@ specification rather than an expanding completion log.
 
 ### Binary-first onboarding
 
-Land the remaining onboarding work as two reviewable commits, in order:
+Land the remaining onboarding work as one reviewable commit:
 
-1. **`refactor(deploy): embed production dashboard and reduce prerequisites`**
-   - Build and embed the production dashboard instead of installing dashboard
-     dependencies and compiling it during ordinary setup and deploy.
-   - Remove Bun from binary-based setup and deploy while retaining Node.js and
-     npm for the packaged Wrangler workflow.
-   - Make `mimir login` discover and connect to an existing deployment without
-     installing dashboard or Worker build dependencies.
-2. **`docs(onboarding): rewrite setup and recovery guidance`**
+1. **`docs(onboarding): rewrite setup and recovery guidance`**
    - Lead with the binary installers and local demo, then describe fresh
      deployment and existing-deployment connection separately.
    - Split prerequisites by workflow and document capture fidelity, current

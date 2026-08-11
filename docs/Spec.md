@@ -648,10 +648,12 @@ removed once no process holds them; foreign junk next to the executable is only
 reported by doctor, never deleted.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
-changes after setup. It materializes the packaged Worker, builds the
+changes after setup. It materializes the packaged Worker and precompiled
 dashboard, writes the discovered D1 database ID into the materialized config,
-and runs `wrangler deploy`. The checked-in `wrangler.jsonc` intentionally keeps
-a placeholder database ID; never deploy from a source checkout.
+and runs `wrangler deploy`. Bun is needed only when an explicit `--worker-dir`
+development override must compile dashboard source. The checked-in
+`wrangler.jsonc` intentionally keeps a placeholder database ID; never deploy
+from a source checkout without that override.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
 path and command, and optional session metadata header names. For harnesses

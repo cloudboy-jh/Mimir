@@ -29,13 +29,13 @@ mimir demo
 The demo binds only to loopback, opens in your browser, and requires no
 Cloudflare account, connection, model credentials, Node.js, or Bun.
 
-Setup provisions D1 and R2, builds and deploys the Worker and dashboard, stores
+Setup provisions D1 and R2, deploys the Worker and dashboard, stores
 your OpenRouter key through a masked prompt, and connects the current machine.
 
-Fresh deployment requires a Cloudflare account, an OpenRouter API key, Node.js
-22 with npm, and Bun. Go 1.25+ is required only for source builds and
-contribution. To connect another machine to the same deployment, install the CLI
-there and run `mimir login`.
+Fresh deployment requires a Cloudflare account, an OpenRouter API key, and
+Node.js 22 with npm. Bun and Go 1.25+ are required only for source builds and
+contribution. To connect another machine to the same deployment, install the
+CLI there and run `mimir login`.
 
 ## Dashboard and terminal
 

@@ -234,12 +234,26 @@ func ensureWorkerDependencies(ctx context.Context, dir string) error {
 	markerPath := filepath.Join(dir, ".mimir-dependencies")
 	marker, _ := os.ReadFile(markerPath)
 	wranglerReady := pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler")) || pathExists(filepath.Join(dir, "node_modules", ".bin", "wrangler.cmd"))
-	webReady := pathExists(filepath.Join(dir, "web", "node_modules", ".bin", "vite")) || pathExists(filepath.Join(dir, "web", "node_modules", ".bin", "vite.cmd"))
-	if wranglerReady && webReady && strings.TrimSpace(string(marker)) == hash {
+	if wranglerReady && strings.TrimSpace(string(marker)) == hash {
 		return nil
 	}
 	if _, err := runCommand(ctx, dir, nil, "npm", "ci", "--silent"); err != nil {
 		return err
+	}
+	return os.WriteFile(markerPath, []byte(hash+"\n"), 0o600)
+}
+
+func ensureDashboardDependencies(ctx context.Context, dir string) error {
+	hash, err := dashboardDependencyHash(dir)
+	if err != nil {
+		return err
+	}
+	webDir := filepath.Join(dir, "web")
+	markerPath := filepath.Join(webDir, ".mimir-dependencies")
+	marker, _ := os.ReadFile(markerPath)
+	viteReady := pathExists(filepath.Join(webDir, "node_modules", ".bin", "vite")) || pathExists(filepath.Join(webDir, "node_modules", ".bin", "vite.cmd"))
+	if viteReady && strings.TrimSpace(string(marker)) == hash {
+		return nil
 	}
 	if _, err := runCommand(ctx, filepath.Join(dir, "web"), nil, "bun", "install", "--frozen-lockfile"); err != nil {
 		return err
@@ -257,9 +271,13 @@ func workerDependencyHash(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading Worker package lock: %w", err)
 	}
+	return fmt.Sprintf("%x", sha256.Sum256(lock)), nil
+}
+
+func dashboardDependencyHash(dir string) (string, error) {
 	webLock, err := os.ReadFile(filepath.Join(dir, "web", "bun.lock"))
 	if err != nil {
 		return "", fmt.Errorf("reading dashboard Bun lock: %w", err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(append(lock, webLock...))), nil
+	return fmt.Sprintf("%x", sha256.Sum256(webLock)), nil
 }
