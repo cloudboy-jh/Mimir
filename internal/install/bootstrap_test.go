@@ -66,6 +66,35 @@ func TestBootstrapTemporaryReleaseRecordsReleaseSource(t *testing.T) {
 	}
 }
 
+func TestBootstrapReleaseSourceDoesNotDependOnTemporaryPathDetection(t *testing.T) {
+	isolatedInstallation(t, false)
+	t.Setenv("MIMIR_INSTALL_SOURCE", "release")
+	source := filepath.Join(t.TempDir(), "mimir")
+	if runtime.GOOS == "windows" {
+		source += ".exe"
+	}
+	if err := os.WriteFile(source, []byte("release binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldTemporary := executableIsTemporary
+	executableIsTemporary = func(string) bool { return false }
+	t.Cleanup(func() { executableIsTemporary = oldTemporary })
+	report, err := Install(t.TempDir(), func() (string, error) { return source, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Binary.Source != "release" || report.Binary.Method != "bootstrap-copy" {
+		t.Fatalf("report = %#v", report)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Source != "release" || receipt.Method != "bootstrap-copy" {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+}
+
 func TestResolveInstallDirUsesPersistedGoEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MIMIR_INSTALL_DIR", "")

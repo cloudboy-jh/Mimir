@@ -143,9 +143,13 @@ func bootstrapExecutable(explicitDir string, executable func() (string, error)) 
 	source := "executable"
 	if temporary {
 		source = "go-run"
-		if strings.EqualFold(strings.TrimSpace(os.Getenv("MIMIR_INSTALL_SOURCE")), "release") {
-			source = "release"
-		}
+	}
+	// Release bootstraps always pass an explicit destination and mark their
+	// verified archive source. Do not depend on temp-path detection here:
+	// Windows runners may expose the same temp directory through long and 8.3
+	// aliases, causing a downloaded binary to look non-temporary.
+	if method == "bootstrap-copy" && strings.EqualFold(strings.TrimSpace(os.Getenv("MIMIR_INSTALL_SOURCE")), "release") {
+		source = "release"
 	}
 	targetHash := hashBytes(sourceData)
 	if status == "current" {

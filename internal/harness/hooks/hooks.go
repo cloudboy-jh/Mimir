@@ -28,13 +28,14 @@ import (
 )
 
 const (
-	MaxInputBytes  = 1024 * 1024
-	maxOutboxItems = 1000
-	maxOutboxBytes = 64 * 1024 * 1024
-	maxFlushItems  = 25
-	flushTimeout   = 2 * time.Second
-	stateMaxAge    = 7 * 24 * time.Hour
-	outboxMaxAge   = 30 * 24 * time.Hour
+	MaxInputBytes      = 1024 * 1024
+	maxOutboxItems     = 1000
+	maxOutboxBytes     = 64 * 1024 * 1024
+	maxFlushItems      = 25
+	flushTimeout       = 2 * time.Second
+	storageLockTimeout = 10 * time.Second
+	stateMaxAge        = 7 * 24 * time.Hour
+	outboxMaxAge       = 30 * 24 * time.Hour
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -509,7 +510,7 @@ func (s Service) queue(delivery Delivery) error {
 
 func (s Service) nextOutboxSequence() (uint64, func(), error) {
 	path := filepath.Join(s.Home, "hook-outbox.sequence")
-	release, err := acquireFileLock(path+".lock", 2*time.Second)
+	release, err := acquireFileLock(path+".lock", storageLockTimeout)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -600,7 +601,7 @@ func loadStorageKey(home string) ([]byte, error) {
 	if !os.IsNotExist(err) {
 		return nil, err
 	}
-	release, err := acquireFileLock(path+".lock", 2*time.Second)
+	release, err := acquireFileLock(path+".lock", storageLockTimeout)
 	if err != nil {
 		return nil, err
 	}
