@@ -3,7 +3,10 @@ package bentotui
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -229,5 +232,121 @@ func TestDrawMeasuredDoesNotResetAtSameDimensions(t *testing.T) {
 	}
 	if got := strings.Count(out.String(), "\x1b[2J"); got != 1 {
 		t.Fatalf("clear count %d, want 1", got)
+	}
+}
+
+type blockingByteReader struct {
+	exited chan struct{}
+}
+
+func (r *blockingByteReader) read(ctx context.Context) (byte, error) {
+	<-ctx.Done()
+	select {
+	case <-r.exited:
+	default:
+		close(r.exited)
+	}
+	return 0, ctx.Err()
+}
+
+type lifecycleTestApp struct {
+	updates  chan struct{}
+	rendered chan struct{}
+	mu       sync.Mutex
+	views    int
+}
+
+func (a *lifecycleTestApp) View(Screen) string {
+	a.mu.Lock()
+	a.views++
+	a.mu.Unlock()
+	return "frame"
+}
+func (*lifecycleTestApp) Handle(context.Context, Key) bool { return false }
+func (a *lifecycleTestApp) Updates() <-chan struct{}       { return a.updates }
+func (a *lifecycleTestApp) Rendered() {
+	select {
+	case a.rendered <- struct{}{}:
+	default:
+	}
+}
+
+func TestRunTerminalRestoresLifecycleAndCoalescesUpdates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &blockingByteReader{exited: make(chan struct{})}
+	app := &lifecycleTestApp{updates: make(chan struct{}, 3), rendered: make(chan struct{}, 3)}
+	app.updates <- struct{}{}
+	app.updates <- struct{}{}
+	app.updates <- struct{}{}
+	var out bytes.Buffer
+	var order []string
+	done := make(chan error, 1)
+	go func() {
+		done <- runTerminal(ctx, app, RunOptions{AlternateScreen: true, Mouse: true}, terminalRuntime{
+			out: &out,
+			enter: func() (func(), error) {
+				order = append(order, "enter")
+				return func() { order = append(order, "restore") }, nil
+			},
+			reader: reader,
+			screen: func() Screen { return Screen{Width: 80, Height: 20} },
+			ticks:  make(chan time.Time),
+		})
+	}()
+	for range 2 {
+		select {
+		case <-app.rendered:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for render")
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	select {
+	case <-reader.exited:
+	default:
+		t.Fatal("reader did not exit before run returned")
+	}
+	app.mu.Lock()
+	views := app.views
+	app.mu.Unlock()
+	if views != 2 {
+		t.Fatalf("view count %d, want 2", views)
+	}
+	if len(order) != 2 || order[0] != "enter" || order[1] != "restore" {
+		t.Fatalf("lifecycle order %v", order)
+	}
+	output := out.String()
+	for _, sequence := range []string{"\x1b[?1049h", "\x1b[?7l", "\x1b[?1000h", "\x1b[H\x1b[2J", "\x1b[?1000l", "\x1b[?7h", "\x1b[?1049l"} {
+		if !strings.Contains(output, sequence) {
+			t.Fatalf("lifecycle output missing %q: %q", sequence, output)
+		}
+	}
+}
+
+type errorByteReader struct{ err error }
+
+func (r errorByteReader) read(context.Context) (byte, error) { return 0, r.err }
+
+func TestRunTerminalCleansUpAfterInputError(t *testing.T) {
+	want := io.ErrUnexpectedEOF
+	var out bytes.Buffer
+	restored := false
+	err := runTerminal(context.Background(), &lifecycleTestApp{}, RunOptions{AlternateScreen: true}, terminalRuntime{
+		out: &out,
+		enter: func() (func(), error) {
+			return func() { restored = true }, nil
+		},
+		reader: errorByteReader{err: want},
+		screen: func() Screen { return Screen{Width: 80, Height: 20} },
+		ticks:  make(chan time.Time),
+	})
+	if !errors.Is(err, want) || !restored {
+		t.Fatalf("error=%v restored=%v", err, restored)
+	}
+	if !strings.Contains(out.String(), "\x1b[?1049l") || !strings.Contains(out.String(), "\x1b[?7h") {
+		t.Fatalf("cleanup missing: %q", out.String())
 	}
 }

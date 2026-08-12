@@ -49,8 +49,12 @@ func terminalSize(file *os.File) (int, int) {
 	return int(size.Col), int(size.Row)
 }
 
-func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
-	fd := int(file.Fd())
+type terminalByteReader struct{ file *os.File }
+
+func newTerminalByteReader(file *os.File) *terminalByteReader { return &terminalByteReader{file: file} }
+
+func (r *terminalByteReader) read(ctx context.Context) (byte, error) {
+	fd := int(r.file.Fd())
 	for {
 		select {
 		case <-ctx.Done():

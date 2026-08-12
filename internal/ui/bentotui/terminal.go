@@ -86,20 +86,40 @@ func Run(ctx context.Context, in *os.File, out *os.File, app TerminalApp) error 
 
 // RunWithOptions owns the terminal mode until the app exits.
 func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app TerminalApp, options RunOptions) error {
-	state, err := enterRawMode(in, out)
+	return runTerminal(ctx, app, options, terminalRuntime{
+		out: out,
+		enter: func() (func(), error) {
+			state, err := enterRawMode(in, out)
+			return state.restore, err
+		},
+		reader: newTerminalByteReader(in),
+		screen: func() Screen { return terminalScreen(out) },
+	})
+}
+
+type terminalRuntime struct {
+	out    io.Writer
+	enter  func() (func(), error)
+	reader byteReader
+	screen func() Screen
+	ticks  <-chan time.Time
+}
+
+func runTerminal(ctx context.Context, app TerminalApp, options RunOptions, runtime terminalRuntime) error {
+	restore, err := runtime.enter()
 	if err != nil {
 		return err
 	}
-	defer state.restore()
+	defer restore()
 	start, cleanup := terminalControlSequences(options)
 	if cleanup != "" {
-		defer io.WriteString(out, cleanup)
+		defer io.WriteString(runtime.out, cleanup)
 	}
 	if !options.AlternateScreen {
-		defer io.WriteString(out, "\r\n")
+		defer io.WriteString(runtime.out, "\r\n")
 	}
 	if start != "" {
-		if _, err := io.WriteString(out, start); err != nil {
+		if _, err := io.WriteString(runtime.out, start); err != nil {
 			return err
 		}
 	}
@@ -115,17 +135,22 @@ func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app Terminal
 	readers.Add(1)
 	go func() {
 		defer readers.Done()
-		readKeys(readCtx, in, keys, errs)
+		readKeys(readCtx, runtime.reader, keys, errs)
 	}()
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
+	ticks := runtime.ticks
+	var ticker *time.Ticker
+	if ticks == nil {
+		ticker = time.NewTicker(200 * time.Millisecond)
+		ticks = ticker.C
+		defer ticker.Stop()
+	}
 
-	screen := terminalScreen(out)
+	screen := runtime.screen()
 	var updates <-chan struct{}
 	if live, ok := app.(LiveTerminalApp); ok {
 		updates = live.Updates()
 	}
-	renderer := terminalRenderer{out: out, noClear: !options.AlternateScreen}
+	renderer := terminalRenderer{out: runtime.out, noClear: !options.AlternateScreen}
 	if err := drawApp(&renderer, app, screen); err != nil {
 		return err
 	}
@@ -142,7 +167,10 @@ func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app Terminal
 			if app.Handle(ctx, key) {
 				return nil
 			}
-			if err := drawMeasured(&renderer, app, terminalScreen(out), &screen); err != nil {
+			if quit := drainTerminalEvents(ctx, app, keys, &updates, ticks); quit {
+				return nil
+			}
+			if err := drawMeasured(&renderer, app, runtime.screen(), &screen); err != nil {
 				return err
 			}
 		case _, ok := <-updates:
@@ -150,16 +178,40 @@ func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app Terminal
 				updates = nil
 				continue
 			}
-			if err := drawMeasured(&renderer, app, terminalScreen(out), &screen); err != nil {
+			if quit := drainTerminalEvents(ctx, app, keys, &updates, ticks); quit {
+				return nil
+			}
+			if err := drawMeasured(&renderer, app, runtime.screen(), &screen); err != nil {
 				return err
 			}
-		case <-ticker.C:
-			next := terminalScreen(out)
+		case <-ticks:
+			if quit := drainTerminalEvents(ctx, app, keys, &updates, ticks); quit {
+				return nil
+			}
+			next := runtime.screen()
 			if next != screen {
 				if err := drawMeasured(&renderer, app, next, &screen); err != nil {
 					return err
 				}
 			}
+		}
+	}
+}
+
+func drainTerminalEvents(ctx context.Context, app TerminalApp, keys <-chan Key, updates *<-chan struct{}, ticks <-chan time.Time) bool {
+	for {
+		select {
+		case key := <-keys:
+			if app.Handle(ctx, key) {
+				return true
+			}
+		case _, ok := <-*updates:
+			if !ok {
+				*updates = nil
+			}
+		case <-ticks:
+		default:
+			return false
 		}
 	}
 }
@@ -242,9 +294,13 @@ func draw(out io.Writer, view string) error {
 	return (&terminalRenderer{out: out}).draw(view)
 }
 
-func readKeys(ctx context.Context, in *os.File, keys chan<- Key, errs chan<- error) {
+type byteReader interface {
+	read(context.Context) (byte, error)
+}
+
+func readKeys(ctx context.Context, in byteReader, keys chan<- Key, errs chan<- error) {
 	for {
-		value, err := readTerminalByte(ctx, in)
+		value, err := in.read(ctx)
 		if err != nil {
 			select {
 			case errs <- err:
@@ -264,7 +320,7 @@ func readKeys(ctx context.Context, in *os.File, keys chan<- Key, errs chan<- err
 	}
 }
 
-func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
+func terminalKey(ctx context.Context, in byteReader, value byte) (Key, bool) {
 	switch value {
 	case terminalByteUp:
 		return Key{Kind: KeyUp}, true
@@ -289,18 +345,18 @@ func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
 	case 0x1b:
 		sequenceCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 		defer cancel()
-		first, err := readTerminalByte(sequenceCtx, in)
+		first, err := in.read(sequenceCtx)
 		if err != nil {
 			return Key{Kind: KeyEscape}, true
 		}
-		second, err := readTerminalByte(sequenceCtx, in)
+		second, err := in.read(sequenceCtx)
 		if err != nil || first != '[' {
 			return Key{Kind: KeyEscape}, true
 		}
 		sequence := []byte{first, second}
 		if second == '<' {
 			for len(sequence) < 32 {
-				next, err := readTerminalByte(sequenceCtx, in)
+				next, err := in.read(sequenceCtx)
 				if err != nil {
 					break
 				}
@@ -311,7 +367,7 @@ func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
 			}
 		} else if second == '1' {
 			for len(sequence) < 5 {
-				next, err := readTerminalByte(sequenceCtx, in)
+				next, err := in.read(sequenceCtx)
 				if err != nil {
 					break
 				}
@@ -327,12 +383,12 @@ func terminalKey(ctx context.Context, in *os.File, value byte) (Key, bool) {
 	return Key{}, false
 }
 
-func terminalRune(ctx context.Context, in *os.File, first byte) Key {
+func terminalRune(ctx context.Context, in byteReader, first byte) Key {
 	encoded := []byte{first}
 	runeCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
 	for !utf8.FullRune(encoded) && len(encoded) < utf8.UTFMax {
-		next, err := readTerminalByte(runeCtx, in)
+		next, err := in.read(runeCtx)
 		if err != nil {
 			break
 		}

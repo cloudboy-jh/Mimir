@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -99,7 +100,20 @@ func terminalSize(file *os.File) (int, int) {
 	return int(value.Window.Right-value.Window.Left) + 1, int(value.Window.Bottom-value.Window.Top) + 1
 }
 
-func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
+type terminalByteReader struct {
+	file    *os.File
+	pending []byte
+	utf16   utf16StreamDecoder
+}
+
+func newTerminalByteReader(file *os.File) *terminalByteReader { return &terminalByteReader{file: file} }
+
+func (r *terminalByteReader) read(ctx context.Context) (byte, error) {
+	if len(r.pending) > 0 {
+		value := r.pending[0]
+		r.pending = r.pending[1:]
+		return value, nil
+	}
 	kernel := syscall.NewLazyDLL("kernel32.dll")
 	wait := kernel.NewProc("WaitForSingleObject")
 	readInput := kernel.NewProc("ReadConsoleInputW")
@@ -109,12 +123,12 @@ func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
 			return 0, ctx.Err()
 		default:
 		}
-		result, _, err := wait.Call(file.Fd(), 25)
+		result, _, err := wait.Call(r.file.Fd(), 25)
 		switch result {
 		case 0:
 			var record consoleInputRecord
 			var read uint32
-			ok, _, readErr := readInput.Call(file.Fd(), uintptr(unsafe.Pointer(&record)), 1, uintptr(unsafe.Pointer(&read)))
+			ok, _, readErr := readInput.Call(r.file.Fd(), uintptr(unsafe.Pointer(&record)), 1, uintptr(unsafe.Pointer(&read)))
 			if ok == 0 {
 				return 0, fmt.Errorf("reading console input: %v", readErr)
 			}
@@ -150,8 +164,15 @@ func readTerminalByte(ctx context.Context, file *os.File) (byte, error) {
 				}
 				return terminalByteDown, nil
 			}
-			if key.UnicodeChar > 0 && key.UnicodeChar <= 0xff {
-				return byte(key.UnicodeChar), nil
+			if key.UnicodeChar > 0 {
+				for _, value := range r.utf16.push(key.UnicodeChar) {
+					r.pending = utf8.AppendRune(r.pending, value)
+				}
+				if len(r.pending) > 0 {
+					value := r.pending[0]
+					r.pending = r.pending[1:]
+					return value, nil
+				}
 			}
 		case 0x102:
 			continue

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudboy-jh/mimir/internal/pi"
+	domainsessions "github.com/cloudboy-jh/mimir/internal/sessions"
 	"github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 	sessionui "github.com/cloudboy-jh/mimir/internal/ui/sessions"
@@ -135,6 +136,116 @@ func TestMinimumScreenIsBounded(t *testing.T) {
 		if bentotui.VisibleWidth(line) != 48 {
 			t.Fatalf("line width %d: %q", bentotui.VisibleWidth(line), line)
 		}
+	}
+}
+
+func TestHomeFrameTransitionsPreserveState(t *testing.T) {
+	m := transitionTestModel()
+	m.mu.Lock()
+	wantSelected := m.currentIDLocked()
+	wantQuery := m.query
+	wantInput := m.input
+	wantOverlay := m.overlay
+	wantOverlayItem := m.overlayItem
+	m.mu.Unlock()
+
+	for _, screen := range []bentotui.Screen{
+		{Width: 200, Height: 60},
+		{Width: 120, Height: 40},
+		{Width: 80, Height: 20},
+		{Width: 48, Height: 12},
+		{Width: 80, Height: 20},
+		{Width: 200, Height: 60},
+	} {
+		view := m.View(screen)
+		assertCompleteFrame(t, screen, view)
+		if !strings.Contains(view, "Ask Mimir") || !strings.Contains(view, "session 06") {
+			t.Fatalf("home surfaces missing at %#v:\n%s", screen, view)
+		}
+		m.mu.Lock()
+		if got := m.currentIDLocked(); got != wantSelected {
+			m.mu.Unlock()
+			t.Fatalf("selected session = %q want %q", got, wantSelected)
+		}
+		if m.query != wantQuery || m.input != wantInput || m.overlay != wantOverlay || m.overlayItem != wantOverlayItem {
+			got := []any{m.query, m.input, m.overlay, m.overlayItem}
+			m.mu.Unlock()
+			t.Fatalf("state changed at %#v: %#v", screen, got)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func TestAgentFrameTransitionsPreserveConversationState(t *testing.T) {
+	m := transitionTestModel()
+	m.mu.Lock()
+	m.screen = screenAgent
+	m.focus = focusAgent
+	m.input = "persistent draft"
+	m.streaming = "partial retained reply"
+	m.busy = true
+	m.agentStatus = "Thinking..."
+	for index := 0; index < 80; index++ {
+		m.messages = append(m.messages, chatLine{role: "agent", text: fmt.Sprintf("retained response %02d", index)})
+	}
+	m.agentOffset = 7
+	wantMessages := append([]chatLine(nil), m.messages...)
+	m.mu.Unlock()
+
+	for _, screen := range []bentotui.Screen{{Width: 80, Height: 20}, {Width: 200, Height: 60}, {Width: 48, Height: 12}, {Width: 120, Height: 40}, {Width: 80, Height: 20}} {
+		view := m.View(screen)
+		assertCompleteFrame(t, screen, view)
+		if strings.Contains(view, "recent sessions") {
+			t.Fatalf("agent surface changed at %#v:\n%s", screen, view)
+		}
+		m.mu.Lock()
+		if m.input != "persistent draft" || m.streaming != "partial retained reply" || !m.busy || m.agentOffset != 7 || fmt.Sprint(m.messages) != fmt.Sprint(wantMessages) {
+			got := []any{m.input, m.streaming, m.busy, m.agentOffset, len(m.messages)}
+			m.mu.Unlock()
+			t.Fatalf("agent state changed at %#v: %#v", screen, got)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func transitionTestModel() *Model {
+	items := make([]sessionui.BrowserSession, 12)
+	for index := range items {
+		items[index] = sessionui.BrowserSession{ID: fmt.Sprintf("ses-%02d", index+1), Title: fmt.Sprintf("session %02d resize evidence", index+1), Outcome: "landed", Harness: "opencode", Capture: "2 saved"}
+	}
+	m := &Model{
+		options:      Options{Context: context.Background(), Out: io.Discard},
+		updates:      make(chan struct{}, 1),
+		items:        items,
+		selected:     5,
+		query:        "session",
+		focus:        focusSessions,
+		screen:       screenHome,
+		details:      map[string]domainsessions.Detail{},
+		input:        "retained input",
+		overlay:      overlayCommands,
+		overlayItem:  2,
+		status:       "12 sessions",
+		agentStatus:  "Mimir ready",
+		currentModel: "test/model",
+	}
+	m.applyFilterLocked()
+	return m
+}
+
+func assertCompleteFrame(t *testing.T, screen bentotui.Screen, view string) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) != screen.Height {
+		t.Fatalf("height %d want %d at %#v", len(lines), screen.Height, screen)
+	}
+	for row, line := range lines {
+		if width := bentotui.VisibleWidth(line); width != screen.Width {
+			t.Fatalf("row %d width %d want %d at %#v: %q", row, width, screen.Width, screen, line)
+		}
+	}
+	if !strings.Contains(lines[len(lines)-2], "─") || strings.TrimSpace(lines[len(lines)-1]) == "" {
+		t.Fatalf("divider/footer displaced at %#v:\n%s", screen, view)
 	}
 }
 
