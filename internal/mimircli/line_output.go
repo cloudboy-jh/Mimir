@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 type namedIntegration struct {
@@ -25,7 +26,8 @@ func writeAttention(out io.Writer, artifacts installpkg.ArtifactReport, integrat
 	if len(issues) == 0 && len(failed) == 0 {
 		return nil
 	}
-	if _, err := fmt.Fprintln(out, "Needs attention:"); err != nil {
+	lines := lineoutput.New(out)
+	if err := lines.Warning("Needs attention"); err != nil {
 		return err
 	}
 	for _, artifact := range issues {
@@ -33,7 +35,7 @@ func writeAttention(out io.Writer, artifacts installpkg.ArtifactReport, integrat
 		if detail := strings.TrimSpace(artifact.Detail); detail != "" {
 			line += ": " + detail
 		}
-		if _, err := fmt.Fprintln(out, line); err != nil {
+		if err := lines.Detail(strings.TrimSpace(line)); err != nil {
 			return err
 		}
 	}
@@ -42,7 +44,7 @@ func writeAttention(out io.Writer, artifacts installpkg.ArtifactReport, integrat
 		if detail == "" {
 			detail = integration.state.State
 		}
-		if _, err := fmt.Fprintf(out, "  %s: %s\n", integration.name, detail); err != nil {
+		if err := lines.Detail(fmt.Sprintf("%s: %s", integration.name, detail)); err != nil {
 			return err
 		}
 	}

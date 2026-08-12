@@ -79,12 +79,12 @@ func TestCmdUpdatePrintsOnlyIssuesAndRequiredActions(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	want := "Updating Mimir...\n" +
-		"Mimir updated: 1.0.0 -> 1.1.0\n" +
-		"Needs attention:\n" +
-		"  /claude/hooks.json (conflict): existing hook preserved\n" +
-		"Restart required: OpenCode, Claude Code\n" +
-		"Next: mimir deploy\n"
+	want := "==> Updating Mimir\n" +
+		"OK  Mimir updated: 1.0.0 -> 1.1.0\n" +
+		"WARN Needs attention\n" +
+		"    /claude/hooks.json (conflict): existing hook preserved\n" +
+		"WARN Restart required: OpenCode, Claude Code\n" +
+		"NEXT mimir deploy\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
@@ -111,7 +111,7 @@ func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Updating Mimir...\nMimir is up to date: 1.1.0\n"; output.String() != want {
+	if want := "==> Updating Mimir\nOK  Mimir is up to date: 1.1.0\n"; output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }
@@ -129,7 +129,7 @@ func TestCmdUpdateProgressRemainsLineOriented(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Updating Mimir...\nMimir updated: 1.0.0 -> 1.1.0\nNext: mimir deploy\n"; output.String() != want {
+	if want := "==> Updating Mimir\n==> Checking managed artifacts\n==> Checking latest release\n==> Downloading checksums\n==> Downloading Mimir 1.1.0\n==> Replacing Mimir executable\n==> Refreshing managed integrations\nOK  Mimir updated: 1.0.0 -> 1.1.0\nNEXT mimir deploy\n"; output.String() != want {
 		t.Fatalf("output = %q, want plain line output %q", output.String(), want)
 	}
 }
@@ -169,7 +169,7 @@ func TestCmdUpdateFailureLeavesOneActivityLine(t *testing.T) {
 	if err == nil || err.Error() != "update failed" {
 		t.Fatalf("error = %v", err)
 	}
-	if want := "Updating Mimir...\n"; output.String() != want {
+	if want := "==> Updating Mimir\n"; output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }
@@ -216,10 +216,10 @@ func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
 	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
 		t.Fatal(err)
 	}
-	want := "Updating Mimir...\n" +
-		"Mimir update scheduled: 1.0.0 -> 1.1.0\n" +
-		"blocked by Mimir process(es) 42; the update will apply after they exit\n" +
-		"Next: mimir update --force\n"
+	want := "==> Updating Mimir\n" +
+		"OK  Mimir update scheduled: 1.0.0 -> 1.1.0\n" +
+		"    blocked by Mimir process(es) 42; the update will apply after they exit\n" +
+		"NEXT mimir update --force\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}

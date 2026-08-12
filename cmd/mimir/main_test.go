@@ -47,3 +47,19 @@ func TestRunKeepsGenericJSONErrorEnvelope(t *testing.T) {
 		t.Fatalf("stderr = %q", got)
 	}
 }
+
+func TestRunPrintsStateMessageForHumans(t *testing.T) {
+	original := execute
+	execute = func(context.Context, []string) error {
+		return deployment.StateError{State: "deployment_missing", Message: "no Mimir D1 database found; run mimir setup first"}
+	}
+	t.Cleanup(func() { execute = original })
+
+	var stderr bytes.Buffer
+	if code := run(context.Background(), []string{"deploy"}, &stderr); code != mimircli.ExitRemoteFailure {
+		t.Fatalf("exit code = %d", code)
+	}
+	if got, want := stderr.String(), "no Mimir D1 database found; run mimir setup first\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}

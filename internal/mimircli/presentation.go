@@ -11,6 +11,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/sessions"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 func renderDoctor(out io.Writer, report doctorpkg.Report) error {
@@ -44,7 +45,8 @@ func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
 	case "current":
 		verb = "already installed"
 	}
-	if _, err := fmt.Fprintf(out, "Mimir%s %s: %s\n", version, verb, report.Binary.Path); err != nil {
+	lines := lineoutput.New(out)
+	if err := lines.Success(fmt.Sprintf("Mimir%s %s: %s", version, verb, report.Binary.Path)); err != nil {
 		return err
 	}
 	integrations := []namedIntegration{
@@ -58,8 +60,7 @@ func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
 		return err
 	}
 	if restarts := restartNames(integrations); len(restarts) > 0 {
-		_, err := fmt.Fprintf(out, "Next: restart %s to load Mimir.\n", strings.Join(restarts, ", "))
-		return err
+		return lines.Next(fmt.Sprintf("restart %s to load Mimir", strings.Join(restarts, ", ")))
 	}
 	return nil
 }

@@ -46,14 +46,59 @@ type Service struct {
 	Access    AccessClient
 	Now       func() time.Time
 	Hostname  func() (string, error)
+	LoadState func() (DeploymentState, error)
+	SaveState func(DeploymentState) error
 }
 
 func NewService(httpClient HTTPDoer) *Service {
 	return &Service{
 		Installer: installService{}, Wrangler: Wrangler{},
 		Access: AccessClient{Base: CloudflareAPIBase, HTTPClient: httpClient},
-		Now:    time.Now, Hostname: os.Hostname,
+		Now:    time.Now, Hostname: os.Hostname, LoadState: LoadState, SaveState: SaveState,
 	}
+}
+
+func (s *Service) resolveOptions(opts Options) Options {
+	var state DeploymentState
+	var err error
+	if s.LoadState != nil {
+		state, err = s.LoadState()
+	}
+	if err == nil {
+		if opts.WorkerName == "" {
+			opts.WorkerName = state.WorkerName
+		}
+		if opts.DatabaseName == "" {
+			opts.DatabaseName = state.DatabaseName
+		}
+		if opts.DatabaseID == "" && state.DatabaseName == opts.DatabaseName {
+			opts.DatabaseID = state.DatabaseID
+		}
+		if opts.BucketName == "" {
+			opts.BucketName = state.BucketName
+		}
+	}
+	defaults := DefaultOptions()
+	if opts.WorkerName == "" {
+		opts.WorkerName = defaults.WorkerName
+	}
+	if opts.DatabaseName == "" {
+		opts.DatabaseName = defaults.DatabaseName
+	}
+	if opts.BucketName == "" {
+		opts.BucketName = defaults.BucketName
+	}
+	return opts
+}
+
+func (s *Service) saveResolvedState(opts Options, url string) error {
+	if s.SaveState == nil {
+		return nil
+	}
+	return s.SaveState(DeploymentState{
+		WorkerName: opts.WorkerName, DatabaseName: opts.DatabaseName, DatabaseID: opts.DatabaseID,
+		BucketName: opts.BucketName, URL: strings.TrimRight(url, "/"), VerifiedAt: s.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 type Options struct {

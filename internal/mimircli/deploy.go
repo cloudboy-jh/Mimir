@@ -6,8 +6,7 @@ import (
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 // deploy is the single supported way to ship Worker code and dashboard assets.
@@ -15,7 +14,7 @@ import (
 // D1 database ID into the materialized config, and runs wrangler deploy. An
 // explicit development Worker override builds its dashboard before deployment.
 func deploy(ctx context.Context, args []string, ioctx IO) error {
-	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
+	opts := setupOptions{}
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--json" {
 			opts.JSON = true
@@ -36,42 +35,41 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 		}
 		i++
 	}
-	domainOpts := deployment.DefaultOptions()
-	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName = opts.WorkerDir, opts.WorkerName, opts.DatabaseName
+	domainOpts := deployment.Options{WorkerDir: opts.WorkerDir, WorkerName: opts.WorkerName, DatabaseName: opts.DatabaseName, BucketName: opts.BucketName}
 	domainOpts.Noninteractive = opts.JSON
-	operationCtx, cancelOperation := context.WithCancel(ctx)
-	defer cancelOperation()
+	lines := lineoutput.New(ioctx.Out)
 	if !opts.JSON {
-		opts.Progress = startOperationProgress(operationCtx, ioctx, "Mimir deploy", []string{"Preparing Worker", "Authenticating Cloudflare", "Configuring database", "Applying schema", "Deploying Worker"}, cancelOperation)
-		defer opts.Progress.Stop()
+		_ = lines.Phase("Preparing deployment")
 	}
 	fallback := ""
 	if pointer, err := loadPointer(); err == nil {
 		fallback = pointer.URL
 	}
-	service := deployment.NewService(httpClient)
-	if opts.Progress != nil {
-		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
-	}
-	domainResult, err := service.Deploy(operationCtx, domainOpts, deployment.Hooks{
+	service := newDeploymentService(httpClient)
+	domainResult, err := service.Deploy(ctx, domainOpts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
-		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
+		Step: func(message string) {
+			if !opts.JSON {
+				_ = lines.Phase(message)
+			}
+		},
 		Login: func(ctx context.Context, dir string) error {
-			return opts.Progress.Handoff("Waiting for Cloudflare authentication", func() error {
-				cloudflareLoginNotice(ioctx.Out)
-				return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
-			})
+			if !opts.JSON {
+				_ = lines.Warning("Cloudflare login required; opening Wrangler authentication")
+			}
+			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
 		},
 	}, fallback)
 	if err != nil {
-		opts.Progress.Fail()
 		return err
 	}
 	url := domainResult.URL
-	opts.Progress.Finish("Deployment complete")
-	opts.Progress.Stop()
 	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
-	render := cliui.New(ioctx.Out)
-	human := render.Card("Deployment complete", bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")}, bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "READY", bentotui.VariantSuccess)})
-	return writeSetupResult(ioctx.Out, opts.JSON, result, human)
+	if opts.JSON {
+		return writeSetupResult(ioctx.Out, true, result, "")
+	}
+	if url == "" {
+		return lines.Success("Deployment complete")
+	}
+	return lines.Success("Deployment complete: " + strings.TrimRight(url, "/"))
 }

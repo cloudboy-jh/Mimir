@@ -16,10 +16,10 @@ mimircli -> sessions / operations / receipts -> appframe -> bentotui
 - `mimirtui/` owns the persistent centered home surface, sessions, Ask Mimir
   input and scrollback, command/model/theme overlays, outcome prompts, and the
   private agent-runtime event mapping.
-- `operations/` owns deploy, setup, and login progress, bounded command output,
+- `operations/` owns setup and login progress, bounded command output,
   scrolling, follow mode, cancellation, and the stable line-oriented fallback.
-  Install and update deliberately bypass terminal UI and render stable plain
-  lines from `mimircli`.
+- `lineoutput/` owns semantic append-only output for operational commands.
+  Install, update, and deploy use it instead of a terminal UI.
 - `receipts/` maps canonical session receipts into static CLI and session
   browser models.
 
@@ -33,6 +33,19 @@ Command files choose TUI, static, or JSON mode and map domain events. They must
 not implement borders, dimensions, key handling, wrapping, or ANSI behavior.
 Line-oriented commands may own process-signal cancellation without becoming UI
 surfaces. Domain packages must not import UI packages.
+
+## Operational output contract
+
+- Human output is append-only: one semantic event per line, no redraws, boxes,
+  alternate screen, cursor control, or raw subprocess JSON.
+- `==>` marks phases, `OK` completion, `WARN` actionable warnings, `FAIL`
+  failures, and `NEXT` required commands. The ASCII labels are stable in every
+  terminal; ANSI color is decoration only.
+- Color follows terminal capability detection and honors `NO_COLOR`,
+  `TERM=dumb`, and redirected output.
+- `--json` emits one machine-readable document and no human progress or ANSI.
+- Human errors contain a concise message and command-level remediation. They
+  never expose a JSON error object as prose.
 
 To add a stateful command surface:
 

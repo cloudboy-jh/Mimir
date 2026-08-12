@@ -14,6 +14,7 @@ type ProvisionResult struct {
 }
 
 func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (ProvisionResult, error) {
+	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return ProvisionResult{}, err
@@ -103,6 +104,9 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	if err := s.storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return ProvisionResult{}, err
 	}
+	if err := s.saveResolvedState(opts, url); err != nil {
+		return ProvisionResult{}, fmt.Errorf("saving deployment metadata: %w", err)
+	}
 	access := AccessOutcome{State: "manual"}
 	accessToken := ""
 	if hooks.PromptAccessToken != nil {
@@ -142,6 +146,7 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 type DeployResult struct{ URL string }
 
 func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbackURL string) (DeployResult, error) {
+	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return DeployResult{}, err
@@ -173,6 +178,9 @@ func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbac
 		if err := s.storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 			return DeployResult{}, err
 		}
+	}
+	if err := s.saveResolvedState(opts, url); err != nil {
+		return DeployResult{}, fmt.Errorf("saving deployment metadata: %w", err)
 	}
 	return DeployResult{URL: strings.TrimRight(url, "/")}, nil
 }
@@ -209,6 +217,7 @@ type LoginResult struct {
 }
 
 func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicitURL string) (LoginResult, error) {
+	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareLogin)
 	if err != nil {
 		return LoginResult{}, err
@@ -266,6 +275,9 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 		}
 	}
 	hooks.step("Connection verified")
+	if err := s.saveResolvedState(opts, url); err != nil {
+		return LoginResult{}, fmt.Errorf("saving deployment metadata: %w", err)
+	}
 	return LoginResult{Identity: identity, URL: url, Token: token}, nil
 }
 

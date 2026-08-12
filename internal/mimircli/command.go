@@ -19,6 +19,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/sessions"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 type IO struct {
@@ -272,10 +273,15 @@ func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 	defer guard.Stop()
 	ctx = guard.Context()
 	guard.Commit()
+	lines := lineoutput.New(ioctx.Out)
 	if !jsonOutput {
-		fmt.Fprintln(ioctx.Out, "Installing Mimir...")
+		_ = lines.Phase("Installing Mimir")
 	}
-	report, err := runLifecycleInstall(ctx, binDir, nil)
+	report, err := runLifecycleInstall(ctx, binDir, func(message string) {
+		if !jsonOutput {
+			_ = lines.Phase(message)
+		}
+	})
 	if err != nil {
 		return err
 	}

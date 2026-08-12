@@ -642,6 +642,12 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	receiptChanged := receipt.migrated
+	legacyResults, migratedTargets, legacyChanged, err := migrateLegacySkillAliases(paths, specs, &receipt, write)
+	if err != nil {
+		return report, err
+	}
+	report.Artifacts = append(report.Artifacts, legacyResults...)
+	receiptChanged = receiptChanged || legacyChanged
 	claudeBlocked, claudeResults, err := preflightClaudePluginGroup(paths, specs, receipt, enroll, write, adoptIdentical)
 	if err != nil {
 		return report, err
@@ -666,6 +672,10 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		result, own, changed, err := reconcileManagedArtifact(spec, owned, enroll, write, adoptIdentical)
 		if err != nil {
 			return report, err
+		}
+		if detail, migrated := migratedTargets[spec.target]; migrated && (result.Status == artifactCurrent || result.Status == artifactInstalled || result.Status == artifactUpdated) {
+			result.Status = artifactMigrated
+			result.Detail = detail
 		}
 		report.Artifacts = append(report.Artifacts, result)
 		if own && write {
@@ -745,6 +755,127 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	return report, nil
+}
+
+// migrateLegacySkillAliases is the sole exception to general link rejection.
+// It only touches receipt-owned historical Claude/Hermes aliases that point to
+// the exact corresponding OpenCode skill directory.
+func migrateLegacySkillAliases(paths installationPaths, specs []managedArtifactSpec, receipt *installReceipt, write bool) ([]managedArtifactResult, map[string]string, bool, error) {
+	results := []managedArtifactResult{}
+	migrated := map[string]string{}
+	changed := false
+	for _, owner := range []struct {
+		name, root string
+		current    bool
+	}{{"Claude Code", paths.ClaudeCodeHome, false}, {"Hermes", paths.HermesHome, paths.HermesDetected}} {
+		if owner.root == "" {
+			continue
+		}
+		for _, skill := range []string{"mimir-setup", "mimir-use"} {
+			alias := filepath.Join(owner.root, "skills", skill)
+			expectedDestination := filepath.Join(paths.OpenCodeHome, "skills", skill)
+			expected := map[string]managedArtifactSpec{}
+			for _, spec := range specs {
+				if strings.HasPrefix(spec.source, "skills/"+skill+"/") {
+					expected[spec.source] = spec
+				}
+			}
+			if len(expected) == 0 {
+				continue
+			}
+			ownedTargets := map[string]installReceiptArtifact{}
+			valid := true
+			for target, owned := range receipt.Artifacts {
+				if !pathWithin(alias, target) {
+					continue
+				}
+				if owned.Hash == "" || expected[filepath.ToSlash(filepath.Clean(owned.Source))].source == "" {
+					valid = false
+				}
+				ownedTargets[target] = owned
+			}
+			if len(ownedTargets) != len(expected) {
+				valid = false
+			}
+			for source := range expected {
+				found := false
+				for target, owned := range ownedTargets {
+					rel := strings.TrimPrefix(source, "skills/"+skill+"/")
+					if filepath.ToSlash(filepath.Clean(owned.Source)) == source && sameFilePath(target, filepath.Join(alias, filepath.FromSlash(rel))) {
+						found = true
+					}
+				}
+				valid = valid && found
+			}
+			info, statErr := os.Lstat(alias)
+			if statErr != nil || !managedAliasIsLink(info) {
+				continue
+			}
+			aliasTarget, targetErr := os.Stat(alias)
+			expectedTarget, expectedErr := os.Stat(expectedDestination)
+			if targetErr != nil || expectedErr != nil || !os.SameFile(aliasTarget, expectedTarget) || !valid {
+				continue
+			}
+			if linked, linkErr := pathContainsSymlink(owner.root, filepath.Dir(alias)); linkErr != nil {
+				return results, migrated, changed, linkErr
+			} else if linked || !write {
+				continue
+			}
+			if owner.current {
+				temp, err := os.MkdirTemp(filepath.Dir(alias), ".mimir-skill-*")
+				if err != nil {
+					return results, migrated, changed, err
+				}
+				cleanup := true
+				defer func() {
+					if cleanup {
+						_ = os.RemoveAll(temp)
+					}
+				}()
+				for source, spec := range expected {
+					rel := strings.TrimPrefix(source, "skills/"+skill+"/")
+					target := filepath.Join(temp, filepath.FromSlash(rel))
+					if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+						return results, migrated, changed, err
+					}
+					if err := os.WriteFile(target, spec.data, 0o600); err != nil {
+						return results, migrated, changed, err
+					}
+				}
+				backup := alias + ".mimir-legacy"
+				if _, err := os.Lstat(backup); err == nil || !os.IsNotExist(err) {
+					return results, migrated, changed, fmt.Errorf("legacy skill migration backup already exists: %s", backup)
+				}
+				if err := os.Rename(alias, backup); err != nil {
+					return results, migrated, changed, err
+				}
+				if err := os.Rename(temp, alias); err != nil {
+					_ = os.Rename(backup, alias)
+					return results, migrated, changed, err
+				}
+				cleanup = false
+				if err := os.Remove(backup); err != nil {
+					return results, migrated, changed, err
+				}
+				for source, spec := range expected {
+					rel := strings.TrimPrefix(source, "skills/"+skill+"/")
+					target := filepath.Join(alias, filepath.FromSlash(rel))
+					migrated[target] = "replaced a receipt-owned legacy skill alias with regular managed files"
+					receipt.Artifacts[target] = installReceiptArtifact{Source: source, Hash: spec.hash}
+				}
+			} else {
+				if err := os.Remove(alias); err != nil {
+					return results, migrated, changed, err
+				}
+				for target, owned := range ownedTargets {
+					results = append(results, managedArtifactResult{Path: target, Source: owned.Source, Status: artifactMigrated, ReceiptHash: owned.Hash, Detail: "removed a receipt-owned legacy Claude Code skill alias"})
+					delete(receipt.Artifacts, target)
+				}
+			}
+			changed = true
+		}
+	}
+	return results, migrated, changed, nil
 }
 
 func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifactSpec, receipt installReceipt, enroll, write, adoptIdentical bool) (bool, map[string]managedArtifactResult, error) {

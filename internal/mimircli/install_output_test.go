@@ -29,12 +29,12 @@ func TestCmdInstallOutputIsExactAndHidesSuccessfulArtifacts(t *testing.T) {
 	if err := cmdInstallIO(context.Background(), nil, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	want := "Installing Mimir...\n" +
-		"Mimir 1.2.3 installed: /bin/mimir\n" +
-		"Needs attention:\n" +
-		"  /claude/hooks.json (conflict): existing hook preserved\n" +
-		"  Claude Code: hook conflict\n" +
-		"Next: restart OpenCode to load Mimir.\n"
+	want := "==> Installing Mimir\n" +
+		"OK  Mimir 1.2.3 installed: /bin/mimir\n" +
+		"WARN Needs attention\n" +
+		"    /claude/hooks.json (conflict): existing hook preserved\n" +
+		"    Claude Code: hook conflict\n" +
+		"NEXT restart OpenCode to load Mimir\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
@@ -53,7 +53,7 @@ func TestCmdInstallCurrentOutputIsExact(t *testing.T) {
 	if err := cmdInstallIO(context.Background(), nil, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Installing Mimir...\nMimir 1.2.3 already installed: /bin/mimir\n"; output.String() != want {
+	if want := "==> Installing Mimir\nOK  Mimir 1.2.3 already installed: /bin/mimir\n"; output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }
@@ -69,7 +69,7 @@ func TestCmdInstallFailureLeavesOneActivityLine(t *testing.T) {
 	if err == nil || err.Error() != "install failed" {
 		t.Fatalf("error = %v", err)
 	}
-	if want := "Installing Mimir...\n"; output.String() != want {
+	if want := "==> Installing Mimir\n"; output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }

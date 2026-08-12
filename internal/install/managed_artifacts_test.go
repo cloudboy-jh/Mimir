@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -81,6 +82,94 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	}
 	if lines := jsonLines(t, paths.Log); lines != 2 {
 		t.Fatalf("install log lines = %d, want 2", lines)
+	}
+}
+
+func TestSyncManagedArtifactsMigratesReceiptOwnedLegacySkillAliases(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	source := "skills/mimir-use/SKILL.md"
+	data, err := mimirassets.Bundle.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openCodeSkill := filepath.Join(paths.OpenCodeHome, "skills", "mimir-use")
+	if err := os.MkdirAll(openCodeSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(openCodeSkill, "SKILL.md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hermesAlias := filepath.Join(paths.HermesHome, "skills", "mimir-use")
+	claudeAlias := filepath.Join(paths.ClaudeCodeHome, "skills", "mimir-use")
+	createDirectoryAlias(t, openCodeSkill, hermesAlias)
+	createDirectoryAlias(t, openCodeSkill, claudeAlias)
+	receipt := newInstallReceipt()
+	for _, alias := range []string{hermesAlias, claudeAlias} {
+		receipt.Artifacts[filepath.Join(alias, "SKILL.md")] = installReceiptArtifact{Source: source, Hash: hashBytes(data)}
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := syncManagedArtifacts(false, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hermesInfo, err := os.Lstat(hermesAlias)
+	if err != nil || !hermesInfo.IsDir() || managedAliasIsLink(hermesInfo) {
+		t.Fatalf("Hermes alias was not replaced with a regular directory: %v, %v", hermesInfo, err)
+	}
+	if _, err := os.Lstat(claudeAlias); !os.IsNotExist(err) {
+		t.Fatalf("Claude alias was not removed: %v", err)
+	}
+	if got := mustReadFile(t, filepath.Join(openCodeSkill, "SKILL.md")); !bytes.Equal(got, data) {
+		t.Fatal("OpenCode skill destination was changed")
+	}
+	if got := resultForPath(t, report, filepath.Join(hermesAlias, "SKILL.md")).Status; got != artifactMigrated {
+		t.Fatalf("Hermes migration status = %s", got)
+	}
+	updated, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Artifacts[filepath.Join(hermesAlias, "SKILL.md")].Hash != hashBytes(data) {
+		t.Fatal("Hermes regular skill ownership was not retained")
+	}
+	if _, exists := updated.Artifacts[filepath.Join(claudeAlias, "SKILL.md")]; exists {
+		t.Fatal("obsolete Claude alias ownership was retained")
+	}
+}
+
+func TestSyncManagedArtifactsPreservesUnownedLegacySkillAlias(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	destination := filepath.Join(paths.OpenCodeHome, "skills", "mimir-use")
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(paths.HermesHome, "skills", "mimir-use")
+	createDirectoryAlias(t, destination, alias)
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(alias); err != nil {
+		t.Fatalf("unowned alias was removed: %v", err)
+	}
+}
+
+func createDirectoryAlias(t *testing.T, target, alias string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(alias), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		command := exec.Command("cmd.exe", "/c", "mklink", "/J", alias, target)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Skipf("directory junction unavailable: %v: %s", err, output)
+		}
+		return
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("directory symlink unavailable: %v", err)
 	}
 }
 

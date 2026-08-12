@@ -10,6 +10,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 var runLifecycleUpdate = func(ctx context.Context, check, force bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -41,17 +42,24 @@ func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
 		return fmt.Errorf("--force cannot be combined with --check")
 	}
 	var guard *interruptGuard
+	lines := lineoutput.New(ioctx.Out)
 	if !check {
 		guard = startInterruptGuard(ctx)
 		defer guard.Stop()
 		ctx = guard.Context()
 		if !jsonOutput {
-			fmt.Fprintln(ioctx.Out, "Updating Mimir...")
+			_ = lines.Phase("Updating Mimir")
 		}
 	}
+	lastProgress := ""
 	progress := func(message string) {
 		if guard != nil && message == "Replacing Mimir executable" {
 			guard.Commit()
+		}
+		message = strings.TrimSpace(message)
+		if !jsonOutput && message != "" && message != lastProgress {
+			_ = lines.Phase(message)
+			lastProgress = message
 		}
 	}
 	report, err := runLifecycleUpdate(ctx, check, force, progress)
@@ -76,11 +84,12 @@ func renderUpdate(out io.Writer, report lifecyclepkg.UpdateReport) error {
 	case "scheduled":
 		message = fmt.Sprintf("Mimir update scheduled: %s -> %s", report.Binary.Current, report.Binary.Latest)
 	}
-	if _, err := fmt.Fprintln(out, message); err != nil {
+	lines := lineoutput.New(out)
+	if err := lines.Success(message); err != nil {
 		return err
 	}
 	if detail := strings.TrimSpace(report.Binary.Detail); detail != "" {
-		if _, err := fmt.Fprintln(out, detail); err != nil {
+		if err := lines.Detail(detail); err != nil {
 			return err
 		}
 	}
@@ -95,17 +104,15 @@ func renderUpdate(out io.Writer, report lifecyclepkg.UpdateReport) error {
 		return err
 	}
 	if restarts := updateRestartNames(report.Artifacts, report.Integrations); len(restarts) > 0 {
-		if _, err := fmt.Fprintf(out, "Restart required: %s\n", strings.Join(restarts, ", ")); err != nil {
+		if err := lines.Warning("Restart required: " + strings.Join(restarts, ", ")); err != nil {
 			return err
 		}
 	}
 	switch report.Binary.Status {
 	case "scheduled":
-		_, err := fmt.Fprintln(out, "Next: mimir update --force")
-		return err
+		return lines.Next("mimir update --force")
 	case "updated":
-		_, err := fmt.Fprintln(out, "Next: mimir deploy")
-		return err
+		return lines.Next("mimir deploy")
 	}
 	return nil
 }

@@ -44,7 +44,12 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 			_ = json.NewEncoder(stderr).Encode(map[string]any{"error": err.Error(), "exit_code": code})
 		}
 	} else {
-		fmt.Fprintln(stderr, err)
+		var state deployment.StateError
+		if errors.As(err, &state) {
+			fmt.Fprintln(stderr, state.Message)
+		} else {
+			fmt.Fprintln(stderr, err)
+		}
 	}
 	return code
 }

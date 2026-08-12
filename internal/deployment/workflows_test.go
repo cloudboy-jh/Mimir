@@ -147,7 +147,42 @@ func testWorkflowService(wrangler *workflowWrangler) *Service {
 	service.Installer = &workflowInstaller{}
 	service.Wrangler = wrangler
 	service.Hostname = func() (string, error) { return "test-machine", nil }
+	service.LoadState = func() (DeploymentState, error) { return DeploymentState{}, nil }
+	service.SaveState = func(DeploymentState) error { return nil }
 	return service
+}
+
+func TestDeployReusesVerifiedDeploymentState(t *testing.T) {
+	wrangler := &workflowWrangler{}
+	service := testWorkflowService(wrangler)
+	service.LoadState = func() (DeploymentState, error) {
+		return DeploymentState{Schema: 1, WorkerName: "custom-worker", DatabaseName: "custom-db", DatabaseID: "database-uuid", BucketName: "custom-logs"}, nil
+	}
+	var saved DeploymentState
+	service.SaveState = func(state DeploymentState) error { saved = state; return nil }
+	opts := Options{WorkerDir: t.TempDir()}
+	if _, err := service.Deploy(context.Background(), opts, Hooks{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if wrangler.config.WorkerName != "custom-worker" || wrangler.config.DatabaseName != "custom-db" || wrangler.config.DatabaseID != "database-uuid" {
+		t.Fatalf("config = %#v", wrangler.config)
+	}
+	if saved.DatabaseID != "database-uuid" || saved.URL != "https://mimir.example.workers.dev" {
+		t.Fatalf("saved = %#v", saved)
+	}
+}
+
+func TestDeployExplicitDatabaseNameDoesNotReuseDifferentCachedID(t *testing.T) {
+	wrangler := &workflowWrangler{}
+	service := testWorkflowService(wrangler)
+	service.LoadState = func() (DeploymentState, error) {
+		return DeploymentState{Schema: 1, DatabaseName: "old-db", DatabaseID: "old-id"}, nil
+	}
+	opts := Options{WorkerDir: t.TempDir(), DatabaseName: "new-db"}
+	_, err := service.Deploy(context.Background(), opts, Hooks{}, "")
+	if err == nil {
+		t.Fatal("missing explicit database was accepted from unrelated cached state")
+	}
 }
 
 func assertD1Targets(t *testing.T, calls [][]string, databaseName string) {
