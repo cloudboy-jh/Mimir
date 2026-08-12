@@ -10,6 +10,22 @@ OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
 retention cleanup are separate follow-ups because they change setup or session
 lifecycle contracts.
 
+### Release hold: candidate validation
+
+Installed-binary transcript fixtures, account-bound resource discovery,
+receipt-safe junction migration, isolated CI homes, the full release matrix,
+immutable candidates, protected evidence approval, and fail-closed tag
+promotion are implemented. Do not tag the next release until the remaining
+operator evidence is captured from the final committed candidate:
+
+- Validate human and `--json` install, update, doctor, and deploy transcripts
+  against a real Cloudflare account without calling a paid model endpoint.
+- Exercise clean and existing Mimir homes, custom resource names, stale cached
+  metadata, a failed deploy and successful recovery, and a clean owned-artifact
+  doctor result.
+- Submit transcript hashes through the protected `release` environment as
+  documented in [`release-evidence.md`](release-evidence.md).
+
 ### Adaptive full-terminal Mimir TUI
 
 The adaptive AltScreen transition, measured full-terminal layout, centered
@@ -17,8 +33,9 @@ sessions-and-Ask-Mimir home surface, state-preserving reload behavior, and
 small-terminal fallback are implemented. Ask Mimir now opens a dedicated
 conversation view, carries selected-session context into prompts, streams Pi
 events, exposes Mimir tools and model selection, and leaves session browsing
-available when Pi cannot start. The remaining work is terminal hardening and
-cross-platform validation.
+available when Pi cannot start. Deterministic transitions, lifecycle cleanup,
+redraw coalescing, and Windows Unicode input are covered. The remaining work is
+manual cross-platform validation.
 
 The compact `80x20` constraint remains appropriate for temporary setup, deploy,
 login, and lightweight session-browser surfaces, but it wastes space and
@@ -28,28 +45,12 @@ and AltScreen lifecycle.
 
 Remaining work:
 
-1. **Finish deterministic resize coverage.**
-   - Existing tests verify bounded output at `48x12`, `80x20`, `120x40`, and
-     `200x60`; add complete-frame assertions at each size.
-   - Exercise large-to-small, small-to-large, supported-to-unsupported-to-supported,
-     and home-to-fullscreen-to-resized-to-home transitions.
-   - Verify no stale lines, wrapping, broken borders, or displaced footer.
-   - Verify selection, filters, input, scrolling, overlays, and streaming
-     responses survive every transition.
-   - Add terminal transcript tests for AltScreen entry/exit, home, clear,
-     wrapping disable/restore, mouse cleanup, and failure cleanup.
-2. **Harden the resize/render cycle.**
-   - Coalesce rapid dimension changes so resize, API updates, and Pi events do
-     not cause redundant redraw storms.
-   - On a size change, invalidate the old frame, move home, clear AltScreen, and
-     render one complete frame using only the new dimensions.
-   - Disable automatic terminal wrapping while active and restore it on exit.
-3. **Complete manual terminal validation.**
+1. **Complete manual terminal validation.**
    - Run the full Go tests, vet, and CLI build.
    - Manually resize Windows Terminal horizontally and vertically while
      browsing, filtering, inspecting detail, typing, streaming, and toggling
      fullscreen.
-4. **Keep the terminal contract aligned.**
+2. **Keep the terminal contract aligned.**
    - `feat.md`, `internal/ui/README.md`, the README, and CLI docs now describe
      `mimir tui` as the adaptive AltScreen exception to compact command surfaces.
    - Update those documents only when behavior changes.

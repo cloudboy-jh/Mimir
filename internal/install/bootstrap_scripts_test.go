@@ -118,9 +118,57 @@ func TestReleaseBootstrapScripts(t *testing.T) {
 				t.Fatalf("release source missing from receipt:\n%s", receiptData)
 			}
 			if test.name == "latest stable" {
+				testInstalledLifecycleTranscripts(t, installed, installDir)
 				testInstalledDeployTranscripts(t, installed, paths)
 			}
 		})
+	}
+}
+
+func testInstalledLifecycleTranscripts(t *testing.T, installed, installDir string) {
+	t.Helper()
+	humanInstall := runInstalledCommand(t, installed, "install", "--bin-dir", installDir)
+	if humanInstall.exitCode != 0 || humanInstall.stderr != "" || !strings.Contains(humanInstall.stdout, "==> Installing Mimir") || !strings.Contains(humanInstall.stdout, "already installed") {
+		t.Fatalf("human install = %#v", humanInstall)
+	}
+	jsonInstall := runInstalledCommand(t, installed, "install", "--bin-dir", installDir, "--json")
+	assertSingleJSONTranscript(t, "json install", jsonInstall, false)
+
+	humanUpdate := runInstalledCommand(t, installed, "update", "--check")
+	if humanUpdate.exitCode != 0 || humanUpdate.stderr != "" || !strings.Contains(humanUpdate.stdout, "Mimir update available") {
+		t.Fatalf("human update = %#v", humanUpdate)
+	}
+	jsonUpdate := runInstalledCommand(t, installed, "update", "--check", "--json")
+	assertSingleJSONTranscript(t, "json update", jsonUpdate, false)
+
+	humanDoctor := runInstalledCommand(t, installed, "doctor")
+	if humanDoctor.exitCode != 0 || humanDoctor.stderr != "" || !strings.Contains(humanDoctor.stdout, "Mimir doctor") {
+		t.Fatalf("human doctor = %#v", humanDoctor)
+	}
+	jsonDoctor := runInstalledCommand(t, installed, "doctor", "--json")
+	assertSingleJSONTranscript(t, "json doctor", jsonDoctor, false)
+}
+
+func assertSingleJSONTranscript(t *testing.T, label string, transcript commandTranscript, fromStderr bool) {
+	t.Helper()
+	if transcript.exitCode != 0 {
+		t.Fatalf("%s exit = %#v", label, transcript)
+	}
+	content := transcript.stdout
+	other := transcript.stderr
+	if fromStderr {
+		content, other = transcript.stderr, transcript.stdout
+	}
+	if other != "" {
+		t.Fatalf("%s contaminated secondary stream: %#v", label, transcript)
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil || len(document) == 0 {
+		t.Fatalf("%s document=%#v error=%v", label, document, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		t.Fatalf("%s contains extra output: %v", label, err)
 	}
 }
 

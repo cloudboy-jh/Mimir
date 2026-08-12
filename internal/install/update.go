@@ -304,7 +304,11 @@ func releaseAssetName(version, goos, goarch string) string {
 }
 
 func fetchLatestRelease(ctx context.Context) (githubRelease, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", githubAPIBase+"/repos/"+updateRepo+"/releases/latest", nil)
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("MIMIR_GITHUB_API_URL")), "/")
+	if base == "" {
+		base = githubAPIBase
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/repos/"+updateRepo+"/releases/latest", nil)
 	if err != nil {
 		return githubRelease{}, err
 	}
