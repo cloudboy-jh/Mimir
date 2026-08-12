@@ -6,7 +6,6 @@ builds:
   - id: mimir
     main: ./cmd/mimir
     binary: mimir
-    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     ldflags:

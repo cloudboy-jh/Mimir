@@ -10,22 +10,6 @@ OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
 retention cleanup are separate follow-ups because they change setup or session
 lifecycle contracts.
 
-### Release hold: candidate validation
-
-Installed-binary transcript fixtures, account-bound resource discovery,
-receipt-safe junction migration, isolated CI homes, the full release matrix,
-immutable candidates, protected evidence approval, and fail-closed tag
-promotion are implemented. Do not tag the next release until the remaining
-operator evidence is captured from the final committed candidate:
-
-- Validate human and `--json` install, update, doctor, and deploy transcripts
-  against a real Cloudflare account without calling a paid model endpoint.
-- Exercise clean and existing Mimir homes, custom resource names, stale cached
-  metadata, a failed deploy and successful recovery, and a clean owned-artifact
-  doctor result.
-- Submit transcript hashes through the protected `release` environment as
-  documented in [`release-evidence.md`](release-evidence.md).
-
 ### Adaptive full-terminal Mimir TUI
 
 The adaptive AltScreen transition, measured full-terminal layout, centered
