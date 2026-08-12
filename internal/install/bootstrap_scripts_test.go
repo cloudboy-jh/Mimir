@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -114,7 +117,143 @@ func TestReleaseBootstrapScripts(t *testing.T) {
 			if !bytes.Contains(receiptData, []byte(`"source": "release"`)) {
 				t.Fatalf("release source missing from receipt:\n%s", receiptData)
 			}
+			if test.name == "latest stable" {
+				testInstalledDeployTranscripts(t, installed, paths)
+			}
 		})
+	}
+}
+
+type commandTranscript struct {
+	stdout, stderr string
+	exitCode       int
+}
+
+func testInstalledDeployTranscripts(t *testing.T, installed string, paths installationPaths) {
+	t.Helper()
+	worker, err := WorkerDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(worker, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(t.TempDir(), "deploy-count")
+	t.Setenv("MIMIR_FAKE_DEPLOY_COUNT", counter)
+	writeFakeTranscriptWrangler(t, binDir)
+	hash, err := workerDependencyHash(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worker, ".mimir-dependencies"), []byte(hash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	failure := runInstalledCommand(t, installed, "deploy")
+	if failure.exitCode != 4 || !strings.Contains(failure.stdout, "==> Deployment resources selected") || !strings.Contains(failure.stderr, "fixture wrangler: deploy failed") {
+		t.Fatalf("human failure = %#v", failure)
+	}
+	if _, err := os.Stat(filepath.Join(paths.MimirHome, "cloudflare-deployment.json")); !os.IsNotExist(err) {
+		t.Fatalf("failed deploy saved state: %v", err)
+	}
+	success := runInstalledCommand(t, installed, "deploy")
+	if success.exitCode != 0 || success.stderr != "" || !strings.Contains(success.stdout, "OK  Deployment complete: https://mimir.example.workers.dev") {
+		t.Fatalf("human success = %#v", success)
+	}
+	state, err := os.ReadFile(filepath.Join(paths.MimirHome, "cloudflare-deployment.json"))
+	if err != nil || !bytes.Contains(state, []byte(`"account_id":"account-1"`)) || !bytes.Contains(state, []byte(`"database_id":"123e4567-e89b-12d3-a456-426614174000"`)) {
+		t.Fatalf("deployment state error=%v data=%s", err, state)
+	}
+
+	if err := os.Remove(counter); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	jsonFailure := runInstalledCommand(t, installed, "deploy", "--json")
+	if jsonFailure.exitCode != 4 || jsonFailure.stdout != "" {
+		t.Fatalf("json failure = %#v", jsonFailure)
+	}
+	var failureDocument struct {
+		Error    string `json:"error"`
+		ExitCode int    `json:"exit_code"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(jsonFailure.stderr))
+	if err := decoder.Decode(&failureDocument); err != nil || failureDocument.ExitCode != 4 || !strings.Contains(failureDocument.Error, "fixture wrangler: deploy failed") {
+		t.Fatalf("json failure document=%#v error=%v", failureDocument, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		t.Fatalf("json failure contains extra output: %v", err)
+	}
+	jsonSuccess := runInstalledCommand(t, installed, "deploy", "--json")
+	if jsonSuccess.exitCode != 0 || jsonSuccess.stderr != "" {
+		t.Fatalf("json success = %#v", jsonSuccess)
+	}
+	var successDocument map[string]any
+	decoder = json.NewDecoder(strings.NewReader(jsonSuccess.stdout))
+	if err := decoder.Decode(&successDocument); err != nil || successDocument["state"] != "deployed" || successDocument["url"] != "https://mimir.example.workers.dev" {
+		t.Fatalf("json success document=%#v error=%v", successDocument, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		t.Fatalf("json success contains extra output: %v", err)
+	}
+}
+
+func runInstalledCommand(t *testing.T, installed string, args ...string) commandTranscript {
+	t.Helper()
+	command := exec.Command(installed, args...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	exitCode := 0
+	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+		exitCode = exit.ExitCode()
+	}
+	return commandTranscript{stdout: stdout.String(), stderr: stderr.String(), exitCode: exitCode}
+}
+
+func writeFakeTranscriptWrangler(t *testing.T, binDir string) {
+	t.Helper()
+	path := filepath.Join(binDir, "wrangler")
+	script := `#!/bin/sh
+if [ "$1" = "whoami" ] && [ "$2" = "--json" ]; then printf '%s' '{"loggedIn":true,"accounts":[{"id":"account-1","name":"Fixture"}]}'; exit 0; fi
+if [ "$1" = "whoami" ]; then exit 0; fi
+if [ "$1" = "d1" ] && [ "$2" = "list" ]; then printf '%s' '[{"uuid":"123e4567-e89b-12d3-a456-426614174000","name":"mimir"}]'; exit 0; fi
+if [ "$1" = "d1" ]; then exit 0; fi
+if [ "$1" = "deploy" ]; then
+  count=0; [ -f "$MIMIR_FAKE_DEPLOY_COUNT" ] && count=$(cat "$MIMIR_FAKE_DEPLOY_COUNT")
+  count=$((count + 1)); printf '%s' "$count" > "$MIMIR_FAKE_DEPLOY_COUNT"
+  if [ "$count" = "1" ]; then printf '%s' 'fixture wrangler: deploy failed' >&2; exit 17; fi
+  printf '%s' 'Deployed to https://mimir.example.workers.dev'; exit 0
+fi
+exit 99
+`
+	if runtime.GOOS == "windows" {
+		path += ".cmd"
+		script = "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0wrangler.ps1\" %*\r\nexit /b %errorlevel%\r\n"
+		powerShell := `param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)
+if ($Rest[0] -eq 'whoami' -and $Rest[1] -eq '--json') { [Console]::Out.Write('{"loggedIn":true,"accounts":[{"id":"account-1","name":"Fixture"}]}'); exit 0 }
+if ($Rest[0] -eq 'whoami') { exit 0 }
+if ($Rest[0] -eq 'd1' -and $Rest[1] -eq 'list') { [Console]::Out.Write('[{"uuid":"123e4567-e89b-12d3-a456-426614174000","name":"mimir"}]'); exit 0 }
+if ($Rest[0] -eq 'd1') { exit 0 }
+if ($Rest[0] -eq 'deploy') {
+  if (-not [IO.File]::Exists($env:MIMIR_FAKE_DEPLOY_COUNT)) {
+    [IO.File]::WriteAllText($env:MIMIR_FAKE_DEPLOY_COUNT, 'failed')
+    [Console]::Error.Write('fixture wrangler: deploy failed'); exit 17
+  }
+  [Console]::Out.Write('Deployed to https://mimir.example.workers.dev'); exit 0
+}
+exit 99
+`
+		if err := os.WriteFile(filepath.Join(binDir, "wrangler.ps1"), []byte(powerShell), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

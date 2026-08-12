@@ -15,7 +15,9 @@
     "verify:dashboard-builds": "bun scripts/verify-dashboard-builds.ts",
     "typecheck": "bun --cwd=worker/web run typecheck",
     "typecheck:plugins": "tsc -p plugins/opencode/tsconfig.json",
-    "test:plugins": "bun test plugins/opencode/"
+    "test:plugins": "bun test plugins/opencode/",
+    "test:release-evidence": "bun test scripts/release-evidence.test.ts",
+    "release:evidence": "bun scripts/release-evidence.ts"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "1.4.6",
