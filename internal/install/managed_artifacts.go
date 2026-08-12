@@ -784,6 +784,7 @@ func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifact
 
 	results := make(map[string]managedArtifactResult, len(group))
 	unsafe := ownershipUnsafe
+	unsafeDetail := ""
 	projectedOwners := 0
 	for _, spec := range group {
 		owned := receipt.Artifacts[spec.target]
@@ -793,6 +794,9 @@ func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifact
 		}
 		results[spec.target] = result
 		unsafe = unsafe || !safe
+		if !safe && unsafeDetail == "" {
+			unsafeDetail = result.Detail
+		}
 		if len(owners[spec.source]) > 0 || write && (result.Status == artifactOutdated || result.Status == artifactIdentical && adoptIdentical || result.Status == artifactMissing && enroll) {
 			projectedOwners++
 		}
@@ -820,6 +824,8 @@ func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifact
 	detail := "Claude Code plugin group was preserved because a member is unsafe"
 	if ownershipUnsafe {
 		detail = "Claude Code plugin group was preserved because receipt ownership is incomplete or ambiguous"
+	} else if unsafeDetail != "" {
+		detail += ": " + unsafeDetail
 	}
 	for _, spec := range group {
 		result := results[spec.target]
@@ -840,13 +846,26 @@ func preflightManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 		result.Status = artifactSymlinkRejected
 		return result, false, nil
 	}
+	if blocker, err := nonDirectoryAncestor(spec.root, spec.target); err != nil {
+		return result, false, err
+	} else if blocker != "" {
+		result.Status = artifactConflict
+		result.Detail = "parent path is not a directory: " + blocker
+		return result, false, nil
+	}
 	info, err := os.Lstat(spec.target)
 	if os.IsNotExist(err) {
 		result.Status = artifactMissing
 		return result, true, nil
 	}
 	if err != nil {
-		return result, false, err
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, nil
+		}
 	}
 	if !info.Mode().IsRegular() {
 		result.Status = artifactConflict
@@ -854,7 +873,13 @@ func preflightManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 	}
 	data, err := os.ReadFile(spec.target)
 	if err != nil {
-		return result, false, err
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, nil
+		}
 	}
 	result.Hash = hashBytes(data)
 	if owned.Hash != "" {
@@ -1017,6 +1042,13 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 		result.Detail = "refusing to manage a symlinked path"
 		return result, false, false, nil
 	}
+	if blocker, err := nonDirectoryAncestor(spec.root, spec.target); err != nil {
+		return result, false, false, err
+	} else if blocker != "" {
+		result.Status = artifactConflict
+		result.Detail = "parent path is not a directory: " + blocker
+		return result, false, false, nil
+	}
 	info, err := os.Lstat(spec.target)
 	if os.IsNotExist(err) {
 		if !enroll && owned.Hash == "" {
@@ -1024,15 +1056,25 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 			return result, false, false, nil
 		}
 		if write {
-			if err := writeFileAtomic(spec.root, spec.target, spec.data); err != nil {
+			if blocker, err := writeManagedArtifact(spec); err != nil {
 				return result, false, false, err
+			} else if blocker != "" {
+				result.Status = artifactConflict
+				result.Detail = "parent path is not a directory: " + blocker
+				return result, false, false, nil
 			}
 		}
 		result.Status, result.Hash = artifactInstalled, spec.hash
 		return result, true, true, nil
 	}
 	if err != nil {
-		return result, false, false, err
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, false, nil
+		}
 	}
 	if !info.Mode().IsRegular() {
 		result.Status = artifactConflict
@@ -1041,7 +1083,13 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 	}
 	data, err := os.ReadFile(spec.target)
 	if err != nil {
-		return result, false, false, err
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, false, nil
+		}
 	}
 	currentHash := hashBytes(data)
 	result.Hash = currentHash
@@ -1064,8 +1112,12 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 				result.Detail = "known legacy Mimir artifact is ready to migrate"
 				return result, false, false, nil
 			}
-			if err := writeFileAtomic(spec.root, spec.target, spec.data); err != nil {
+			if blocker, err := writeManagedArtifact(spec); err != nil {
 				return result, false, false, err
+			} else if blocker != "" {
+				result.Status = artifactConflict
+				result.Detail = "parent path is not a directory: " + blocker
+				return result, false, false, nil
 			}
 			result.Status, result.Hash = artifactMigrated, spec.hash
 			result.Detail = "replaced an exact historical Mimir artifact"
@@ -1085,8 +1137,12 @@ func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArti
 		return result, false, false, nil
 	}
 	if write {
-		if err := writeFileAtomic(spec.root, spec.target, spec.data); err != nil {
+		if blocker, err := writeManagedArtifact(spec); err != nil {
 			return result, false, false, err
+		} else if blocker != "" {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, false, nil
 		}
 	}
 	result.Status, result.Hash = artifactUpdated, spec.hash
@@ -1194,6 +1250,60 @@ func pathContainsSymlink(root, target string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func nonDirectoryAncestor(root, target string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	parent, err := filepath.Abs(filepath.Dir(target))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, parent)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("managed artifact path escapes installation root")
+	}
+	current := root
+	parts := []string{}
+	if rel != "." {
+		parts = strings.Split(rel, string(filepath.Separator))
+	}
+	for _, part := range append([]string{""}, parts...) {
+		if part != "" {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() && !allowedDarwinFilesystemAlias(current) {
+			return current, nil
+		}
+	}
+	return "", nil
+}
+
+func writeManagedArtifact(spec managedArtifactSpec) (string, error) {
+	if err := writeFileAtomic(spec.root, spec.target, spec.data); err != nil {
+		return managedArtifactParentAfterError(spec, err)
+	}
+	return "", nil
+}
+
+func managedArtifactParentAfterError(spec managedArtifactSpec, cause error) (string, error) {
+	blocker, err := nonDirectoryAncestor(spec.root, spec.target)
+	if err != nil {
+		return "", fmt.Errorf("%w; inspecting parent path: %v", cause, err)
+	}
+	if blocker != "" {
+		return blocker, nil
+	}
+	return "", cause
 }
 
 func allowedDarwinFilesystemAlias(path string) bool {

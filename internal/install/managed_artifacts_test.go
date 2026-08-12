@@ -246,6 +246,83 @@ func TestClaudePluginGroupPreservesBothWhenEitherFileConflicts(t *testing.T) {
 	}
 }
 
+func TestClaudePluginGroupPreservesNonDirectoryParentConflict(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	blocker := filepath.Join(paths.ClaudeCodeHome, "skills", "mimir")
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte("user-owned Claude skill entry\n")
+	if err := os.WriteFile(blocker, foreign, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targets := []string{
+		filepath.Join(blocker, ".claude-plugin", "plugin.json"),
+		filepath.Join(blocker, "hooks", "hooks.json"),
+	}
+	sources := []string{
+		"plugins/claude-code/.claude-plugin/plugin.json",
+		"plugins/claude-code/hooks/hooks.json",
+	}
+	receipt := newInstallReceipt()
+	for index, target := range targets {
+		receipt.Artifacts[target] = installReceiptArtifact{Source: sources[index], Hash: hashBytes([]byte("prior"))}
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := syncManagedArtifacts(true, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Result != "warning" {
+		t.Fatalf("result = %s, want warning", report.Result)
+	}
+	for _, target := range targets {
+		result := resultForPath(t, report, target)
+		if result.Status != artifactConflict || !strings.Contains(result.Detail, blocker) {
+			t.Fatalf("result = %#v, want parent conflict at %s", result, blocker)
+		}
+	}
+	if got := mustReadFile(t, blocker); !bytes.Equal(got, foreign) {
+		t.Fatal("parent conflict was changed")
+	}
+	after, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for target, owned := range receipt.Artifacts {
+		if after.Artifacts[target] != owned {
+			t.Fatalf("blocked Claude ownership changed at %s: %#v", target, after.Artifacts[target])
+		}
+	}
+}
+
+func TestManagedArtifactPreservesGenericNonDirectoryParentConflict(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	blocker := filepath.Join(paths.OpenCodeHome, "plugins")
+	if err := os.MkdirAll(paths.OpenCodeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, []byte("user-owned plugin entry\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(blocker, "mimir.ts")
+
+	report, err := syncManagedArtifacts(true, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := resultForPath(t, report, target)
+	if result.Status != artifactConflict || !strings.Contains(result.Detail, blocker) {
+		t.Fatalf("result = %#v, want parent conflict at %s", result, blocker)
+	}
+	if got := string(mustReadFile(t, blocker)); got != "user-owned plugin entry\n" {
+		t.Fatalf("parent conflict changed to %q", got)
+	}
+}
+
 func TestClaudePluginGroupPreservesPartialPriorOwnership(t *testing.T) {
 	sources := []string{
 		"plugins/claude-code/.claude-plugin/plugin.json",

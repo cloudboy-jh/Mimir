@@ -116,6 +116,24 @@ func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
 	}
 }
 
+func TestCmdUpdateProgressRemainsLineOriented(t *testing.T) {
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(_ context.Context, _ bool, _ bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
+		for _, message := range []string{"Checking managed artifacts", "Checking latest release", "Downloading checksums", "Downloading Mimir 1.1.0", "Replacing Mimir executable", "Refreshing managed integrations"} {
+			progress(message)
+		}
+		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"}}, nil
+	}
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Updating Mimir...\nMimir updated: 1.0.0 -> 1.1.0\nNext: mimir deploy\n"; output.String() != want {
+		t.Fatalf("output = %q, want plain line output %q", output.String(), want)
+	}
+}
+
 func TestUpdateRestartNamesTrackContentChanges(t *testing.T) {
 	integrations := harness.IntegrationReport{OpenCode: harness.IntegrationState{RestartRequired: true}}
 	for _, test := range []struct {
