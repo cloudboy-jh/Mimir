@@ -840,17 +840,23 @@ func preflightClaudePluginGroup(paths installationPaths, specs []managedArtifact
 
 func preflightManagedArtifact(spec managedArtifactSpec, owned installReceiptArtifact) (managedArtifactResult, bool, error) {
 	result := managedArtifactResult{Path: spec.target, Source: spec.source, BundleHash: spec.hash, ReceiptHash: owned.Hash}
-	if symlink, err := pathContainsSymlink(spec.root, spec.target); err != nil {
-		return result, false, err
-	} else if symlink {
-		result.Status = artifactSymlinkRejected
-		return result, false, nil
-	}
 	if blocker, err := nonDirectoryAncestor(spec.root, spec.target); err != nil {
 		return result, false, err
 	} else if blocker != "" {
 		result.Status = artifactConflict
 		result.Detail = "parent path is not a directory: " + blocker
+		return result, false, nil
+	}
+	if symlink, err := pathContainsSymlink(spec.root, spec.target); err != nil {
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, nil
+		}
+	} else if symlink {
+		result.Status = artifactSymlinkRejected
 		return result, false, nil
 	}
 	info, err := os.Lstat(spec.target)
@@ -1035,18 +1041,24 @@ func safeInstallOperation(operation string) string {
 
 func reconcileManagedArtifact(spec managedArtifactSpec, owned installReceiptArtifact, enroll, write, adoptIdentical bool) (managedArtifactResult, bool, bool, error) {
 	result := managedArtifactResult{Path: spec.target, Source: spec.source, BundleHash: spec.hash}
-	if symlink, err := pathContainsSymlink(spec.root, spec.target); err != nil {
-		return result, false, false, err
-	} else if symlink {
-		result.Status = artifactSymlinkRejected
-		result.Detail = "refusing to manage a symlinked path"
-		return result, false, false, nil
-	}
 	if blocker, err := nonDirectoryAncestor(spec.root, spec.target); err != nil {
 		return result, false, false, err
 	} else if blocker != "" {
 		result.Status = artifactConflict
 		result.Detail = "parent path is not a directory: " + blocker
+		return result, false, false, nil
+	}
+	if symlink, err := pathContainsSymlink(spec.root, spec.target); err != nil {
+		if blocker, recoveredErr := managedArtifactParentAfterError(spec, err); recoveredErr != nil {
+			return result, false, false, recoveredErr
+		} else {
+			result.Status = artifactConflict
+			result.Detail = "parent path is not a directory: " + blocker
+			return result, false, false, nil
+		}
+	} else if symlink {
+		result.Status = artifactSymlinkRejected
+		result.Detail = "refusing to manage a symlinked path"
 		return result, false, false, nil
 	}
 	info, err := os.Lstat(spec.target)
@@ -1281,7 +1293,10 @@ func nonDirectoryAncestor(root, target string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !info.IsDir() && !allowedDarwinFilesystemAlias(current) {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", nil
+		}
+		if !info.IsDir() {
 			return current, nil
 		}
 	}
