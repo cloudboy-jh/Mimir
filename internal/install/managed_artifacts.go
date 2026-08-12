@@ -56,6 +56,7 @@ type installationPaths struct {
 	HermesDetected bool   `json:"hermes_detected"`
 	Worker         string `json:"worker"`
 	SharedAssets   string `json:"shared_assets"`
+	SharedSkills   string `json:"shared_skills"`
 }
 
 type installReceiptArtifact struct {
@@ -169,6 +170,7 @@ func managedInstallationPaths() (installationPaths, error) {
 		HermesDetected: found,
 		Worker:         filepath.Join(mimirHome, "worker"),
 		SharedAssets:   filepath.Join(mimirHome, "assets", "images"),
+		SharedSkills:   filepath.Join(userHome, ".agents", "skills"),
 	}, nil
 }
 
@@ -759,7 +761,7 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 
 // migrateLegacySkillAliases is the sole exception to general link rejection.
 // It only touches receipt-owned historical Claude/Hermes aliases that point to
-// the exact corresponding OpenCode skill directory.
+// an exact known shared skill directory.
 func migrateLegacySkillAliases(paths installationPaths, specs []managedArtifactSpec, receipt *installReceipt, write bool) ([]managedArtifactResult, map[string]string, bool, error) {
 	results := []managedArtifactResult{}
 	migrated := map[string]string{}
@@ -773,7 +775,10 @@ func migrateLegacySkillAliases(paths installationPaths, specs []managedArtifactS
 		}
 		for _, skill := range []string{"mimir-setup", "mimir-use"} {
 			alias := filepath.Join(owner.root, "skills", skill)
-			expectedDestination := filepath.Join(paths.OpenCodeHome, "skills", skill)
+			expectedDestinations := []string{
+				filepath.Join(paths.OpenCodeHome, "skills", skill),
+				filepath.Join(paths.SharedSkills, skill),
+			}
 			expected := map[string]managedArtifactSpec{}
 			for _, spec := range specs {
 				if strings.HasPrefix(spec.source, "skills/"+skill+"/") {
@@ -807,13 +812,26 @@ func migrateLegacySkillAliases(paths installationPaths, specs []managedArtifactS
 				}
 				valid = valid && found
 			}
+			for target, owned := range ownedTargets {
+				data, readErr := os.ReadFile(target)
+				if readErr != nil || hashBytes(data) != owned.Hash {
+					valid = false
+				}
+			}
 			info, statErr := os.Lstat(alias)
 			if statErr != nil || !managedAliasIsLink(info) {
 				continue
 			}
 			aliasTarget, targetErr := os.Stat(alias)
-			expectedTarget, expectedErr := os.Stat(expectedDestination)
-			if targetErr != nil || expectedErr != nil || !os.SameFile(aliasTarget, expectedTarget) || !valid {
+			knownDestination := false
+			for _, destination := range expectedDestinations {
+				expectedTarget, expectedErr := os.Stat(destination)
+				if targetErr == nil && expectedErr == nil && os.SameFile(aliasTarget, expectedTarget) {
+					knownDestination = true
+					break
+				}
+			}
+			if !knownDestination || !valid {
 				continue
 			}
 			if linked, linkErr := pathContainsSymlink(owner.root, filepath.Dir(alias)); linkErr != nil {
@@ -1385,7 +1403,7 @@ func pathContainsSymlink(root, target string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if managedAliasIsLink(info) {
 			if allowedDarwinFilesystemAlias(current) {
 				continue
 			}
@@ -1424,7 +1442,7 @@ func nonDirectoryAncestor(root, target string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if managedAliasIsLink(info) {
 			return "", nil
 		}
 		if !info.IsDir() {

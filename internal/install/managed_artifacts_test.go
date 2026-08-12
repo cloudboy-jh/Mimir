@@ -140,6 +140,171 @@ func TestSyncManagedArtifactsMigratesReceiptOwnedLegacySkillAliases(t *testing.T
 	}
 }
 
+func TestSyncManagedArtifactsMigratesReceiptOwnedSharedSkillAliases(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	source := "skills/mimir-use/SKILL.md"
+	data, err := mimirassets.Bundle.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSkill := filepath.Join(paths.SharedSkills, "mimir-use")
+	if err := os.MkdirAll(sharedSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sharedSkill, "SKILL.md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hermesAlias := filepath.Join(paths.HermesHome, "skills", "mimir-use")
+	claudeAlias := filepath.Join(paths.ClaudeCodeHome, "skills", "mimir-use")
+	createDirectoryAlias(t, sharedSkill, hermesAlias)
+	createDirectoryAlias(t, sharedSkill, claudeAlias)
+	receipt := newInstallReceipt()
+	for _, alias := range []string{hermesAlias, claudeAlias} {
+		receipt.Artifacts[filepath.Join(alias, "SKILL.md")] = installReceiptArtifact{Source: source, Hash: hashBytes(data)}
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	hermesInfo, err := os.Lstat(hermesAlias)
+	if err != nil || !hermesInfo.IsDir() || managedAliasIsLink(hermesInfo) {
+		t.Fatalf("Hermes shared alias was not replaced: %v, %v", hermesInfo, err)
+	}
+	if _, err := os.Lstat(claudeAlias); !os.IsNotExist(err) {
+		t.Fatalf("Claude shared alias was not removed: %v", err)
+	}
+	if got := mustReadFile(t, filepath.Join(sharedSkill, "SKILL.md")); !bytes.Equal(got, data) {
+		t.Fatal("shared skill destination was changed")
+	}
+}
+
+func TestSyncManagedArtifactsPreservesModifiedReceiptOwnedSharedSkillAlias(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	source := "skills/mimir-use/SKILL.md"
+	bundled, err := mimirassets.Bundle.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedSkill := filepath.Join(paths.SharedSkills, "mimir-use")
+	if err := os.MkdirAll(sharedSkill, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(sharedSkill, "SKILL.md")
+	if err := os.WriteFile(target, []byte("user modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(paths.HermesHome, "skills", "mimir-use")
+	createDirectoryAlias(t, sharedSkill, alias)
+	receipt := newInstallReceipt()
+	receipt.Artifacts[filepath.Join(alias, "SKILL.md")] = installReceiptArtifact{Source: source, Hash: hashBytes(bundled)}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(alias)
+	if err != nil || !managedAliasIsLink(info) {
+		t.Fatalf("modified shared alias was not preserved: %v, %v", info, err)
+	}
+	if got := string(mustReadFile(t, target)); got != "user modified\n" {
+		t.Fatalf("modified destination = %q", got)
+	}
+}
+
+func TestSyncManagedArtifactsPreservesWrongTargetReceiptOwnedSkillAlias(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	source := "skills/mimir-use/SKILL.md"
+	data, err := mimirassets.Bundle.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongTarget := filepath.Join(filepath.Dir(paths.SharedSkills), "user-skills", "mimir-use")
+	if err := os.MkdirAll(wrongTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(wrongTarget, "SKILL.md")
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(paths.ClaudeCodeHome, "skills", "mimir-use")
+	createDirectoryAlias(t, wrongTarget, alias)
+	receipt := newInstallReceipt()
+	receipt.Artifacts[filepath.Join(alias, "SKILL.md")] = installReceiptArtifact{Source: source, Hash: hashBytes(data)}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(alias)
+	if err != nil || !managedAliasIsLink(info) {
+		t.Fatalf("wrong-target alias was not preserved: %v, %v", info, err)
+	}
+	if got := mustReadFile(t, target); !bytes.Equal(got, data) {
+		t.Fatal("wrong-target destination was changed")
+	}
+}
+
+func TestSyncManagedArtifactsPreservesPartialReceiptOwnedSharedSkillAlias(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	skill := "mimir-setup"
+	sharedSkill := filepath.Join(paths.SharedSkills, skill)
+	metadata, err := mimirassets.BundleMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := newInstallReceipt()
+	owned := false
+	for _, file := range metadata {
+		if !strings.HasPrefix(file.Path, "skills/"+skill+"/") {
+			continue
+		}
+		data, err := mimirassets.Bundle.ReadFile(file.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel := strings.TrimPrefix(file.Path, "skills/"+skill+"/")
+		target := filepath.Join(sharedSkill, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !owned {
+			receipt.Artifacts[target] = installReceiptArtifact{Source: file.Path, Hash: hashBytes(data)}
+			owned = true
+		}
+	}
+	alias := filepath.Join(paths.HermesHome, "skills", skill)
+	createDirectoryAlias(t, sharedSkill, alias)
+	partial := newInstallReceipt()
+	for target, artifact := range receipt.Artifacts {
+		rel, err := filepath.Rel(sharedSkill, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		partial.Artifacts[filepath.Join(alias, rel)] = artifact
+	}
+	if err := writeJSONAtomic(paths.Receipt, partial); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := syncManagedArtifacts(false, "update"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(alias)
+	if err != nil || !managedAliasIsLink(info) {
+		t.Fatalf("partial-ownership alias was not preserved: %v, %v", info, err)
+	}
+}
+
 func TestSyncManagedArtifactsPreservesUnownedLegacySkillAlias(t *testing.T) {
 	paths := isolatedInstallation(t, true)
 	destination := filepath.Join(paths.OpenCodeHome, "skills", "mimir-use")
