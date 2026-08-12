@@ -15,8 +15,13 @@ export function relativeDate(value: string) {
 
 export function duration(start: string, end: string | null) {
   if (!end) return "In progress";
-  const minutes = Math.max(1, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60_000));
-  return `${minutes}m`;
+  const elapsed = new Date(end).getTime() - new Date(start).getTime();
+  if (!Number.isFinite(elapsed) || elapsed < 0) return "-";
+  const minutes = Math.max(1, Math.round(elapsed / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
 export function outputSpeed(tokens: number, latency: number) {
