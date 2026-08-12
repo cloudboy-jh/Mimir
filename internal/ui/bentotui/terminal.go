@@ -142,26 +142,34 @@ func RunWithOptions(ctx context.Context, in *os.File, out *os.File, app Terminal
 			if app.Handle(ctx, key) {
 				return nil
 			}
-			screen = terminalScreen(out)
-			if err := drawApp(&renderer, app, screen); err != nil {
+			if err := drawMeasured(&renderer, app, terminalScreen(out), &screen); err != nil {
 				return err
 			}
-		case <-updates:
-			screen = terminalScreen(out)
-			if err := drawApp(&renderer, app, screen); err != nil {
+		case _, ok := <-updates:
+			if !ok {
+				updates = nil
+				continue
+			}
+			if err := drawMeasured(&renderer, app, terminalScreen(out), &screen); err != nil {
 				return err
 			}
 		case <-ticker.C:
 			next := terminalScreen(out)
 			if next != screen {
-				screen = next
-				renderer.reset()
-				if err := drawApp(&renderer, app, screen); err != nil {
+				if err := drawMeasured(&renderer, app, next, &screen); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+func drawMeasured(renderer *terminalRenderer, app TerminalApp, next Screen, screen *Screen) error {
+	if next != *screen {
+		renderer.reset()
+		*screen = next
+	}
+	return drawApp(renderer, app, *screen)
 }
 
 func terminalControlSequences(options RunOptions) (start, cleanup string) {

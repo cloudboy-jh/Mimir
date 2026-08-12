@@ -182,3 +182,52 @@ func TestTerminalRendererClearsAfterResizeReset(t *testing.T) {
 		t.Fatalf("clear count %d, want 2", got)
 	}
 }
+
+type measuredTestApp struct {
+	views []Screen
+}
+
+func (a *measuredTestApp) View(screen Screen) string {
+	a.views = append(a.views, screen)
+	return "frame"
+}
+
+func (*measuredTestApp) Handle(context.Context, Key) bool { return false }
+
+func TestDrawMeasuredClearsBeforeFrameAtNewDimensions(t *testing.T) {
+	var out bytes.Buffer
+	renderer := terminalRenderer{out: &out}
+	app := &measuredTestApp{}
+	screen := Screen{Width: 200, Height: 60}
+	if err := drawApp(&renderer, app, screen); err != nil {
+		t.Fatal(err)
+	}
+	if err := drawMeasured(&renderer, app, Screen{Width: 48, Height: 12}, &screen); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "\x1b[H\x1b[2J"); got != 2 {
+		t.Fatalf("clear count %d, want 2: %q", got, out.String())
+	}
+	if screen != (Screen{Width: 48, Height: 12}) {
+		t.Fatalf("screen %#v", screen)
+	}
+	if len(app.views) != 2 || app.views[1] != screen {
+		t.Fatalf("views %#v", app.views)
+	}
+}
+
+func TestDrawMeasuredDoesNotResetAtSameDimensions(t *testing.T) {
+	var out bytes.Buffer
+	renderer := terminalRenderer{out: &out}
+	app := &measuredTestApp{}
+	screen := Screen{Width: 80, Height: 20}
+	if err := drawApp(&renderer, app, screen); err != nil {
+		t.Fatal(err)
+	}
+	if err := drawMeasured(&renderer, app, screen, &screen); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "\x1b[2J"); got != 1 {
+		t.Fatalf("clear count %d, want 1", got)
+	}
+}

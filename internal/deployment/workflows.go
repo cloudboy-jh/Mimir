@@ -14,7 +14,6 @@ type ProvisionResult struct {
 }
 
 func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (ProvisionResult, error) {
-	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return ProvisionResult{}, err
@@ -24,6 +23,12 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 		return ProvisionResult{}, err
 	}
 	hooks.step("Cloudflare authenticated")
+	identity, err := s.ReadIdentity(ctx, dir)
+	if err != nil {
+		return ProvisionResult{}, err
+	}
+	accountID := deploymentAccountID(identity)
+	opts = s.resolveOptions(opts, accountID)
 	if opts.DatabaseID == "" {
 		output, err := s.Wrangler.Run(ctx, dir, nil, "d1", "list", "--json")
 		if err != nil {
@@ -104,7 +109,7 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	if err := s.storeDeploymentURL(ctx, dir, opts.DatabaseName, url); err != nil {
 		return ProvisionResult{}, err
 	}
-	if err := s.saveResolvedState(opts, url); err != nil {
+	if err := s.saveResolvedState(opts, accountID, url); err != nil {
 		return ProvisionResult{}, fmt.Errorf("saving deployment metadata: %w", err)
 	}
 	access := AccessOutcome{State: "manual"}
@@ -116,13 +121,6 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 		}
 	}
 	if accessToken != "" {
-		identity, err := s.ReadIdentity(ctx, dir)
-		if err != nil {
-			return ProvisionResult{}, err
-		}
-		if len(identity.Accounts) == 0 {
-			return ProvisionResult{}, fmt.Errorf("no Cloudflare account found; run wrangler login")
-		}
 		client := s.Access
 		client.Token = accessToken
 		access, err = ConfigureDashboardAccess(ctx, client, identity.Accounts[0].ID, url, opts.AccessEmail)
@@ -146,7 +144,6 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 type DeployResult struct{ URL string }
 
 func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbackURL string) (DeployResult, error) {
-	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareDeployment)
 	if err != nil {
 		return DeployResult{}, err
@@ -156,11 +153,17 @@ func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbac
 		return DeployResult{}, err
 	}
 	hooks.step("Cloudflare authenticated")
+	identity, err := s.ReadIdentity(ctx, dir)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	accountID := deploymentAccountID(identity)
+	opts = s.resolveOptions(opts, accountID)
 	opts, err = s.configure(ctx, dir, opts)
 	if err != nil {
 		return DeployResult{}, err
 	}
-	hooks.step("Database configured")
+	hooks.step("Deployment resources selected")
 	if _, err := s.Wrangler.Run(ctx, dir, nil, "d1", "migrations", "apply", opts.DatabaseName, "--remote"); err != nil {
 		return DeployResult{}, fmt.Errorf("applying database migrations: %w", err)
 	}
@@ -179,7 +182,7 @@ func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbac
 			return DeployResult{}, err
 		}
 	}
-	if err := s.saveResolvedState(opts, url); err != nil {
+	if err := s.saveResolvedState(opts, accountID, url); err != nil {
 		return DeployResult{}, fmt.Errorf("saving deployment metadata: %w", err)
 	}
 	return DeployResult{URL: strings.TrimRight(url, "/")}, nil
@@ -217,7 +220,6 @@ type LoginResult struct {
 }
 
 func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicitURL string) (LoginResult, error) {
-	opts = s.resolveOptions(opts)
 	dir, err := s.prepare(ctx, opts.WorkerDir, prepareLogin)
 	if err != nil {
 		return LoginResult{}, err
@@ -242,6 +244,8 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 		}
 	}
 	hooks.step("Cloudflare authenticated")
+	accountID := deploymentAccountID(identity)
+	opts = s.resolveOptions(opts, accountID)
 	opts, err = s.configure(ctx, dir, opts)
 	if err != nil {
 		if state, ok := err.(StateError); ok && state.State == "deployment_missing" {
@@ -275,10 +279,17 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 		}
 	}
 	hooks.step("Connection verified")
-	if err := s.saveResolvedState(opts, url); err != nil {
+	if err := s.saveResolvedState(opts, accountID, url); err != nil {
 		return LoginResult{}, fmt.Errorf("saving deployment metadata: %w", err)
 	}
 	return LoginResult{Identity: identity, URL: url, Token: token}, nil
+}
+
+func deploymentAccountID(identity Identity) string {
+	if len(identity.Accounts) != 1 {
+		return ""
+	}
+	return strings.TrimSpace(identity.Accounts[0].ID)
 }
 
 type AccessOptions struct {

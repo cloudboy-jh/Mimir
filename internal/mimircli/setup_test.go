@@ -130,6 +130,8 @@ func (setupWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...strin
 	switch strings.Join(args, " ") {
 	case "whoami":
 		return "authenticated", nil
+	case "whoami --json":
+		return `{"loggedIn":true,"accounts":[{"id":"account","name":"Account"}]}`, nil
 	case "secret list --format json":
 		return `[{"name":"OPENROUTER_API_KEY"}]`, nil
 	case "deploy":

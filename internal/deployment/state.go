@@ -12,10 +12,11 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
-const deploymentStateSchema = 1
+const deploymentStateSchema = 2
 
 type DeploymentState struct {
 	Schema       int    `json:"schema"`
+	AccountID    string `json:"account_id"`
 	WorkerName   string `json:"worker_name"`
 	DatabaseName string `json:"database_name"`
 	DatabaseID   string `json:"database_id"`

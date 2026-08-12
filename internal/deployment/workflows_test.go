@@ -35,6 +35,7 @@ type workflowWrangler struct {
 	calls         [][]string
 	config        Config
 	hideDeployURL bool
+	databaseList  string
 }
 
 func (w *workflowWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...string) (string, error) {
@@ -51,6 +52,11 @@ func (w *workflowWrangler) Run(_ context.Context, _ string, _ io.Reader, args ..
 			return "deployed", nil
 		}
 		return "Deployed to https://mimir.example.workers.dev", nil
+	case slices.Equal(args, []string{"d1", "list", "--json"}):
+		if w.databaseList != "" {
+			return w.databaseList, nil
+		}
+		return `[{"uuid":"database-uuid","name":"custom-db"},{"uuid":"database-uuid","name":"mimir"}]`, nil
 	case len(args) > 2 && args[0] == "d1" && args[1] == "execute" && strings.Contains(strings.Join(args, " "), "SELECT value FROM config"):
 		return `[{"results":[{"value":"https://mimir.example.workers.dev"}]}]`, nil
 	default:
@@ -156,7 +162,7 @@ func TestDeployReusesVerifiedDeploymentState(t *testing.T) {
 	wrangler := &workflowWrangler{}
 	service := testWorkflowService(wrangler)
 	service.LoadState = func() (DeploymentState, error) {
-		return DeploymentState{Schema: 1, WorkerName: "custom-worker", DatabaseName: "custom-db", DatabaseID: "database-uuid", BucketName: "custom-logs"}, nil
+		return DeploymentState{Schema: deploymentStateSchema, AccountID: "account", WorkerName: "custom-worker", DatabaseName: "custom-db", DatabaseID: "database-uuid", BucketName: "custom-logs"}, nil
 	}
 	var saved DeploymentState
 	service.SaveState = func(state DeploymentState) error { saved = state; return nil }
@@ -176,12 +182,42 @@ func TestDeployExplicitDatabaseNameDoesNotReuseDifferentCachedID(t *testing.T) {
 	wrangler := &workflowWrangler{}
 	service := testWorkflowService(wrangler)
 	service.LoadState = func() (DeploymentState, error) {
-		return DeploymentState{Schema: 1, DatabaseName: "old-db", DatabaseID: "old-id"}, nil
+		return DeploymentState{Schema: deploymentStateSchema, AccountID: "account", DatabaseName: "old-db", DatabaseID: "old-id"}, nil
 	}
 	opts := Options{WorkerDir: t.TempDir(), DatabaseName: "new-db"}
 	_, err := service.Deploy(context.Background(), opts, Hooks{}, "")
 	if err == nil {
 		t.Fatal("missing explicit database was accepted from unrelated cached state")
+	}
+}
+
+func TestDeployIgnoresDeploymentStateFromAnotherAccount(t *testing.T) {
+	wrangler := &workflowWrangler{}
+	service := testWorkflowService(wrangler)
+	service.LoadState = func() (DeploymentState, error) {
+		return DeploymentState{Schema: deploymentStateSchema, AccountID: "other-account", WorkerName: "other-worker", DatabaseName: "other-db", DatabaseID: "other-id", BucketName: "other-bucket"}, nil
+	}
+	if _, err := service.Deploy(context.Background(), Options{WorkerDir: t.TempDir()}, Hooks{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if wrangler.config.WorkerName != "mimir" || wrangler.config.DatabaseName != "mimir" || wrangler.config.DatabaseID != "database-uuid" || wrangler.config.BucketName != "mimir-logs" {
+		t.Fatalf("cross-account state reused: %#v", wrangler.config)
+	}
+}
+
+func TestDeployRevalidatesStaleCachedDatabaseID(t *testing.T) {
+	wrangler := &workflowWrangler{databaseList: `[{"uuid":"replacement-id","name":"custom-db"}]`}
+	service := testWorkflowService(wrangler)
+	service.LoadState = func() (DeploymentState, error) {
+		return DeploymentState{Schema: deploymentStateSchema, AccountID: "account", WorkerName: "custom-worker", DatabaseName: "custom-db", DatabaseID: "stale-id", BucketName: "custom-logs"}, nil
+	}
+	var saved DeploymentState
+	service.SaveState = func(state DeploymentState) error { saved = state; return nil }
+	if _, err := service.Deploy(context.Background(), Options{WorkerDir: t.TempDir()}, Hooks{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if wrangler.config.DatabaseID != "replacement-id" || saved.DatabaseID != "replacement-id" || saved.AccountID != "account" {
+		t.Fatalf("config=%#v saved=%#v", wrangler.config, saved)
 	}
 }
 

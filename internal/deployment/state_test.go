@@ -10,6 +10,7 @@ func TestDeploymentStateRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MIMIR_HOME", home)
 	want := DeploymentState{
+		AccountID:  "account-id",
 		WorkerName: "custom-worker", DatabaseName: "custom-db", DatabaseID: "database-uuid",
 		BucketName: "custom-logs", URL: "https://mimir.example.workers.dev/", VerifiedAt: "2026-08-12T00:00:00Z",
 	}
@@ -20,7 +21,7 @@ func TestDeploymentStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Schema != deploymentStateSchema || got.WorkerName != want.WorkerName || got.DatabaseName != want.DatabaseName || got.DatabaseID != want.DatabaseID || got.URL != "https://mimir.example.workers.dev" {
+	if got.Schema != deploymentStateSchema || got.AccountID != want.AccountID || got.WorkerName != want.WorkerName || got.DatabaseName != want.DatabaseName || got.DatabaseID != want.DatabaseID || got.URL != "https://mimir.example.workers.dev" {
 		t.Fatalf("state = %#v", got)
 	}
 	if _, err := os.Stat(filepath.Join(home, "cloudflare-deployment.json")); err != nil {

@@ -58,13 +58,13 @@ func NewService(httpClient HTTPDoer) *Service {
 	}
 }
 
-func (s *Service) resolveOptions(opts Options) Options {
+func (s *Service) resolveOptions(opts Options, accountID string) Options {
 	var state DeploymentState
 	var err error
 	if s.LoadState != nil {
 		state, err = s.LoadState()
 	}
-	if err == nil {
+	if err == nil && accountID != "" && state.AccountID == accountID {
 		if opts.WorkerName == "" {
 			opts.WorkerName = state.WorkerName
 		}
@@ -73,6 +73,7 @@ func (s *Service) resolveOptions(opts Options) Options {
 		}
 		if opts.DatabaseID == "" && state.DatabaseName == opts.DatabaseName {
 			opts.DatabaseID = state.DatabaseID
+			opts.databaseIDCached = state.DatabaseID != ""
 		}
 		if opts.BucketName == "" {
 			opts.BucketName = state.BucketName
@@ -91,11 +92,12 @@ func (s *Service) resolveOptions(opts Options) Options {
 	return opts
 }
 
-func (s *Service) saveResolvedState(opts Options, url string) error {
+func (s *Service) saveResolvedState(opts Options, accountID, url string) error {
 	if s.SaveState == nil {
 		return nil
 	}
 	return s.SaveState(DeploymentState{
+		AccountID:  accountID,
 		WorkerName: opts.WorkerName, DatabaseName: opts.DatabaseName, DatabaseID: opts.DatabaseID,
 		BucketName: opts.BucketName, URL: strings.TrimRight(url, "/"), VerifiedAt: s.Now().UTC().Format(time.RFC3339),
 	})
@@ -105,6 +107,7 @@ type Options struct {
 	WorkerDir, WorkerName, DatabaseName, DatabaseID, BucketName string
 	OpenRouterKey, AccessEmail                                  string
 	Noninteractive                                              bool
+	databaseIDCached                                            bool
 }
 
 func DefaultOptions() Options {
@@ -191,12 +194,16 @@ func (s *Service) ensureAuth(ctx context.Context, dir string, hooks Hooks, nonin
 }
 
 func (s *Service) configure(ctx context.Context, dir string, opts Options) (Options, error) {
-	if opts.DatabaseID == "" {
+	if opts.DatabaseID == "" || opts.databaseIDCached {
 		output, err := s.Wrangler.Run(ctx, dir, nil, "d1", "list", "--json")
 		if err != nil {
 			return opts, err
 		}
-		opts.DatabaseID = listedDatabaseID(output, opts.DatabaseName)
+		listedID := listedDatabaseID(output, opts.DatabaseName)
+		if opts.databaseIDCached || opts.DatabaseID == "" {
+			opts.DatabaseID = listedID
+			opts.databaseIDCached = false
+		}
 	}
 	if opts.DatabaseID == "" {
 		return opts, StateError{State: "deployment_missing", Message: "no Mimir D1 database found; run mimir setup first"}

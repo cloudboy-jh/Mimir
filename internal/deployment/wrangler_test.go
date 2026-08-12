@@ -200,6 +200,8 @@ if "%1"=="d1" if "%2"=="execute" echo [{"results":[{"value":"https://mimir.examp
 	service := NewService(nil)
 	service.Installer = fakeInstaller{dir: dir}
 	service.Hostname = func() (string, error) { return "test-machine", nil }
+	service.LoadState = func() (DeploymentState, error) { return DeploymentState{}, nil }
+	service.SaveState = func(DeploymentState) error { return nil }
 	if _, err := service.Login(context.Background(), DefaultOptions(), Hooks{}, ""); err != nil {
 		t.Fatal(err)
 	}
