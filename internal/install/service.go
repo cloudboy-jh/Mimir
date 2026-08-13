@@ -6,6 +6,10 @@ type InstallReport struct {
 }
 
 func Install(explicitDir string, executable func() (string, error)) (InstallReport, error) {
+	return InstallHarnesses(explicitDir, nil, executable)
+}
+
+func InstallHarnesses(explicitDir string, harnesses []string, executable func() (string, error)) (InstallReport, error) {
 	binary, err := bootstrapExecutable(explicitDir, executable)
 	if err != nil {
 		return InstallReport{}, err
@@ -33,7 +37,11 @@ func Install(explicitDir string, executable func() (string, error)) (InstallRepo
 	case binary.Method == "bootstrap-copy" || isMimirExecutable(binary.Path):
 		receiptUpdate = &update
 	}
-	artifacts, err := reconcileManagedArtifacts(true, "install", true, true, false, receiptUpdate)
+	var selection *[]string
+	if harnesses != nil {
+		selection = &harnesses
+	}
+	artifacts, err := reconcileManagedArtifacts(true, "install", true, true, false, receiptUpdate, selection)
 	if err != nil {
 		return InstallReport{}, err
 	}

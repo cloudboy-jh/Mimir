@@ -155,10 +155,27 @@ func (s Service) Run(ctx context.Context) Report {
 		return report
 	}
 	s.addBinaryJunkCheck(add)
-	for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest) {
-		add(check.Name, check.Status, check.Detail, check.Repair)
+	receipt, receiptErr := s.LoadReceipt()
+	if receiptErr != nil {
+		add("harness-selection", "failed", receiptErr.Error(), "mimir install")
+	} else if selectedHarness(receipt.Harnesses, "hermes") {
+		for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest) {
+			add(check.Name, check.Status, check.Detail, check.Repair)
+		}
 	}
 	return report
+}
+
+func selectedHarness(selected []string, id string) bool {
+	if selected == nil {
+		return true
+	}
+	for _, candidate := range selected {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }
 
 // addBinaryJunkCheck reports stale files sitting next to the receipt-owned

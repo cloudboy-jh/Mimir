@@ -33,13 +33,15 @@ func (i *workflowInstaller) BuildDashboard(context.Context, string) error {
 
 type workflowWrangler struct {
 	calls         [][]string
+	accountIDs    []string
 	config        Config
 	hideDeployURL bool
 	databaseList  string
 }
 
-func (w *workflowWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...string) (string, error) {
+func (w *workflowWrangler) Run(ctx context.Context, _ string, _ io.Reader, args ...string) (string, error) {
 	w.calls = append(w.calls, slices.Clone(args))
+	w.accountIDs = append(w.accountIDs, wranglerAccountID(ctx))
 	switch {
 	case slices.Equal(args, []string{"whoami", "--json"}):
 		return `{"loggedIn":true,"accounts":[{"id":"account","name":"Account"}]}`, nil
@@ -175,6 +177,42 @@ func TestDeployReusesVerifiedDeploymentState(t *testing.T) {
 	}
 	if saved.DatabaseID != "database-uuid" || saved.URL != "https://mimir.example.workers.dev" {
 		t.Fatalf("saved = %#v", saved)
+	}
+}
+
+func TestSelectedAccountIsPinnedBeforeResourceCommands(t *testing.T) {
+	for _, operation := range []string{"provision", "deploy", "login", "access"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Setenv("CLOUDFLARE_ACCOUNT_ID", "")
+			wrangler := &workflowWrangler{}
+			service := testWorkflowService(wrangler)
+			service.LoadState = func() (DeploymentState, error) {
+				return DeploymentState{AccountID: "account", DatabaseName: "mimir", DatabaseID: "database-uuid", WorkerName: "mimir", BucketName: "mimir-logs"}, nil
+			}
+			opts := Options{WorkerDir: t.TempDir(), AccountID: "account"}
+			var err error
+			switch operation {
+			case "provision":
+				_, err = service.Provision(context.Background(), opts, Hooks{})
+			case "deploy":
+				_, err = service.Deploy(context.Background(), opts, Hooks{}, "")
+			case "login":
+				_, err = service.Login(context.Background(), opts, Hooks{}, "")
+			case "access":
+				_, err = service.ConfigureAccess(context.Background(), AccessOptions{Options: opts, Aud: "aud", TeamDomain: "https://team.cloudflareaccess.com"}, Hooks{})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, args := range wrangler.calls {
+				if len(args) == 0 || args[0] == "whoami" {
+					continue
+				}
+				if wrangler.accountIDs[index] != "account" {
+					t.Fatalf("command %v used account %q", args, wrangler.accountIDs[index])
+				}
+			}
+		})
 	}
 }
 

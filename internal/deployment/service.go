@@ -105,6 +105,7 @@ func (s *Service) saveResolvedState(opts Options, accountID, url string) error {
 
 type Options struct {
 	WorkerDir, WorkerName, DatabaseName, DatabaseID, BucketName string
+	AccountID                                                   string
 	OpenRouterKey, AccessEmail                                  string
 	Noninteractive                                              bool
 	databaseIDCached                                            bool

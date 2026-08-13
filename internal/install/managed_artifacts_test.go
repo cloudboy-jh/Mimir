@@ -88,6 +88,127 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestReinstallChangedSelectionDisablesDeselectedUnmodifiedArtifacts(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	selected := []string{"opencode"}
+	report, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range report.Artifacts {
+		if got := artifactHarness(paths, artifact.Path, artifact.Source); got != "opencode" {
+			t.Fatalf("installed unselected harness %q: %#v", got, artifact)
+		}
+	}
+	piTarget := filepath.Join(paths.PiHome, "extensions", "mimir.ts")
+	if _, err := os.Stat(piTarget); !os.IsNotExist(err) {
+		t.Fatalf("unselected Pi artifact exists: %v", err)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(receipt.Harnesses, selected) {
+		t.Fatalf("harnesses = %#v", receipt.Harnesses)
+	}
+
+	all, _ := NormalizeHarnesses([]string{"all"})
+	if _, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &all); err != nil {
+		t.Fatal(err)
+	}
+	owned := mustLoadReceipt(t)
+	piOwned := owned.Artifacts[piTarget]
+	selected = []string{"opencode"}
+	if _, err := reconcileManagedArtifacts(true, "update", true, true, false, nil, &selected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(piTarget); !os.IsNotExist(err) {
+		t.Fatalf("deselected owned Pi artifact remains: %v", err)
+	}
+	if got, owned := mustLoadReceipt(t).Artifacts[piTarget]; owned {
+		t.Fatalf("removed deselected artifact retained ownership: %#v (was %#v)", got, piOwned)
+	}
+}
+
+func TestReinstallChangedSelectionPreservesModifiedDeselectedOwnership(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	all, _ := NormalizeHarnesses([]string{"all"})
+	if _, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &all); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(paths.PiHome, "extensions", "mimir.ts")
+	if err := os.WriteFile(target, []byte("modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected := []string{"opencode"}
+	report, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resultForPath(t, report, target).Status; got != artifactModifiedKept {
+		t.Fatalf("status = %s, want modified-preserved", got)
+	}
+	if _, owned := mustLoadReceipt(t).Artifacts[target]; !owned {
+		t.Fatal("modified deselected artifact lost ownership")
+	}
+	if got := string(mustReadFile(t, target)); got != "modified\n" {
+		t.Fatalf("modified artifact = %q", got)
+	}
+}
+
+func TestDisableHarnessPreservesModifiedOwnership(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	selected, _ := NormalizeHarnesses([]string{"opencode"})
+	if _, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &selected); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts")
+	if err := os.WriteFile(target, []byte("modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := setHarnessEnabled("opencode", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resultForPath(t, report, target).Status != artifactModifiedKept {
+		t.Fatalf("report = %#v", report)
+	}
+	receipt := mustLoadReceipt(t)
+	if _, owned := receipt.Artifacts[target]; !owned {
+		t.Fatal("modified disabled artifact ownership was discarded")
+	}
+	if len(receipt.Harnesses) != 0 {
+		t.Fatalf("selected harnesses = %#v", receipt.Harnesses)
+	}
+}
+
+func TestSchemaTwoMigrationPreservesLegacyHarnessBehavior(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	data := []byte(`{"schema":2,"cli":{},"artifacts":{}}`)
+	if err := os.MkdirAll(filepath.Dir(paths.Receipt), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Receipt, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Schema != 3 || strings.Join(receipt.Harnesses, ",") != "opencode,pi,claude-code,codex,cursor" {
+		t.Fatalf("migrated receipt = %#v", receipt)
+	}
+}
+
+func mustLoadReceipt(t *testing.T) installReceipt {
+	t.Helper()
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt
+}
+
 func TestSyncManagedArtifactsMigratesReceiptOwnedLegacySkillAliases(t *testing.T) {
 	paths := isolatedInstallation(t, true)
 	source := "skills/mimir-use/SKILL.md"

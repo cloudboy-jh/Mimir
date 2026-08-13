@@ -12,9 +12,9 @@ import (
 )
 
 func TestCmdInstallOutputIsExactAndHidesSuccessfulArtifacts(t *testing.T) {
-	old := runLifecycleInstall
-	t.Cleanup(func() { runLifecycleInstall = old })
-	runLifecycleInstall = func(_ context.Context, _ string, _ func(string)) (lifecyclepkg.InstallReport, error) {
+	old := runLifecycleHarnessInstall
+	t.Cleanup(func() { runLifecycleHarnessInstall = old })
+	runLifecycleHarnessInstall = func(_ context.Context, _ string, _ []string, _ func(string)) (lifecyclepkg.InstallReport, error) {
 		return lifecyclepkg.InstallReport{
 			Binary: installpkg.BinaryReport{Status: "installed", Version: "1.2.3", Path: "/bin/mimir"},
 			Artifacts: installpkg.ArtifactReport{Artifacts: []installpkg.ArtifactResult{
@@ -26,7 +26,7 @@ func TestCmdInstallOutputIsExactAndHidesSuccessfulArtifacts(t *testing.T) {
 		}, nil
 	}
 	var output bytes.Buffer
-	if err := cmdInstallIO(context.Background(), nil, IO{Out: &output}); err != nil {
+	if err := cmdInstallIO(context.Background(), []string{"--harness", "all"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
 	want := "==> Installing Mimir\n" +
@@ -44,13 +44,13 @@ func TestCmdInstallOutputIsExactAndHidesSuccessfulArtifacts(t *testing.T) {
 }
 
 func TestCmdInstallCurrentOutputIsExact(t *testing.T) {
-	old := runLifecycleInstall
-	t.Cleanup(func() { runLifecycleInstall = old })
-	runLifecycleInstall = func(context.Context, string, func(string)) (lifecyclepkg.InstallReport, error) {
+	old := runLifecycleHarnessInstall
+	t.Cleanup(func() { runLifecycleHarnessInstall = old })
+	runLifecycleHarnessInstall = func(context.Context, string, []string, func(string)) (lifecyclepkg.InstallReport, error) {
 		return lifecyclepkg.InstallReport{Binary: installpkg.BinaryReport{Status: "current", Version: "1.2.3", Path: "/bin/mimir"}}, nil
 	}
 	var output bytes.Buffer
-	if err := cmdInstallIO(context.Background(), nil, IO{Out: &output}); err != nil {
+	if err := cmdInstallIO(context.Background(), []string{"--harness=all"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
 	if want := "==> Installing Mimir\nOK  Mimir 1.2.3 already installed: /bin/mimir\n"; output.String() != want {
@@ -59,13 +59,13 @@ func TestCmdInstallCurrentOutputIsExact(t *testing.T) {
 }
 
 func TestCmdInstallFailureLeavesOneActivityLine(t *testing.T) {
-	old := runLifecycleInstall
-	t.Cleanup(func() { runLifecycleInstall = old })
-	runLifecycleInstall = func(context.Context, string, func(string)) (lifecyclepkg.InstallReport, error) {
+	old := runLifecycleHarnessInstall
+	t.Cleanup(func() { runLifecycleHarnessInstall = old })
+	runLifecycleHarnessInstall = func(context.Context, string, []string, func(string)) (lifecyclepkg.InstallReport, error) {
 		return lifecyclepkg.InstallReport{}, errors.New("install failed")
 	}
 	var output bytes.Buffer
-	err := cmdInstallIO(context.Background(), nil, IO{Out: &output})
+	err := cmdInstallIO(context.Background(), []string{"--harness", "all"}, IO{Out: &output})
 	if err == nil || err.Error() != "install failed" {
 		t.Fatalf("error = %v", err)
 	}

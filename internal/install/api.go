@@ -62,6 +62,26 @@ func CheckArtifacts() (ArtifactReport, error) { return checkManagedArtifacts() }
 func RefreshArtifacts(operation string) (ArtifactReport, error) {
 	return syncManagedArtifacts(true, operation)
 }
+func RefreshSelectedArtifacts(operation string, harnesses []string) (ArtifactReport, error) {
+	return reconcileManagedArtifacts(true, operation, true, true, false, nil, &harnesses)
+}
+func SetHarnessEnabled(id string, enabled bool) (ArtifactReport, error) {
+	ids, err := NormalizeHarnesses([]string{id})
+	if err != nil {
+		return ArtifactReport{}, err
+	}
+	if len(ids) != 1 {
+		return ArtifactReport{}, fmt.Errorf("enable or disable requires one harness id")
+	}
+	return setHarnessEnabled(ids[0], enabled)
+}
+func SetHarnessSelection(harnesses []string) error {
+	normalized, err := NormalizeHarnesses(harnesses)
+	if err != nil {
+		return err
+	}
+	return setHarnessSelection(normalized)
+}
 func RefreshPreviouslyManagedArtifacts(operation string) (ArtifactReport, error) {
 	return syncPreviouslyManagedArtifacts(operation)
 }

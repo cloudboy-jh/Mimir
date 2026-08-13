@@ -98,7 +98,7 @@ func TestExecuteInstallJSONEnrollsArtifacts(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	binDir := t.TempDir()
 	var output bytes.Buffer
-	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", binDir, "--json"}, IO{Out: &output}); err != nil {
+	if err := ExecuteIO(context.Background(), []string{"install", "--harness", "all", "--bin-dir", binDir, "--json"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
 	var report lifecyclepkg.InstallReport
@@ -136,7 +136,7 @@ func TestExecuteInstallPreservesConflictingHermesPluginWithoutEnablingIt(t *test
 		runHermesPluginCommand = oldRunHermesPluginCommand
 	})
 	var output bytes.Buffer
-	if err := ExecuteIO(context.Background(), []string{"install", "--bin-dir", t.TempDir(), "--json"}, IO{Out: &output}); err != nil {
+	if err := ExecuteIO(context.Background(), []string{"install", "--harness=all", "--bin-dir", t.TempDir(), "--json"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
 	var report lifecyclepkg.InstallReport
@@ -232,7 +232,7 @@ func TestExecuteUsage(t *testing.T) {
 	if err := ExecuteIO(context.Background(), nil, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "mimir setup [--json]") || !strings.Contains(output.String(), "mimir demo [--no-open]") {
+	if !strings.Contains(output.String(), "mimir setup [--account-id <id>] [--json]") || !strings.Contains(output.String(), "mimir demo [--no-open]") {
 		t.Fatalf("usage output %q", output.String())
 	}
 }

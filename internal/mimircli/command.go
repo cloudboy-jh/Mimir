@@ -150,6 +150,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return login(ctx, args[1:], ioctx)
 	case "install":
 		return cmdInstallIO(ctx, args[1:], ioctx)
+	case "harness":
+		return cmdHarness(ctx, args[1:], ioctx)
 	case "uninstall":
 		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
@@ -247,6 +249,13 @@ func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
+	var selected []string
+	var explicit bool
+	var err error
+	args, selected, explicit, err = parseInstallHarnesses(args)
+	if err != nil {
+		return err
+	}
 	jsonOutput, binDir := false, ""
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -261,11 +270,15 @@ func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 		case strings.HasPrefix(args[i], "--bin-dir="):
 			binDir = strings.TrimPrefix(args[i], "--bin-dir=")
 		default:
-			return fmt.Errorf("usage: mimir install [--bin-dir <dir>] [--json]")
+			return fmt.Errorf("usage: mimir install --harness <id|all> [--harness <id>] [--bin-dir <dir>] [--json]")
 		}
 	}
 	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
 		return fmt.Errorf("--bin-dir requires a value")
+	}
+	selected, err = installHarnessSelection(ioctx, jsonOutput, explicit, selected)
+	if err != nil {
+		return err
 	}
 	guard := startInterruptGuard(ctx)
 	defer guard.Stop()
@@ -275,7 +288,7 @@ func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
 	if !jsonOutput {
 		_ = lines.Phase("Installing Mimir")
 	}
-	report, err := runLifecycleInstall(ctx, binDir, func(message string) {
+	report, err := runLifecycleHarnessInstall(ctx, binDir, selected, func(message string) {
 		if !jsonOutput {
 			_ = lines.Phase(message)
 		}
@@ -613,12 +626,13 @@ func printRemoteData(out io.Writer, data []byte) error {
 func usage(out io.Writer) error {
 	render := cliui.New(out)
 	commands := []cliui.CommandItem{
-		{Usage: "mimir setup [--json]", Description: "Provision or reconnect Mimir."},
-		{Usage: "mimir install [--bin-dir <dir>] [--json]", Description: "Install the CLI and managed harness files."},
+		{Usage: "mimir setup [--account-id <id>] [--json]", Description: "Provision or reconnect Mimir."},
+		{Usage: "mimir install --harness <id|all> [--json]", Description: "Install the CLI and selected harness files."},
+		{Usage: "mimir harness <list|enable|disable>", Description: "Inspect or change installed harnesses."},
 		{Usage: "mimir uninstall [--keep-binary] [--json]", Description: "Remove owned local files without deleting memory."},
-		{Usage: "mimir deploy [--json]", Description: "Deploy the bundled Worker and dashboard."},
-		{Usage: "mimir access [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
-		{Usage: "mimir login [--json]", Description: "Authenticate and register this machine."},
+		{Usage: "mimir deploy [--account-id <id>] [--json]", Description: "Deploy the bundled Worker and dashboard."},
+		{Usage: "mimir access [--account-id <id>] [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
+		{Usage: "mimir login [--account-id <id>] [--json]", Description: "Authenticate and register this machine."},
 		{Usage: "mimir demo [--no-open]", Description: "Explore sample sessions in a local browser."},
 		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
 		{Usage: "mimir list [filters] [--json]", Description: "List captured work sessions."},

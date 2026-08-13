@@ -103,9 +103,19 @@ func (w *commandOutput) String() string {
 }
 
 func (w Wrangler) Run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
+	if accountID := wranglerAccountID(ctx); accountID != "" {
+		if _, err := removeMismatchedWranglerAccountCache(dir, accountID); err != nil {
+			return "", err
+		}
+	}
+	return w.run(ctx, dir, stdin, args...)
+}
+
+func (w Wrangler) run(ctx context.Context, dir string, stdin io.Reader, args ...string) (string, error) {
 	name, commandArgs := wranglerCommand(dir, args)
 	cmd := exec.CommandContext(ctx, name, commandArgs...)
 	cmd.Dir, cmd.Stdin = dir, stdin
+	cmd.Env = wranglerEnvironment(os.Environ(), wranglerAccountID(ctx))
 	var output string
 	var err error
 	if w.observe == nil {
@@ -135,7 +145,69 @@ func (Wrangler) Interactive(ctx context.Context, dir string, streams Streams, ar
 	name, commandArgs := wranglerCommand(dir, args)
 	cmd := exec.CommandContext(ctx, name, commandArgs...)
 	cmd.Dir, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, streams.In, streams.Out, streams.Err
+	cmd.Env = wranglerEnvironment(os.Environ(), wranglerAccountID(ctx))
 	return cmd.Run()
+}
+
+func wranglerEnvironment(current []string, accountID string) []string {
+	if strings.TrimSpace(accountID) == "" {
+		return current
+	}
+	env := make([]string, 0, len(current)+1)
+	for _, entry := range current {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(name, "CLOUDFLARE_ACCOUNT_ID") {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "CLOUDFLARE_ACCOUNT_ID="+accountID)
+}
+
+func removeMismatchedWranglerAccountCache(dir, accountID string) (bool, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return false, nil
+	}
+	cacheDir := dir
+	for _, component := range []string{"node_modules", ".cache", "wrangler"} {
+		cacheDir = filepath.Join(cacheDir, component)
+		info, err := os.Lstat(cacheDir)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("checking Wrangler account cache directory %s: %w", cacheDir, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false, fmt.Errorf("Wrangler account cache directory %s is not a real directory; remove the stale cache manually", cacheDir)
+		}
+	}
+	path := filepath.Join(cacheDir, "wrangler-account.json")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking Wrangler account cache %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("Wrangler account cache %s is not a regular file; remove it manually before deploying", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading Wrangler account cache %s: %w", path, err)
+	}
+	var cached struct {
+		Account struct {
+			ID string `json:"id"`
+		} `json:"account"`
+	}
+	if json.Unmarshal(data, &cached) != nil || strings.TrimSpace(cached.Account.ID) == "" || strings.TrimSpace(cached.Account.ID) == strings.TrimSpace(accountID) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return false, fmt.Errorf("removing stale Wrangler account cache %s: %w", path, err)
+	}
+	return true, nil
 }
 
 func wranglerCommand(dir string, args []string) (string, []string) {

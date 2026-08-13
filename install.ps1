@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Version = $env:MIMIR_VERSION,
-    [string]$BinDir = $env:MIMIR_INSTALL_DIR
+    [string]$BinDir = $env:MIMIR_INSTALL_DIR,
+    [string[]]$Harness
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,7 +129,11 @@ function Install-Mimir {
         $priorSource = $env:MIMIR_INSTALL_SOURCE
         try {
             $env:MIMIR_INSTALL_SOURCE = "release"
-            & $binary install --bin-dir $BinDir
+            $installArgs = @("install", "--bin-dir", $BinDir)
+            foreach ($id in $Harness) {
+                $installArgs += @("--harness", $id)
+            }
+            & $binary @installArgs
             if ($LASTEXITCODE -ne 0) {
                 throw "Mimir exited with status $LASTEXITCODE"
             }

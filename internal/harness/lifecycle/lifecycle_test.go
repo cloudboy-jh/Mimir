@@ -311,6 +311,70 @@ func TestInstallDoesNotConfigureProviderUntilArtifactsAreReady(t *testing.T) {
 	}
 }
 
+func TestInstallRollsBackNewHermesSelectionWhenEnableFails(t *testing.T) {
+	hermesHome := t.TempDir()
+	events := []string{}
+	service := New()
+	receipt := testReceipt(t, "", "", nil)
+	receipt.Harnesses = []string{"opencode"}
+	service.LoadReceipt = func() (install.Receipt, error) { return receipt, nil }
+	service.InstallHarnessFiles = func(string, []string, func() (string, error)) (install.InstallReport, error) {
+		events = append(events, "files")
+		return install.InstallReport{Artifacts: install.ArtifactReport{Artifacts: []install.ArtifactResult{{
+			Path: filepath.Join(hermesHome, "plugins", "mimir", "plugin.yaml"), Source: "plugins/hermes/plugin.yaml", Status: install.ArtifactInstalled,
+		}}}}, nil
+	}
+	service.Paths = func() (install.InstallationPaths, error) {
+		return install.InstallationPaths{HermesHome: hermesHome, HermesDetected: true}, nil
+	}
+	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
+	service.Hermes.RunPluginCommand = func(_ context.Context, _ string, args ...string) error {
+		events = append(events, args[0])
+		if args[0] == "enable" {
+			return errors.New("enable failed")
+		}
+		return nil
+	}
+	service.Hermes.Discover = func() (string, bool, error) { return hermesHome, true, nil }
+	service.RefreshSelected = func(_ string, selected []string) (install.ArtifactReport, error) {
+		events = append(events, "rollback:"+strings.Join(selected, ","))
+		return install.ArtifactReport{}, nil
+	}
+	_, err := service.InstallSelected(context.Background(), "", []string{"opencode", "hermes"}, func() (string, error) { return "", nil })
+	if err == nil || !strings.Contains(err.Error(), "enable failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := strings.Join(events, ","); got != "files,enable,disable,rollback:opencode" {
+		t.Fatalf("ordering = %s", got)
+	}
+}
+
+func TestInstallDoesNotCommitHermesDeselectionWhenTeardownFails(t *testing.T) {
+	events := []string{}
+	service := New()
+	receipt := testReceipt(t, "", "", nil)
+	receipt.Harnesses = []string{"opencode", "hermes"}
+	service.LoadReceipt = func() (install.Receipt, error) { return receipt, nil }
+	service.Paths = func() (install.InstallationPaths, error) {
+		return install.InstallationPaths{HermesHome: t.TempDir(), HermesDetected: true}, nil
+	}
+	service.Hermes.RunPluginCommand = func(context.Context, string, ...string) error {
+		events = append(events, "disable")
+		return errors.New("disable failed")
+	}
+	service.InstallHarnessFiles = func(string, []string, func() (string, error)) (install.InstallReport, error) {
+		events = append(events, "files")
+		return install.InstallReport{}, nil
+	}
+	_, err := service.InstallSelected(context.Background(), "", []string{"opencode"}, func() (string, error) { return "", nil })
+	if err == nil || !strings.Contains(err.Error(), "disable failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := strings.Join(events, ","); got != "disable" {
+		t.Fatalf("ordering = %s", got)
+	}
+}
+
 func TestUninstallDisablesOwnedHermesBeforeRemovingFiles(t *testing.T) {
 	hermesHome := t.TempDir()
 	events := []string{}

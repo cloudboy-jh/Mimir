@@ -17,6 +17,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
@@ -131,7 +132,7 @@ func (setupWrangler) Run(_ context.Context, _ string, _ io.Reader, args ...strin
 	case "whoami":
 		return "authenticated", nil
 	case "whoami --json":
-		return `{"loggedIn":true,"accounts":[{"id":"account","name":"Account"}]}`, nil
+		return `{"loggedIn":true,"accounts":[{"id":"other","name":"Other"},{"id":"account","name":"Account"}]}`, nil
 	case "secret list --format json":
 		return `[{"name":"OPENROUTER_API_KEY"}]`, nil
 	case "deploy":
@@ -152,7 +153,7 @@ func (f setupRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, er
 	return f(request)
 }
 
-func TestProvisionJSONSuccessHasNoProgressPanic(t *testing.T) {
+func TestSetupJSONSelectsAccountWithMultipleAccounts(t *testing.T) {
 	isolatedInstallation(t, false)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/whoami" {
@@ -181,8 +182,8 @@ func TestProvisionJSONSuccessHasNoProgressPanic(t *testing.T) {
 	}
 	t.Cleanup(func() { newDeploymentService = oldFactory })
 	var output bytes.Buffer
-	opts := setupOptions{JSON: true, WorkerDir: t.TempDir(), WorkerName: "mimir", DatabaseName: "mimir", DatabaseID: "database-uuid", BucketName: "mimir-logs"}
-	if err := provision(context.Background(), opts, IO{Out: &output, Err: &output}); err != nil {
+	args := []string{"--json", "--worker-dir", t.TempDir(), "--database-id", "database-uuid", "--account-id", "account"}
+	if err := setup(context.Background(), args, IO{Out: &output, Err: &output}); err != nil {
 		t.Fatal(err)
 	}
 	var result struct {
@@ -193,6 +194,39 @@ func TestProvisionJSONSuccessHasNoProgressPanic(t *testing.T) {
 	}
 	if result.State != "ready" {
 		t.Fatalf("result = %s", output.String())
+	}
+}
+
+func TestLoginExistingPointerHonorsAccountEnvironment(t *testing.T) {
+	isolatedInstallation(t, false)
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "missing")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		fmt.Fprint(w, `{"sessions":0}`)
+	}))
+	defer server.Close()
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
+		t.Fatal(err)
+	}
+	identity := deployment.Identity{LoggedIn: true}
+	identity.Accounts = append(identity.Accounts, struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}{ID: "account", Name: "Account"})
+	if err := deployment.SaveIdentity(identity); err != nil {
+		t.Fatal(err)
+	}
+	oldFactory := newDeploymentService
+	newDeploymentService = func(deployment.HTTPDoer) *deployment.Service {
+		service := deployment.NewService(nil)
+		service.Installer = setupInstaller{}
+		service.Wrangler = setupWrangler{}
+		return service
+	}
+	t.Cleanup(func() { newDeploymentService = oldFactory })
+
+	err := login(context.Background(), []string{"--json"}, IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "selected by CLOUDFLARE_ACCOUNT_ID is not among the authenticated accounts") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

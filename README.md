@@ -286,7 +286,9 @@ accidental retention, but it cannot guarantee removal of every secret.
 ## Command reference
 
 ```text
-mimir install                         reconcile managed local artifacts
+mimir install --harness <id|all>      install selected harness integrations
+mimir harness list                    list selected and detected harnesses
+mimir harness enable|disable <id>     change the persisted harness selection
 mimir setup                           provision and deploy Mimir
 mimir login                           connect another machine
 mimir demo [--no-open]                explore sample sessions locally
@@ -308,8 +310,15 @@ the default source; arbitrary source requires explicit `--worker-dir <path>`.
 Run `mimir help advanced` for code recall, connection, configuration, and
 diagnostic commands.
 
-`mimir install` creates or reconciles only receipt-managed integrations. For
-Pi, it installs `~/.pi/agent/extensions/mimir.ts` (or
+`mimir install` accepts repeatable `--harness <id>` flags in canonical order:
+OpenCode, Pi, Hermes, Claude Code, Codex, and Cursor. Use `--harness all` for
+every integration. Interactive installs without flags prompt once and default
+to detected harnesses; JSON and other noninteractive installs require explicit
+selection. `mimir harness disable` removes only unmodified receipt-owned files
+and preserves modified files and their ownership records.
+
+`mimir install` creates or reconciles only selected receipt-managed
+integrations. For Pi, it installs `~/.pi/agent/extensions/mimir.ts` (or
 `$PI_CODING_AGENT_DIR/extensions/mimir.ts`); restart Pi to activate it.
 `mimir setup` and `mimir login` refresh integrations only when a managed installation
 receipt already exists; they do not silently enroll global hook files. Updates

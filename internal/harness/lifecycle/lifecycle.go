@@ -62,6 +62,8 @@ type Service struct {
 	LoadPointer              func() (mimirapi.Pointer, error)
 	LoadReceipt              func() (install.Receipt, error)
 	InstallFiles             func(string, func() (string, error)) (install.InstallReport, error)
+	InstallHarnessFiles      func(string, []string, func() (string, error)) (install.InstallReport, error)
+	RefreshSelected          func(string, []string) (install.ArtifactReport, error)
 	UninstallFiles           func(bool) (install.UninstallReport, error)
 	Hermes                   hermesintegration.Service
 	Step                     func(string)
@@ -76,17 +78,64 @@ func New() Service {
 		LoadPointer:              mimirapi.LoadPointer,
 		LoadReceipt:              install.LoadReceipt,
 		InstallFiles:             install.Install,
+		InstallHarnessFiles:      install.InstallHarnesses,
+		RefreshSelected:          install.RefreshSelectedArtifacts,
 		UninstallFiles:           install.Uninstall,
 		Hermes:                   hermesintegration.New(),
 	}
 }
 
 func (s Service) Install(ctx context.Context, explicitDir string, executable func() (string, error)) (InstallReport, error) {
+	return s.InstallSelected(ctx, explicitDir, nil, executable)
+}
+
+func (s Service) InstallSelected(ctx context.Context, explicitDir string, selected []string, executable func() (string, error)) (InstallReport, error) {
 	if err := ctx.Err(); err != nil {
 		return InstallReport{}, err
 	}
-	mechanical, err := s.InstallFiles(explicitDir, executable)
+	var prior []string
+	hermesDeselected := false
+	if selected != nil {
+		receipt, err := s.LoadReceipt()
+		if err != nil {
+			return InstallReport{}, err
+		}
+		prior = append([]string(nil), receipt.Harnesses...)
+		hermesDeselected = selectedHarnessSet(prior)["hermes"] && !selectedHarnessSet(selected)["hermes"]
+		if hermesDeselected {
+			paths, err := s.Paths()
+			if err != nil {
+				return InstallReport{}, err
+			}
+			if paths.HermesDetected {
+				if err := s.Hermes.Disable(ctx, paths.HermesHome); err != nil {
+					return InstallReport{}, err
+				}
+				if state := s.Hermes.Uninstall(); state.State == "preserved" {
+					if enableErr := s.Hermes.Enable(ctx, paths.HermesHome); enableErr != nil {
+						return InstallReport{}, fmt.Errorf("removing Hermes route: %s (restoring Hermes plugin: %v)", state.Detail, enableErr)
+					}
+					return InstallReport{}, fmt.Errorf("removing Hermes route: %s", state.Detail)
+				}
+			}
+		}
+	}
+	var mechanical install.InstallReport
+	var err error
+	if selected == nil {
+		mechanical, err = s.InstallFiles(explicitDir, executable)
+	} else {
+		mechanical, err = s.InstallHarnessFiles(explicitDir, selected, executable)
+	}
 	if err != nil {
+		if hermesDeselected {
+			paths, pathErr := s.Paths()
+			if pathErr == nil && paths.HermesDetected {
+				if restoreErr := s.restoreHermes(ctx, paths); restoreErr != nil {
+					return InstallReport{}, fmt.Errorf("%w (restoring Hermes after install failure: %v)", err, restoreErr)
+				}
+			}
+		}
 		return InstallReport{}, err
 	}
 	s.step("CLI and managed artifacts installed")
@@ -95,9 +144,20 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	if err != nil {
 		return InstallReport{}, err
 	}
+	selectedSet := selectedHarnessSet(selected)
+	if selected == nil {
+		selectedSet = allHarnessSet()
+		if receipt, loadErr := s.LoadReceipt(); loadErr == nil {
+			if receipt.Harnesses != nil {
+				selectedSet = selectedHarnessSet(receipt.Harnesses)
+			}
+		}
+	}
 	report := InstallReport{Binary: mechanical.Binary, Artifacts: mechanical.Artifacts, HermesReady: true}
 	pointer, pointerErr := s.LoadPointer()
-	if paths.PiHome == "" {
+	if !selectedSet["pi"] {
+		report.Pi = unselectedState()
+	} else if paths.PiHome == "" {
 		report.Pi = harness.IntegrationState{State: "skipped", Detail: "Pi extension path is unavailable"}
 	} else if install.ArtifactsReady(mechanical.Artifacts, paths.PiHome, "plugins/pi/") {
 		report.Pi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Pi capture extension staged; restart Pi to route OpenRouter and capture direct-provider turns"}
@@ -105,37 +165,44 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
 	}
 	report.PiReady = report.Pi.State != "failed"
-	if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
+	if !selectedSet["opencode"] {
+		report.OpenCode = unselectedState()
+	} else if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
 		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 	}
 	report.OpenCodeReady = report.OpenCode.State != "failed"
-	report.ClaudeCode = hookArtifactState(mechanical.Artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
-	report.Codex = hookArtifactState(mechanical.Artifacts, paths.CodexHome, "plugins/codex/", "Codex")
-	report.Cursor = hookArtifactState(mechanical.Artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
+	report.ClaudeCode = selectedHookState(selectedSet["claude-code"], mechanical.Artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
+	report.Codex = selectedHookState(selectedSet["codex"], mechanical.Artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Cursor = selectedHookState(selectedSet["cursor"], mechanical.Artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
 	s.step("OpenCode integration configured")
-	if paths.HermesDetected {
+	if !selectedSet["hermes"] {
+		report.Hermes = unselectedState()
+	} else if paths.HermesDetected {
 		if !install.ArtifactsReady(mechanical.Artifacts, paths.HermesHome, hermesintegration.ArtifactSourcePrefixes()...) {
 			report.HermesReady = false
 			report.Hermes = harness.IntegrationState{State: "failed", Scope: "all-providers", Detail: "conflicting or modified Hermes plugin files were preserved"}
+			if err := s.rollbackHermesSelection(ctx, paths, prior, selected, false, fmt.Errorf("%s", report.Hermes.Detail)); err != nil && strings.Contains(err.Error(), "rollback incomplete") {
+				return InstallReport{}, err
+			}
 		} else {
 			if pointerErr != nil {
 				if err := s.Hermes.Enable(ctx, paths.HermesHome); err != nil {
-					return InstallReport{}, err
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, err)
 				}
 				report.Hermes = harness.IntegrationState{State: "staged", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin staged; activation is unverified until a load is reported; connect Mimir to install the OpenRouter route"}
 			} else {
 				manifest, err := s.Manifest(pointer.URL)
 				if err != nil {
-					return InstallReport{}, err
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, err)
 				}
 				installed, err := s.Hermes.Configure(ctx, pointer, manifest)
 				if err != nil {
-					return InstallReport{}, err
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, err)
 				}
 				if !installed {
-					return InstallReport{}, fmt.Errorf("Hermes disappeared during installation")
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, fmt.Errorf("Hermes disappeared during installation"))
 				}
 				report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture staged; activation is unverified until a load is reported"}
 			}
@@ -146,6 +213,47 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	s.step("Hermes integration checked")
 	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.PiReady || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.Pi, report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
 	return report, nil
+}
+
+func (s Service) rollbackHermesSelection(ctx context.Context, paths install.InstallationPaths, prior, selected []string, teardown bool, cause error) error {
+	if selected == nil || selectedHarnessSet(prior)["hermes"] || !selectedHarnessSet(selected)["hermes"] {
+		return cause
+	}
+	var rollback []string
+	if teardown && paths.HermesDetected {
+		if err := s.Hermes.Disable(ctx, paths.HermesHome); err != nil {
+			rollback = append(rollback, err.Error())
+		}
+		if state := s.Hermes.Uninstall(); state.State == "preserved" {
+			rollback = append(rollback, state.Detail)
+		}
+	}
+	if _, err := s.RefreshSelected("install-rollback", prior); err != nil {
+		rollback = append(rollback, err.Error())
+	}
+	if len(rollback) > 0 {
+		return fmt.Errorf("%w (Hermes rollback incomplete: %s)", cause, strings.Join(rollback, "; "))
+	}
+	return cause
+}
+
+func (s Service) restoreHermes(ctx context.Context, paths install.InstallationPaths) error {
+	pointer, err := s.LoadPointer()
+	if err != nil {
+		return s.Hermes.Enable(ctx, paths.HermesHome)
+	}
+	manifest, err := s.Manifest(pointer.URL)
+	if err != nil {
+		return err
+	}
+	installed, err := s.Hermes.Configure(ctx, pointer, manifest)
+	if err != nil {
+		return err
+	}
+	if !installed {
+		return fmt.Errorf("Hermes disappeared while restoring its integration")
+	}
+	return nil
 }
 
 func (s Service) step(message string) {
@@ -324,7 +432,13 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	if err != nil {
 		return report, err
 	}
-	if paths.PiHome == "" {
+	selected := allHarnessSet()
+	if receipt, loadErr := s.LoadReceipt(); loadErr == nil && receipt.Harnesses != nil {
+		selected = selectedHarnessSet(receipt.Harnesses)
+	}
+	if !selected["pi"] {
+		report.Pi = unselectedState()
+	} else if paths.PiHome == "" {
 		report.Pi = harness.IntegrationState{State: "skipped", Detail: "Pi extension path is unavailable"}
 	} else if install.ArtifactsReady(artifacts, paths.PiHome, "plugins/pi/") {
 		report.Pi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Pi capture extension staged; activation is unverified until a load is reported"}
@@ -332,16 +446,20 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
 		failures = append(failures, report.Pi.Detail)
 	}
-	if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
+	if !selected["opencode"] {
+		report.OpenCode = unselectedState()
+	} else if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
 		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 		failures = append(failures, report.OpenCode.Detail)
 	}
-	report.ClaudeCode = hookArtifactState(artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
-	report.Codex = hookArtifactState(artifacts, paths.CodexHome, "plugins/codex/", "Codex")
-	report.Cursor = hookArtifactState(artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
-	if _, found, discoverErr := s.Hermes.Discover(); discoverErr != nil {
+	report.ClaudeCode = selectedHookState(selected["claude-code"], artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
+	report.Codex = selectedHookState(selected["codex"], artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Cursor = selectedHookState(selected["cursor"], artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
+	if !selected["hermes"] {
+		report.Hermes = unselectedState()
+	} else if _, found, discoverErr := s.Hermes.Discover(); discoverErr != nil {
 		failures = append(failures, discoverErr.Error())
 	} else if !found {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
@@ -360,6 +478,29 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		return report, fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return report, nil
+}
+
+func selectedHarnessSet(selected []string) map[string]bool {
+	result := map[string]bool{}
+	for _, id := range selected {
+		result[id] = true
+	}
+	return result
+}
+
+func allHarnessSet() map[string]bool {
+	return map[string]bool{"opencode": true, "pi": true, "hermes": true, "claude-code": true, "codex": true, "cursor": true}
+}
+
+func unselectedState() harness.IntegrationState {
+	return harness.IntegrationState{State: "skipped", Detail: "harness is not selected"}
+}
+
+func selectedHookState(selected bool, artifacts install.ArtifactReport, root, prefix, label string) harness.IntegrationState {
+	if !selected {
+		return unselectedState()
+	}
+	return hookArtifactState(artifacts, root, prefix, label)
 }
 
 func hookArtifactState(artifacts install.ArtifactReport, root, prefix, label string) harness.IntegrationState {

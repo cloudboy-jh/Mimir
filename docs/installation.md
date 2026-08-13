@@ -20,10 +20,24 @@ Set `MIMIR_VERSION` to select a release or `MIMIR_INSTALL_DIR` to select the
 binary directory. When that directory is outside `PATH`, the bootstrap prints
 the exact command needed to add it.
 
+Interactive bootstrap use prompts for detected harnesses. Automation must pass
+the selection through, for example `curl -fsSL <install.sh-url> | sh -s --
+--harness opencode`, or invoke downloaded `install.ps1` with `-Harness
+opencode,codex`.
+
 `go install github.com/cloudboy-jh/mimir/cmd/mimir@latest` creates only a Go
 binary. It does not create an ownership receipt or install integrations. Use it
 only for source-oriented workflows, then run `mimir install` to adopt a verified
 binary when no other binary owner is recorded.
+
+Interactive `mimir install` prompts once for harness selection and defaults to
+detected harnesses in this order: OpenCode, Pi, Hermes, Claude Code, Codex, and
+Cursor. Automation must select explicitly with repeatable `--harness <id>` or
+`--harness all`; JSON and noninteractive installs never prompt. Inspect or
+change the persisted selection with `mimir harness list`, `mimir harness enable
+<id>`, and `mimir harness disable <id>`. Disable removes only receipt-owned,
+unmodified artifacts. Modified or otherwise unsafe files remain owned and are
+preserved for a later enable or full ownership-driven uninstall.
 
 ## Choose A Connection Path
 

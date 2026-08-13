@@ -160,6 +160,120 @@ func TestReadIdentityUsesLocalWrangler(t *testing.T) {
 	}
 }
 
+func TestWranglerEnvironmentPinsAccount(t *testing.T) {
+	env := wranglerEnvironment([]string{"PATH=test", "CLOUDFLARE_ACCOUNT_ID=old", "OTHER=value"}, "selected")
+	if !slices.Contains(env, "CLOUDFLARE_ACCOUNT_ID=selected") || slices.Contains(env, "CLOUDFLARE_ACCOUNT_ID=old") {
+		t.Fatalf("environment = %v", env)
+	}
+}
+
+func TestRemoveMismatchedWranglerAccountCache(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "node_modules", ".cache", "wrangler")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cacheDir, "wrangler-account.json")
+	if err := os.WriteFile(path, []byte(`{"account":{"id":"old-account","name":"Old"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removeMismatchedWranglerAccountCache(dir, "selected-account")
+	if err != nil || !removed {
+		t.Fatalf("removed = %v, error = %v", removed, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cache still exists: %v", err)
+	}
+}
+
+func TestRemoveMismatchedWranglerAccountCachePreservesMatchingAndNonRegularFiles(t *testing.T) {
+	t.Run("matching", func(t *testing.T) {
+		dir := t.TempDir()
+		cacheDir := filepath.Join(dir, "node_modules", ".cache", "wrangler")
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(cacheDir, "wrangler-account.json")
+		if err := os.WriteFile(path, []byte(`{"account":{"id":"selected-account"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		removed, err := removeMismatchedWranglerAccountCache(dir, "selected-account")
+		if err != nil || removed {
+			t.Fatalf("removed = %v, error = %v", removed, err)
+		}
+	})
+	t.Run("directory", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "node_modules", ".cache", "wrangler", "wrangler-account.json")
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		removed, err := removeMismatchedWranglerAccountCache(dir, "selected-account")
+		if err == nil || removed || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("removed = %v, error = %v", removed, err)
+		}
+		if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
+			t.Fatalf("cache directory was changed: %v", statErr)
+		}
+	})
+}
+
+func TestWranglerDoesNotReplayFailedMutatingCommand(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "node_modules", ".bin")
+	cacheDir := filepath.Join(dir, "node_modules", ".cache", "wrangler")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(bin, "wrangler")
+	script := `#!/bin/sh
+marker="node_modules/.cache/wrangler/calls"
+cache="node_modules/.cache/wrangler/wrangler-account.json"
+printf x >> "$marker"
+printf '%s' '{"account":{"id":"wrong"}}' > "$cache"
+exit 1
+`
+	if runtime.GOOS == "windows" {
+		path += ".cmd"
+		script = `@echo off
+set marker=node_modules\.cache\wrangler\calls
+set cache=node_modules\.cache\wrangler\wrangler-account.json
+<nul set /p=x>>"%marker%"
+echo {"account":{"id":"wrong"}} > "%cache%"
+exit /b 1
+`
+	}
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := withWranglerAccount(context.Background(), "selected")
+	if _, err := (Wrangler{}).Run(ctx, dir, nil, "deploy"); err == nil {
+		t.Fatal("failed deploy unexpectedly succeeded")
+	}
+	calls, err := os.ReadFile(filepath.Join(cacheDir, "calls"))
+	if err != nil || string(calls) != "x" {
+		t.Fatalf("command calls = %q, error = %v", calls, err)
+	}
+}
+
+func TestRemoveMismatchedWranglerAccountCacheRejectsSymlinkAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is not generally available on Windows")
+	}
+	dir := t.TempDir()
+	target := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removeMismatchedWranglerAccountCache(dir, "selected")
+	if err == nil || removed || !strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("removed = %v, error = %v", removed, err)
+	}
+}
+
 func TestLoginUsesWranglerResolvableDatabaseTarget(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "node_modules", ".bin")

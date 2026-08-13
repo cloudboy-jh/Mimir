@@ -14,7 +14,7 @@ import (
 
 func login(ctx context.Context, args []string, ioctx IO) error {
 	opts := setupOptions{WorkerName: "mimir", DatabaseName: "mimir", BucketName: "mimir-logs"}
-	forceDiscovery := false
+	forceDiscovery := strings.TrimSpace(os.Getenv("CLOUDFLARE_ACCOUNT_ID")) != ""
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--json" {
 			opts.JSON = true
@@ -35,6 +35,12 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 			forceDiscovery = true
 		case "--database-name":
 			opts.DatabaseName = args[i+1]
+			forceDiscovery = true
+		case "--account-id":
+			opts.AccountID = args[i+1]
+			if strings.TrimSpace(opts.AccountID) == "" {
+				return fmt.Errorf("--account-id requires a non-empty value")
+			}
 			forceDiscovery = true
 		default:
 			return fmt.Errorf("unknown login option %q", args[i])
@@ -68,7 +74,8 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	}
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName, domainOpts.Noninteractive = opts.WorkerDir, opts.WorkerName, opts.DatabaseName, opts.JSON
-	service := deployment.NewService(httpClient)
+	domainOpts.AccountID = opts.AccountID
+	service := newDeploymentService(httpClient)
 	if opts.Progress != nil {
 		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
 	}

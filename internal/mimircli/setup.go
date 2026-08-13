@@ -24,6 +24,7 @@ type setupOptions struct {
 	DatabaseName  string
 	DatabaseID    string
 	BucketName    string
+	AccountID     string
 	OpenRouterKey string
 	AccessEmail   string
 	JSON          bool
@@ -84,6 +85,15 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 			opts.BucketName, err = value()
 			if err != nil {
 				return err
+			}
+		case "--account-id":
+			var err error
+			opts.AccountID, err = value()
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(opts.AccountID) == "" {
+				return fmt.Errorf("--account-id requires a non-empty value")
 			}
 		case "--access-email":
 			var err error
@@ -163,6 +173,7 @@ func provision(ctx context.Context, opts setupOptions, ioctx IO) error {
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName = opts.WorkerDir, opts.WorkerName
 	domainOpts.DatabaseName, domainOpts.DatabaseID, domainOpts.BucketName = opts.DatabaseName, opts.DatabaseID, opts.BucketName
+	domainOpts.AccountID = opts.AccountID
 	domainOpts.OpenRouterKey = strings.TrimSpace(opts.OpenRouterKey)
 	if domainOpts.OpenRouterKey == "" {
 		domainOpts.OpenRouterKey = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))

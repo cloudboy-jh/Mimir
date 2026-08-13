@@ -18,7 +18,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/artifactpaths"
 )
 
-const installReceiptSchema = 2
+const installReceiptSchema = 3
 
 type managedArtifactStatus string
 
@@ -74,6 +74,7 @@ type installReceipt struct {
 	Method         string                            `json:"method,omitempty"`
 	CLI            installReceiptCLI                 `json:"cli"`
 	BundleVersion  string                            `json:"bundle_version"`
+	Harnesses      []string                          `json:"harnesses"`
 	Artifacts      map[string]installReceiptArtifact `json:"artifacts"`
 	migrated       bool
 }
@@ -214,10 +215,15 @@ func loadInstallReceipt() (installReceipt, error) {
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		return installReceipt{}, fmt.Errorf("decoding install receipt: %w", err)
 	}
-	if receipt.Schema != 1 && receipt.Schema != installReceiptSchema {
+	if receipt.Schema != 1 && receipt.Schema != 2 && receipt.Schema != installReceiptSchema {
 		return installReceipt{}, fmt.Errorf("unsupported install receipt schema %d", receipt.Schema)
 	}
-	if receipt.Schema == 1 {
+	if receipt.Schema == 1 || receipt.Schema == 2 {
+		paths, pathErr := managedInstallationPaths()
+		if pathErr != nil {
+			return installReceipt{}, pathErr
+		}
+		receipt.Harnesses = legacyHarnesses(paths, receipt.Artifacts)
 		receipt.Schema = installReceiptSchema
 		receipt.migrated = true
 	}
@@ -241,15 +247,15 @@ type installReceiptUpdate struct {
 // absent targets; refresh only touches files already owned by the receipt or
 // files whose bytes are identical to the bundle.
 func syncManagedArtifacts(enroll bool, operation string) (managedArtifactReport, error) {
-	return reconcileManagedArtifacts(enroll, operation, true, true, false, nil)
+	return reconcileManagedArtifacts(enroll, operation, true, true, false, nil, nil)
 }
 
 func syncPreviouslyManagedArtifacts(operation string) (managedArtifactReport, error) {
-	return reconcileManagedArtifacts(false, operation, true, false, true, nil)
+	return reconcileManagedArtifacts(false, operation, true, false, true, nil, nil)
 }
 
 func syncInstallArtifacts(update installReceiptUpdate) (managedArtifactReport, error) {
-	return reconcileManagedArtifacts(true, "install", true, true, false, &update)
+	return reconcileManagedArtifacts(true, "install", true, true, false, &update, nil)
 }
 
 func refreshManagedInstallation(enroll bool, operation string) (managedArtifactReport, error) {
@@ -265,9 +271,9 @@ func refreshManagedInstallation(enroll bool, operation string) (managedArtifactR
 		// Artifact refresh must never transfer binary ownership to whichever
 		// executable happened to invoke it. Only an in-place update of the
 		// receipt-recorded binary may refresh its version and hash.
-		return reconcileManagedArtifacts(enroll, operation, true, true, false, nil)
+		return reconcileManagedArtifacts(enroll, operation, true, true, false, nil, nil)
 	}
-	return reconcileManagedArtifacts(enroll, operation, true, true, false, &installReceiptUpdate{CLI: cli})
+	return reconcileManagedArtifacts(enroll, operation, true, true, false, &installReceiptUpdate{CLI: cli}, nil)
 }
 
 func recordManagedBinaryUpdate(path, previousHash, nextHash, nextVersion string) error {
@@ -296,7 +302,80 @@ func recordManagedBinaryUpdate(path, previousHash, nextHash, nextVersion string)
 }
 
 func checkManagedArtifacts() (managedArtifactReport, error) {
-	return reconcileManagedArtifacts(false, "check", false, true, false, nil)
+	return reconcileManagedArtifacts(false, "check", false, true, false, nil, nil)
+}
+
+func setHarnessSelection(harnesses []string) error {
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return err
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return err
+	}
+	if equalStrings(receipt.Harnesses, harnesses) && !receipt.migrated {
+		return nil
+	}
+	receipt.Schema = installReceiptSchema
+	receipt.Harnesses = append([]string(nil), harnesses...)
+	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return writeJSONAtomic(paths.Receipt, receipt)
+}
+
+func setHarnessEnabled(id string, enabled bool) (managedArtifactReport, error) {
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	selected := stringSet(receipt.Harnesses)
+	selected[id] = enabled
+	var selection []string
+	for _, harness := range canonicalHarnesses {
+		if selected[harness.ID] {
+			selection = append(selection, harness.ID)
+		}
+	}
+	if enabled {
+		return reconcileManagedArtifacts(true, "harness-enable", true, true, false, nil, &selection)
+	}
+
+	report := managedArtifactReport{Operation: "harness-disable", BundleVersion: version, ReceiptPath: paths.Receipt, LogPath: paths.Log}
+	for _, target := range sortedArtifactTargets(receipt.Artifacts) {
+		owned := receipt.Artifacts[target]
+		if artifactHarness(paths, target, owned.Source) != id {
+			continue
+		}
+		spec, recognized := receiptManagedArtifactSpec(paths, target, owned)
+		if !recognized {
+			spec = managedArtifactSpec{source: owned.Source, target: target}
+		}
+		result, removed := uninstallManagedArtifact(spec, owned, true)
+		report.Artifacts = append(report.Artifacts, result)
+		if removed {
+			delete(receipt.Artifacts, target)
+			cleanupManagedArtifactDirs(spec)
+		}
+	}
+	receipt.Harnesses = selection
+	receipt.Schema = installReceiptSchema
+	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		return report, err
+	}
+	report.Result = "success"
+	if artifactIssueCount(report) > 0 {
+		report.Result = "warning"
+	}
+	report.Summary = artifactSummary(report)
+	if err := appendInstallLog(paths.Log, report); err != nil {
+		return report, err
+	}
+	return report, nil
 }
 
 func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
@@ -623,7 +702,7 @@ func uninstallResultSummary(report uninstallReport, keepBinary bool) (string, st
 	return result, fmt.Sprintf("Managed artifacts: %d removed, %d preserved; binary: %s", removed, preserved, binary)
 }
 
-func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdentical, requirePriorOwnership bool, installUpdate *installReceiptUpdate) (managedArtifactReport, error) {
+func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdentical, requirePriorOwnership bool, installUpdate *installReceiptUpdate, selection *[]string) (managedArtifactReport, error) {
 	paths, err := managedInstallationPaths()
 	if err != nil {
 		return managedArtifactReport{}, err
@@ -636,6 +715,21 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 	specs, err := bundledManagedArtifacts(paths)
 	if err != nil {
 		return managedArtifactReport{}, err
+	}
+	selected := receipt.Harnesses
+	if selection != nil {
+		selected = append([]string(nil), (*selection)...)
+	}
+	if selected == nil {
+		selected = legacyHarnesses(paths, receipt.Artifacts)
+	}
+	selectedSet := stringSet(selected)
+	allSpecs := specs
+	specs = specs[:0]
+	for _, spec := range allSpecs {
+		if selectedSet[artifactHarness(paths, spec.target, spec.source)] {
+			specs = append(specs, spec)
+		}
 	}
 	report := managedArtifactReport{
 		Operation: operation, BundleVersion: version, ReceiptPath: paths.Receipt,
@@ -695,13 +789,16 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	if write {
-		currentTargets := make(map[string]struct{}, len(specs))
-		for _, spec := range specs {
+		currentTargets := make(map[string]struct{}, len(allSpecs))
+		for _, spec := range allSpecs {
 			currentTargets[spec.target] = struct{}{}
 		}
 		obsolete := make([]string, 0)
 		for target := range receipt.Artifacts {
-			if _, current := currentTargets[target]; !current {
+			owned := receipt.Artifacts[target]
+			harness := artifactHarness(paths, target, owned.Source)
+			_, current := currentTargets[target]
+			if (harness != "" && !selectedSet[harness]) || (!current && selectedSet[harness]) {
 				obsolete = append(obsolete, target)
 			}
 		}
@@ -717,7 +814,11 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 			}
 			result, removed := uninstallManagedArtifact(spec, owned, true)
 			if result.Detail == "" {
-				result.Detail = "obsolete managed artifact"
+				if !selectedSet[artifactHarness(paths, target, owned.Source)] {
+					result.Detail = "managed artifact belongs to a deselected harness"
+				} else {
+					result.Detail = "obsolete managed artifact"
+				}
 			}
 			report.Artifacts = append(report.Artifacts, result)
 			if removed {
@@ -728,6 +829,10 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	if write {
+		if selection != nil && !equalStrings(receipt.Harnesses, selected) {
+			receipt.Harnesses = append([]string(nil), selected...)
+			receiptChanged = true
+		}
 		if installUpdate != nil {
 			if installUpdate.Source != "" || installUpdate.Method != "" {
 				receipt.Source = installUpdate.Source
@@ -766,6 +871,18 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 		}
 	}
 	return report, nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // migrateLegacySkillAliases is the sole exception to general link rejection.
@@ -1191,7 +1308,7 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 
 func safeInstallOperation(operation string) string {
 	switch operation {
-	case "setup", "login", "install", "update", "refresh", "repair", "check", "test":
+	case "setup", "login", "install", "install-rollback", "update", "refresh", "repair", "check", "test", "harness-enable", "harness-disable":
 		return operation
 	default:
 		return "sync"

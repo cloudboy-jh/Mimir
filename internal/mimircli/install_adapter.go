@@ -15,10 +15,15 @@ func configureInstall() {
 }
 
 func installManaged(ctx context.Context, explicitDir string, step func(string)) (lifecyclepkg.InstallReport, error) {
+	return installManagedHarnesses(ctx, explicitDir, nil, step)
+}
+
+func installManagedHarnesses(ctx context.Context, explicitDir string, harnesses []string, step func(string)) (lifecyclepkg.InstallReport, error) {
 	configureInstall()
 	service := lifecycleService()
 	service.Step = step
-	return service.Install(ctx, explicitDir, executablePath)
+	return service.InstallSelected(ctx, explicitDir, harnesses, executablePath)
 }
 
 var runLifecycleInstall = installManaged
+var runLifecycleHarnessInstall = installManagedHarnesses

@@ -49,7 +49,7 @@ func renderAccessTokenHint(out io.Writer) string {
 }
 
 func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
-	var token, email, aud, teamDomain string
+	var token, email, aud, teamDomain, accountID string
 	jsonOut := false
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--json" {
@@ -68,6 +68,11 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 			aud = args[i+1]
 		case "--team-domain":
 			teamDomain = args[i+1]
+		case "--account-id":
+			accountID = args[i+1]
+			if strings.TrimSpace(accountID) == "" {
+				return fmt.Errorf("--account-id requires a non-empty value")
+			}
 		default:
 			return fmt.Errorf("unknown access option %q", args[i])
 		}
@@ -117,6 +122,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 		}
 	}
 	opts := deployment.AccessOptions{Options: deployment.DefaultOptions(), URL: url, Token: token, Email: email, Aud: aud, TeamDomain: teamDomain}
+	opts.AccountID = accountID
 	opts.Noninteractive = jsonOut
 	outcome, err := deployment.NewService(httpClient).ConfigureAccess(ctx, opts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},

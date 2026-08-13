@@ -27,7 +27,11 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	if err != nil {
 		return ProvisionResult{}, err
 	}
-	accountID := deploymentAccountID(identity)
+	accountID, err := s.selectDeploymentAccount(opts, identity)
+	if err != nil {
+		return ProvisionResult{}, err
+	}
+	ctx = withWranglerAccount(ctx, accountID)
 	opts = s.resolveOptions(opts, accountID)
 	if opts.DatabaseID == "" {
 		output, err := s.Wrangler.Run(ctx, dir, nil, "d1", "list", "--json")
@@ -123,7 +127,7 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	if accessToken != "" {
 		client := s.Access
 		client.Token = accessToken
-		access, err = ConfigureDashboardAccess(ctx, client, identity.Accounts[0].ID, url, opts.AccessEmail)
+		access, err = ConfigureDashboardAccess(ctx, client, accountID, url, opts.AccessEmail)
 		if err != nil {
 			return ProvisionResult{}, fmt.Errorf("configuring dashboard Access: %w", err)
 		}
@@ -157,7 +161,11 @@ func (s *Service) Deploy(ctx context.Context, opts Options, hooks Hooks, fallbac
 	if err != nil {
 		return DeployResult{}, err
 	}
-	accountID := deploymentAccountID(identity)
+	accountID, err := s.selectDeploymentAccount(opts, identity)
+	if err != nil {
+		return DeployResult{}, err
+	}
+	ctx = withWranglerAccount(ctx, accountID)
 	opts = s.resolveOptions(opts, accountID)
 	opts, err = s.configure(ctx, dir, opts)
 	if err != nil {
@@ -244,7 +252,11 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 		}
 	}
 	hooks.step("Cloudflare authenticated")
-	accountID := deploymentAccountID(identity)
+	accountID, err := s.selectDeploymentAccount(opts, identity)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	ctx = withWranglerAccount(ctx, accountID)
 	opts = s.resolveOptions(opts, accountID)
 	opts, err = s.configure(ctx, dir, opts)
 	if err != nil {
@@ -285,13 +297,6 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 	return LoginResult{Identity: identity, URL: url, Token: token}, nil
 }
 
-func deploymentAccountID(identity Identity) string {
-	if len(identity.Accounts) != 1 {
-		return ""
-	}
-	return strings.TrimSpace(identity.Accounts[0].ID)
-}
-
 type AccessOptions struct {
 	Options
 	URL, Token, Email, Aud, TeamDomain string
@@ -305,6 +310,16 @@ func (s *Service) ConfigureAccess(ctx context.Context, opts AccessOptions, hooks
 	if err := s.ensureAuth(ctx, dir, hooks, opts.Noninteractive); err != nil {
 		return AccessOutcome{}, err
 	}
+	identity, err := s.ReadIdentity(ctx, dir)
+	if err != nil {
+		return AccessOutcome{}, err
+	}
+	accountID, err := s.selectDeploymentAccount(opts.Options, identity)
+	if err != nil {
+		return AccessOutcome{}, err
+	}
+	ctx = withWranglerAccount(ctx, accountID)
+	opts.Options = s.resolveOptions(opts.Options, accountID)
 	if _, err := s.configure(ctx, dir, opts.Options); err != nil {
 		return AccessOutcome{}, err
 	}
@@ -313,16 +328,9 @@ func (s *Service) ConfigureAccess(ctx context.Context, opts AccessOptions, hooks
 		if opts.Token == "" {
 			return AccessOutcome{State: "manual"}, nil
 		}
-		identity, err := s.ReadIdentity(ctx, dir)
-		if err != nil {
-			return AccessOutcome{}, err
-		}
-		if len(identity.Accounts) == 0 {
-			return AccessOutcome{}, fmt.Errorf("no Cloudflare account found; run wrangler login")
-		}
 		client := s.Access
 		client.Token = opts.Token
-		outcome, err = ConfigureDashboardAccess(ctx, client, identity.Accounts[0].ID, opts.URL, opts.Email)
+		outcome, err = ConfigureDashboardAccess(ctx, client, accountID, opts.URL, opts.Email)
 		if err != nil {
 			return outcome, err
 		}

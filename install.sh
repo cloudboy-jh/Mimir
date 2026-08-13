@@ -6,9 +6,10 @@ repository="${MIMIR_GITHUB_REPOSITORY:-cloudboy-jh/mimir}"
 releases_url="${MIMIR_RELEASES_URL:-https://github.com/$repository/releases}"
 version="${MIMIR_VERSION:-}"
 install_dir="${MIMIR_INSTALL_DIR:-}"
+harnesses=""
 
 usage() {
-  printf '%s\n' 'usage: install.sh [--version VERSION] [--bin-dir DIR]' >&2
+  printf '%s\n' 'usage: install.sh [--version VERSION] [--bin-dir DIR] [--harness ID]...' >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -29,6 +30,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bin-dir=*)
       install_dir=${1#--bin-dir=}
+      shift
+      ;;
+    --harness)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      harnesses="$harnesses $2"
+      shift 2
+      ;;
+    --harness=*)
+      harnesses="$harnesses ${1#--harness=}"
       shift
       ;;
     -h|--help)
@@ -188,7 +198,15 @@ case "$install_dir" in
   *) install_dir="$(pwd)/$install_dir" ;;
 esac
 
-MIMIR_INSTALL_SOURCE=release "$binary" install --bin-dir "$install_dir"
+set -- install --bin-dir "$install_dir"
+for harness in $harnesses; do
+  set -- "$@" --harness "$harness"
+done
+if [ -z "$harnesses" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+  MIMIR_INSTALL_SOURCE=release "$binary" "$@" </dev/tty
+else
+  MIMIR_INSTALL_SOURCE=release "$binary" "$@"
+fi
 
 case ":${PATH:-}:" in
   *:"$install_dir":*) ;;

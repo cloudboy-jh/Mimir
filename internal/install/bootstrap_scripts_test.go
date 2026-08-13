@@ -117,6 +117,9 @@ func TestReleaseBootstrapScripts(t *testing.T) {
 			if !bytes.Contains(receiptData, []byte(`"source": "release"`)) {
 				t.Fatalf("release source missing from receipt:\n%s", receiptData)
 			}
+			if !bytes.Contains(receiptData, []byte(`"harnesses": [`+"\n"+`    "opencode"`)) {
+				t.Fatalf("explicit bootstrap harness selection missing from receipt:\n%s", receiptData)
+			}
 			if test.name == "latest stable" {
 				testInstalledLifecycleTranscripts(t, installed, installDir)
 				testInstalledDeployTranscripts(t, installed, paths)
@@ -125,13 +128,33 @@ func TestReleaseBootstrapScripts(t *testing.T) {
 	}
 }
 
+func TestBootstrapScriptsForwardHarnessSelectionWithoutDefaultingToAll(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"install.sh", "install.ps1"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if strings.Contains(text, "--harness all") {
+			t.Fatalf("%s unconditionally selects all harnesses", name)
+		}
+		if !strings.Contains(strings.ToLower(text), "harness") || !strings.Contains(text, "--harness") {
+			t.Fatalf("%s does not forward explicit harness choices", name)
+		}
+	}
+}
+
 func testInstalledLifecycleTranscripts(t *testing.T, installed, installDir string) {
 	t.Helper()
-	humanInstall := runInstalledCommand(t, installed, "install", "--bin-dir", installDir)
+	humanInstall := runInstalledCommand(t, installed, "install", "--harness", "all", "--bin-dir", installDir)
 	if humanInstall.exitCode != 0 || humanInstall.stderr != "" || !strings.Contains(humanInstall.stdout, "==> Installing Mimir") || !strings.Contains(humanInstall.stdout, "already installed") {
 		t.Fatalf("human install = %#v", humanInstall)
 	}
-	jsonInstall := runInstalledCommand(t, installed, "install", "--bin-dir", installDir, "--json")
+	jsonInstall := runInstalledCommand(t, installed, "install", "--harness=all", "--bin-dir", installDir, "--json")
 	assertSingleJSONTranscript(t, "json install", jsonInstall, false)
 
 	humanUpdate := runInstalledCommand(t, installed, "update", "--check")
@@ -369,11 +392,11 @@ func runBootstrapScript(t *testing.T, root string) ([]byte, error) {
 		if err != nil {
 			t.Skip("PowerShell is not available")
 		}
-		return exec.Command(shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "install.ps1")).CombinedOutput()
+		return exec.Command(shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "install.ps1"), "-Harness", "opencode").CombinedOutput()
 	}
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("sh is not available")
 	}
-	return exec.Command(shell, filepath.Join(root, "install.sh")).CombinedOutput()
+	return exec.Command(shell, filepath.Join(root, "install.sh"), "--harness", "opencode").CombinedOutput()
 }
