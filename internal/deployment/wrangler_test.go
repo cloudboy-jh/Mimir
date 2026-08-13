@@ -118,21 +118,24 @@ func TestUpdateConfigWritesResolvedDatabaseID(t *testing.T) {
 	}
 }
 
-func TestEmbeddedConfigRoutesIntegrationsThroughWorker(t *testing.T) {
+func TestEmbeddedConfigRoutesAPIsThroughWorker(t *testing.T) {
 	config, err := jsonconfig.Read(filepath.Join("..", "..", "worker", "wrangler.jsonc"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	assets, _ := config["assets"].(map[string]any)
 	routes, _ := assets["run_worker_first"].([]any)
-	found := false
-	for _, route := range routes {
-		if route == "/integrations/*" {
-			found = true
+	for _, expected := range []string{"/integrations/*", "/machine/*"} {
+		found := false
+		for _, route := range routes {
+			if route == expected {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		t.Fatalf("run_worker_first = %v", routes)
+		if !found {
+			t.Fatalf("run_worker_first missing %q: %v", expected, routes)
+		}
 	}
 }
 
