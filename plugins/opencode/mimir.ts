@@ -32,6 +32,7 @@ const MAX_JSON_DEPTH = 8;
 const MAX_JSON_ENTRIES = 256;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+const COMMIT_REF = /^[0-9a-f]{7,40}$/i;
 const GIT_REF = /^[\w.\-/]{1,200}$/;
 const MAX_PATCH_BYTES = 20 * 1024;
 const MAX_EVIDENCE_NOTE_BYTES = 8 * 1024;
@@ -442,21 +443,22 @@ function normalizeRemoteUrl(raw: string | null): string | null {
 }
 
 // gitEvidence captures the canonical commit contract for outcome events: the
-// HEAD commit, its parent when present, the branch and origin needed to link
-// that commit, and a bounded redacted patch. Missing git data is not an error;
-// evidence is simply omitted.
-function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit): GitEvidence | null {
+// resolved commit, its parent when present, the branch and origin needed to
+// link that commit, and a bounded redacted patch. Missing git data is not an
+// error; evidence is simply omitted.
+function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit, commitRef = "HEAD"): GitEvidence | null {
   if (!cwd) return null;
-  const commit = runGit(run, cwd, ["rev-parse", "HEAD"]);
+  if (commitRef !== "HEAD" && !COMMIT_REF.test(commitRef)) return null;
+  const commit = runGit(run, cwd, ["rev-parse", "--verify", `${commitRef}^{commit}`]);
   if (!commit || !COMMIT_SHA.test(commit)) return null;
   const evidence: GitEvidence = { commit, provenance: "opencode-plugin" };
-  const base = runGit(run, cwd, ["rev-parse", "HEAD~1"]);
+  const base = runGit(run, cwd, ["rev-parse", "--verify", `${commit}~1^{commit}`]);
   if (base && COMMIT_SHA.test(base)) evidence.base_commit = base;
   const repository = normalizeRemoteUrl(runGit(run, cwd, ["remote", "get-url", "origin"]));
   if (repository) evidence.repository_url = repository;
   const ref = runGit(run, cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (ref && ref !== "HEAD" && GIT_REF.test(ref)) evidence.ref = ref;
-  const patch = runGit(run, cwd, ["show", "--format=", "--patch", "--unified=3", "HEAD"]);
+  const patch = runGit(run, cwd, ["show", "--format=", "--patch", "--unified=3", commit]);
   if (patch) evidence.patch = boundedBytes(redactEvidenceText(patch), MAX_PATCH_BYTES);
   return evidence;
 }
@@ -470,10 +472,30 @@ function mergeOutcomeEvidence(agentEvidence: string | undefined, git: GitEvidenc
   return git ?? undefined;
 }
 
-function workspaceGitEvidence(worktree: string | undefined, directory: string | undefined, run: GitRunner = spawnGit): GitEvidence | null {
-  const primary = gitEvidence(worktree ?? directory, run);
+function workspaceGitEvidence(worktree: string | undefined, directory: string | undefined, run: GitRunner = spawnGit, commitRef = "HEAD"): GitEvidence | null {
+  const primary = gitEvidence(worktree ?? directory, run, commitRef);
   if (primary || !worktree || worktree === directory) return primary;
-  return gitEvidence(directory, run);
+  return gitEvidence(directory, run, commitRef);
+}
+
+function noteCommitRef(note: string | undefined): string | null {
+  const matches = note?.match(/(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])/gi) ?? [];
+  const candidates = [...new Set(matches.map((match) => match.toLowerCase()))];
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function outcomeGitEvidence(
+  worktree: string | undefined,
+  directory: string | undefined,
+  note: string | undefined,
+  commitRef: string | undefined,
+  run: GitRunner = spawnGit,
+): GitEvidence | null {
+  if (commitRef) return workspaceGitEvidence(worktree, directory, run, commitRef);
+  const head = workspaceGitEvidence(worktree, directory, run);
+  if (head) return head;
+  const fallback = noteCommitRef(note);
+  return fallback ? workspaceGitEvidence(worktree, directory, run, fallback) : null;
 }
 
 function createDeliveryQueue(
@@ -678,10 +700,11 @@ const server: Plugin = async ({ client, directory, worktree }) => {
           outcome: tool.schema.enum(["landed", "discarded", "abandoned", "unresolved"]),
           reason: tool.schema.string().min(1).max(2000),
           evidence: tool.schema.string().max(32000).optional(),
+          commit: tool.schema.string().regex(COMMIT_REF).optional(),
         },
         async execute(args, context) {
           context.metadata?.({ title: "Mimir receipt" });
-          const evidence = mergeOutcomeEvidence(args.evidence, workspaceGitEvidence(worktree, directory));
+          const evidence = mergeOutcomeEvidence(args.evidence, outcomeGitEvidence(worktree, directory, args.evidence, args.commit));
           await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
@@ -731,4 +754,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

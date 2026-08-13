@@ -789,6 +789,48 @@ describe("Worker integration", () => {
     expect((await request("/sessions/end-session/end", { method: "POST", headers, body: "[]" })).status).toBe(400);
   });
 
+  it("preserves structured evidence when ending with the current root outcome", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('evidence-root', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('evidence-child', 'evidence-root', '2026-01-01T00:00:01Z', 'active', '2026-01-01T00:00:01Z', 'header');
+    `);
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const evidence = { commit: "abc123", checks: ["worker tests", "typecheck"] };
+    await request("/sessions/evidence-child/outcome", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", evidence }) });
+
+    const ended = await request("/sessions/evidence-child/end", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", reason: "complete" }) });
+
+    expect(await ended.json()).toMatchObject({ session: { state: "inactive" }, evidence });
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'evidence-root'").first()).toEqual({ work_outcome: "landed" });
+    expect(await env.DB.prepare("SELECT outcome, reason, evidence_json FROM session_outcome_events WHERE session_id = 'evidence-root' AND id LIKE 'end_%'").first()).toEqual({ outcome: "landed", reason: "complete", evidence_json: JSON.stringify(evidence) });
+  });
+
+  it("does not inherit evidence when ending with a different outcome", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('different-end-outcome', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    await request("/sessions/different-end-outcome/outcome", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", evidence: { commit: "abc123" } }) });
+
+    const ended = await request("/sessions/different-end-outcome/end", { method: "POST", headers, body: JSON.stringify({ outcome: "discarded", reason: "rejected" }) });
+
+    expect(await ended.json()).toMatchObject({ session: { outcome: "discarded" }, evidence: null });
+    expect(await env.DB.prepare("SELECT outcome, evidence_json FROM session_outcome_events WHERE session_id = 'different-end-outcome' AND id LIKE 'end_%'").first()).toEqual({ outcome: "discarded", evidence_json: null });
+  });
+
+  it("keeps evidence-preserving end idempotent", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('idempotent-evidence-end', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')").run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const evidence = { commit: "def456" };
+    await request("/sessions/idempotent-evidence-end/outcome", { method: "POST", headers, body: JSON.stringify({ outcome: "landed", evidence }) });
+    const body = JSON.stringify({ outcome: "landed", reason: "complete" });
+
+    const first = await (await request("/sessions/idempotent-evidence-end/end", { method: "POST", headers, body })).json() as { session: { outcome_updated_at: string }; evidence: unknown };
+    const repeated = await (await request("/sessions/idempotent-evidence-end/end", { method: "POST", headers, body })).json() as { session: { outcome_updated_at: string }; evidence: unknown };
+
+    expect(first.evidence).toEqual(evidence);
+    expect(repeated).toMatchObject({ session: { outcome_updated_at: first.session.outcome_updated_at }, evidence });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'idempotent-evidence-end' AND id LIKE 'end_%'").first()).toEqual({ count: 1 });
+  });
+
   it("does not reactivate a session when pre-end capture finishes late", async () => {
     await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-race', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')").run();
     await env.DB.prepare("INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('end-race-exchange', 'end-race', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/end-race.json', 'accepted', '2026-01-01T00:01:01Z', 1)").run();

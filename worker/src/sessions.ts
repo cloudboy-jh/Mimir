@@ -105,6 +105,16 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   await endStatement.run();
   if (normalized && !("error" in normalized)) {
     const outcomeSessionID = await rootSessionID(c.env.DB, id);
+    if (normalized.evidenceJson === null) {
+      const current = await c.env.DB.prepare("SELECT work_outcome AS outcome FROM sessions WHERE id = ?").bind(outcomeSessionID).first<{ outcome: string }>();
+      if (current?.outcome === normalized.outcome) {
+        const prior = await c.env.DB.prepare("SELECT evidence_json FROM session_outcome_events WHERE session_id = ? AND outcome = ? AND evidence_json IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1").bind(outcomeSessionID, normalized.outcome).first<{ evidence_json: string }>();
+        if (prior) {
+          normalized.evidenceJson = prior.evidence_json;
+          normalized.evidence = JSON.parse(prior.evidence_json);
+        }
+      }
+    }
     const generation = await c.env.DB.prepare("SELECT inactive_at AS value FROM sessions WHERE id = ?").bind(id).first<{ value: string }>();
     const eventID = await endOutcomeEventID(outcomeSessionID, generation?.value ?? "", normalized);
     await c.env.DB.batch([

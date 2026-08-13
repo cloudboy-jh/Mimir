@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -433,9 +433,9 @@ describe("gitEvidence", () => {
 
   it("captures commit, base, and a redacted bounded patch", () => {
     const { run } = runner({
-      "rev-parse HEAD": `${head}\n`,
-      "rev-parse HEAD~1": `${base}\n`,
-      "show --format= --patch --unified=3 HEAD": "diff --git a/a.ts b/a.ts\n+const token = \"sk_live_1234567890abcdef\";\n",
+      "rev-parse --verify HEAD^{commit}": `${head}\n`,
+      [`rev-parse --verify ${head}~1^{commit}`]: `${base}\n`,
+      [`show --format= --patch --unified=3 ${head}`]: "diff --git a/a.ts b/a.ts\n+const token = \"sk_live_1234567890abcdef\";\n",
     });
     const evidence = gitEvidence("/repo", run)!;
     expect(evidence.commit).toBe(head);
@@ -447,24 +447,22 @@ describe("gitEvidence", () => {
   });
 
   it("omits base and patch when git has no parent or fails", () => {
-    const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": null });
+    const { run } = runner({ "rev-parse --verify HEAD^{commit}": head });
     const evidence = gitEvidence("/repo", run)!;
     expect(evidence).toEqual({ commit: head, provenance: "opencode-plugin" });
   });
 
   it("returns null outside a git work tree", () => {
-    const { run } = runner({ "rev-parse HEAD": null });
+    const { run } = runner({ "rev-parse --verify HEAD^{commit}": null });
     expect(gitEvidence("/repo", run)).toBeNull();
     expect(gitEvidence(undefined, run)).toBeNull();
   });
 
   it("captures the origin remote and branch needed to link a commit", () => {
     const { run } = runner({
-      "rev-parse HEAD": head,
-      "rev-parse HEAD~1": null,
+      "rev-parse --verify HEAD^{commit}": head,
       "remote get-url origin": "git@github.com:owner/repo.git\n",
       "rev-parse --abbrev-ref HEAD": "master\n",
-      "show --format= --patch --unified=3 HEAD": null,
     });
     const evidence = gitEvidence("/repo", run)!;
     expect(evidence.repository_url).toBe("https://github.com/owner/repo");
@@ -473,20 +471,29 @@ describe("gitEvidence", () => {
 
   it("omits a detached HEAD ref and an unusable remote", () => {
     const { run } = runner({
-      "rev-parse HEAD": head,
-      "rev-parse HEAD~1": null,
+      "rev-parse --verify HEAD^{commit}": head,
       "remote get-url origin": "/srv/git/repo.git",
       "rev-parse --abbrev-ref HEAD": "HEAD",
-      "show --format= --patch --unified=3 HEAD": null,
     });
     expect(gitEvidence("/repo", run)!).toEqual({ commit: head, provenance: "opencode-plugin" });
   });
 
   it("caps oversized patches", () => {
     const huge = `+${"x".repeat(64 * 1024)}\n`;
-    const { run } = runner({ "rev-parse HEAD": head, "rev-parse HEAD~1": null, "show --format= --patch --unified=3 HEAD": huge });
+    const { run } = runner({ "rev-parse --verify HEAD^{commit}": head, [`show --format= --patch --unified=3 ${head}`]: huge });
     const patch = gitEvidence("/repo", run)!.patch!;
     expect(new TextEncoder().encode(patch).byteLength).toBeLessThanOrEqual(20 * 1024);
+  });
+
+  it("resolves an explicit short SHA and captures that commit", () => {
+    const short = "a329f20";
+    const resolved = "a329f20" + "c".repeat(33);
+    const { calls, run } = runner({
+      [`rev-parse --verify ${short}^{commit}`]: resolved,
+      [`show --format= --patch --unified=3 ${resolved}`]: "explicit patch",
+    });
+    expect(gitEvidence("/repo", run, short)).toMatchObject({ commit: resolved, patch: "explicit patch" });
+    expect(calls).toContainEqual(["rev-parse", "--verify", `${short}^{commit}`]);
   });
 });
 
@@ -496,13 +503,55 @@ describe("workspaceGitEvidence", () => {
     const calls: string[] = [];
     const run = (_command: string, args: string[], cwd: string) => {
       calls.push(`${cwd}:${args.join(" ")}`);
-      return cwd === "/repo" && args.join(" ") === "rev-parse HEAD"
+      return cwd === "/repo" && args.join(" ") === "rev-parse --verify HEAD^{commit}"
         ? { status: 0, stdout: head }
         : { status: 1, stdout: "" };
     };
     expect(workspaceGitEvidence("/stale-worktree", "/repo", run)?.commit).toBe(head);
-    expect(calls).toContain("/stale-worktree:rev-parse HEAD");
-    expect(calls).toContain("/repo:rev-parse HEAD");
+    expect(calls).toContain("/stale-worktree:rev-parse --verify HEAD^{commit}");
+    expect(calls).toContain("/repo:rev-parse --verify HEAD^{commit}");
+  });
+});
+
+describe("outcomeGitEvidence", () => {
+  const commit = "a329f20" + "c".repeat(33);
+
+  it("uses one commit token from the note when HEAD is unavailable", () => {
+    const { run } = (() => {
+      const calls: string[] = [];
+      return {
+        calls,
+        run: (_command: string, args: string[]) => {
+          const key = args.join(" ");
+          calls.push(key);
+          return key === "rev-parse --verify a329f20^{commit}" ? { status: 0, stdout: commit } : { status: 1, stdout: "" };
+        },
+      };
+    })();
+    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)?.commit).toBe(commit);
+  });
+
+  it("refuses an ambiguous note", () => {
+    expect(noteCommitRef("Commits a329f20 and b418e31")).toBeNull();
+    const calls: string[] = [];
+    const run = (_command: string, args: string[]) => {
+      calls.push(args.join(" "));
+      return { status: 1, stdout: "" };
+    };
+    expect(outcomeGitEvidence(undefined, "/repo", "Commits a329f20 and b418e31", undefined, run)).toBeNull();
+    expect(calls).toEqual(["rev-parse --verify HEAD^{commit}"]);
+  });
+
+  it("keeps HEAD as the default when note evidence also names a commit", () => {
+    const head = "d".repeat(40);
+    const calls: string[] = [];
+    const run = (_command: string, args: string[]) => {
+      const key = args.join(" ");
+      calls.push(key);
+      return key === "rev-parse --verify HEAD^{commit}" ? { status: 0, stdout: head } : { status: 1, stdout: "" };
+    };
+    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)?.commit).toBe(head);
+    expect(calls).not.toContain("rev-parse --verify a329f20^{commit}");
   });
 });
 
