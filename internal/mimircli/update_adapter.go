@@ -10,6 +10,7 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
@@ -66,6 +67,15 @@ func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
 	if err != nil {
 		return err
 	}
+	if !check {
+		if pointer, pointerErr := loadPointer(); pointerErr == nil {
+			client := mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
+			if associationErr := associateMachineIdentity(ctx, client); associationErr != nil {
+				detail := strings.ReplaceAll(associationErr.Error(), pointer.Token, "[redacted]")
+				report.Warning = "machine identity association failed: " + detail
+			}
+		}
+	}
 	if jsonOutput {
 		return json.NewEncoder(ioctx.Out).Encode(report)
 	}
@@ -90,6 +100,11 @@ func renderUpdate(out io.Writer, report lifecyclepkg.UpdateReport) error {
 	}
 	if detail := strings.TrimSpace(report.Binary.Detail); detail != "" {
 		if err := lines.Detail(detail); err != nil {
+			return err
+		}
+	}
+	if warning := strings.TrimSpace(report.Warning); warning != "" {
+		if err := lines.Warning(warning); err != nil {
 			return err
 		}
 	}

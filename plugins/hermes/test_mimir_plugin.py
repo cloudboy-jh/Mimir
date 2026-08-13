@@ -209,21 +209,14 @@ class LivenessOnlyTest(unittest.TestCase):
 
 
 class ReporterLifecycleTest(unittest.TestCase):
-    def test_heartbeat_does_not_keep_session_alive_forever_and_end_clears_it(self):
+    def test_heartbeat_does_not_keep_session_alive_forever_and_finish_clears_it(self):
         reporter_type = __import__("__init__")._Reporter
         reporter = reporter_type({"url": "https://mimir.example", "token": "tok"}, "repo")
-        reporter.touch("ses-1")
 
-        class ImmediateThread:
-            def __init__(self, target, args=(), daemon=False):
-                self.target, self.args, self.daemon = target, args, daemon
-
-            def start(self):
-                self.target(*self.args)
-
-        with patch("urllib.request.urlopen"), patch("threading.Thread", ImmediateThread):
+        with patch.object(reporter, "deliver"):
+            reporter.activate_direct("ses-1")
             reporter.heartbeat_if_active()
-            reporter.end("ses-1", "finalized")
+            reporter.finish("ses-1", "finalized")
         self.assertIsNone(reporter.active_session())
 
     def test_failed_delivery_retries(self):
@@ -250,27 +243,135 @@ class ReporterLifecycleTest(unittest.TestCase):
 
 
 class HookContractTest(unittest.TestCase):
-    def test_uses_pre_api_transport_metadata_and_only_finalizes_old_session(self):
-        class Context:
-            def __init__(self):
-                self.hooks = {}
+    class Context:
+        def __init__(self):
+            self.hooks = {}
 
-            def register_hook(self, name, callback):
-                self.hooks[name] = callback
+        def register_hook(self, name, callback):
+            self.hooks[name] = callback
 
-        ctx = Context()
-        delivered = []
-        with patch.object(mimir_plugin, "load_connection", return_value={"url": "https://mimir.example", "token": "tok"}), \
-             patch.object(mimir_plugin._Reporter, "deliver", lambda _self, event, **_kwargs: delivered.append(event)), \
-             patch("threading.Thread.start", return_value=None):
-            mimir_plugin.register(ctx)
-            ctx.hooks["pre_api_request"](session_id="ses-1", turn_id="turn-1", provider="anthropic", base_url="https://api.anthropic.com")
-            ctx.hooks["post_llm_call"](session_id="ses-1", turn_id="turn-1", model="claude", user_message="hello")
-            ctx.hooks["pre_api_request"](session_id="ses-1", turn_id="turn-2", provider="openrouter", base_url="https://mimir.example/v1/hermes")
-            ctx.hooks["post_llm_call"](session_id="ses-1", turn_id="turn-2", model="openrouter/model", user_message="hello")
-        self.assertEqual([event["turn"]["exchange_id"] for event in delivered if event["kind"] == "turn"], ["turn-1"])
-        self.assertIn("on_session_finalize", ctx.hooks)
-        self.assertNotIn("on_session_reset", ctx.hooks)
+    def setUp(self):
+        self.ctx = self.Context()
+        self.delivered = []
+        self.patches = [
+            patch.object(mimir_plugin, "load_connection", return_value={"url": "https://mimir.example", "token": "tok"}),
+            patch.object(mimir_plugin, "load_harness_load", return_value=None),
+            patch.object(
+                mimir_plugin._Reporter,
+                "deliver",
+                lambda _reporter, event, **kwargs: self.delivered.append((event, kwargs)),
+            ),
+            patch("threading.Thread.start", return_value=None),
+            patch.dict(os.environ, {}, clear=True),
+        ]
+        for active_patch in self.patches:
+            active_patch.start()
+            self.addCleanup(active_patch.stop)
+        mimir_plugin.register(self.ctx)
+
+    def events(self):
+        return [event for event, _kwargs in self.delivered]
+
+    def kinds(self):
+        return [event["kind"] for event in self.events()]
+
+    def pre(self, session_id, turn_id, provider, base_url):
+        self.ctx.hooks["pre_api_request"](
+            session_id=session_id,
+            turn_id=turn_id,
+            provider=provider,
+            base_url=base_url,
+        )
+
+    def post(self, session_id, turn_id):
+        self.ctx.hooks["post_llm_call"](
+            session_id=session_id,
+            turn_id=turn_id,
+            model="model",
+            user_message="hello",
+        )
+
+    def finalize(self, session_id):
+        self.ctx.hooks["on_session_finalize"](session_id=session_id, reason="finalized")
+
+    def test_registers_exact_hook_contract(self):
+        self.assertEqual(set(self.ctx.hooks), {
+            "pre_api_request",
+            "post_llm_call",
+            "on_session_start",
+            "on_session_finalize",
+        })
+
+    def test_proxy_only_emits_no_exact_id_lifecycle(self):
+        self.ctx.hooks["on_session_start"](session_id="proxy-session")
+        self.pre("proxy-session", "turn-1", "openrouter", "https://mimir.example/v1/hermes")
+        self.post("proxy-session", "turn-1")
+        self.finalize("proxy-session")
+        self.assertEqual(self.events(), [])
+
+    def test_direct_only_emits_activation_turn_and_end(self):
+        self.ctx.hooks["on_session_start"](session_id="direct-session")
+        self.pre("direct-session", "turn-1", "anthropic", "https://api.anthropic.com")
+        self.post("direct-session", "turn-1")
+        self.finalize("direct-session")
+        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+        self.assertEqual(self.events()[1]["turn"]["exchange_id"], "turn-1")
+
+    def test_mixed_ordering_keeps_direct_evidence_sticky(self):
+        self.pre("mixed", "proxy-first", "openrouter", "https://mimir.example/v1/hermes")
+        self.pre("mixed", "direct", "nous", "https://portal.nousresearch.com")
+        self.pre("mixed", "proxy-last", "openrouter", "https://mimir.example/v1/hermes")
+        self.post("mixed", "proxy-last")
+        self.post("mixed", "direct")
+        self.post("mixed", "proxy-first")
+        self.finalize("mixed")
+        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+        self.assertEqual(self.events()[1]["turn"]["exchange_id"], "direct")
+
+    def test_no_request_emits_nothing(self):
+        self.ctx.hooks["on_session_start"](session_id="idle")
+        self.finalize("idle")
+        self.assertEqual(self.events(), [])
+
+    def test_missing_pre_hook_falls_back_to_direct_route(self):
+        self.post("missing-pre", "turn-1")
+        self.finalize("missing-pre")
+        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+
+    def test_missing_pre_hook_on_managed_route_emits_nothing(self):
+        with patch.dict(
+            os.environ,
+            {"OPENROUTER_BASE_URL": "https://mimir.example/v1/hermes"},
+        ):
+            self.post("missing-pre-proxy", "turn-1")
+            self.finalize("missing-pre-proxy")
+        self.assertEqual(self.events(), [])
+
+    def test_repeated_start_is_silent_and_does_not_reset_direct_state(self):
+        self.ctx.hooks["on_session_start"](session_id="repeated")
+        self.ctx.hooks["on_session_start"](session_id="repeated")
+        self.pre("repeated", "turn-1", "anthropic", "https://api.anthropic.com")
+        self.ctx.hooks["on_session_start"](session_id="repeated")
+        self.post("repeated", "turn-1")
+        self.finalize("repeated")
+        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+
+    def test_finalize_cleans_activation_and_unconsumed_routes(self):
+        self.pre("reused", "old-direct", "anthropic", "https://api.anthropic.com")
+        self.pre("reused", "stale-proxy", "openrouter", "https://mimir.example/v1/hermes")
+        self.finalize("reused")
+        self.delivered.clear()
+
+        self.post("reused", "stale-proxy")
+        self.finalize("reused")
+        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+
+    def test_turn_dedup_keys_are_session_scoped(self):
+        for session_id in ("session-a", "session-b"):
+            self.pre(session_id, "same-turn", "anthropic", "https://api.anthropic.com")
+            self.post(session_id, "same-turn")
+        turn_keys = [kwargs.get("key") for event, kwargs in self.delivered if event["kind"] == "turn"]
+        self.assertEqual(turn_keys, ["turn:session-a:same-turn", "turn:session-b:same-turn"])
 
 
 if __name__ == "__main__":

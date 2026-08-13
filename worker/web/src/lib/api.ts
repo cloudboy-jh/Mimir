@@ -18,6 +18,22 @@ export type CaptureSummary = {
   last_saved_at: string | null;
 };
 
+export type DeviceIdentity = {
+  id: string;
+  name: string;
+  platform: string;
+  arch: string;
+};
+
+export type Device = DeviceIdentity & {
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string | null;
+  revoked_at: string | null;
+  session_count: number;
+  harnesses: string[];
+};
+
 export type Session = {
   id: string;
   parent_session_id: string | null;
@@ -48,6 +64,7 @@ export type Session = {
   intent: string | null;
   child_session_count: number;
   capture: CaptureSummary;
+  device: DeviceIdentity | null;
 };
 
 export type SessionModel = {
@@ -375,4 +392,24 @@ export async function getFacets(sessionId?: string, signal?: AbortSignal) {
 
 export async function getOverview(signal?: AbortSignal) {
   return request<Overview>("/dashboard/api/overview", { signal });
+}
+
+export async function listDevices(signal?: AbortSignal) {
+  return request<{ devices: Device[] }>("/dashboard/api/devices", { signal });
+}
+
+export async function renameDevice(id: string, name: string, signal?: AbortSignal) {
+  return request<{ device: Device }>(`/dashboard/api/devices/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    signal,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  });
+}
+
+export async function revokeDevice(id: string, signal?: AbortSignal) {
+  return request<{ device: Device }>(`/dashboard/api/devices/${encodeURIComponent(id)}/revoke`, {
+    method: "POST",
+    signal,
+  });
 }

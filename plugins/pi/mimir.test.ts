@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { __testing } from "./mimir";
 
 describe("Pi Mimir extension", () => {
   test("resolves connection without exposing credentials in the extension", () => {
     const files = new Map([
-      ["/home/.mimir/config", 'url = "https://mimir.example/"\n'],
-      ["/home/.mimir/token", "machine-token\n"],
+      [join("/home", ".mimir", "config"), 'url = "https://mimir.example/"\n'],
+      [join("/home", ".mimir", "token"), "machine-token\n"],
     ]);
     expect(__testing.resolveConnection({}, (path) => files.get(path) ?? null, "/home")).toEqual({
       url: "https://mimir.example",

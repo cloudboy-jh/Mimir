@@ -6,7 +6,7 @@ import { getIdentity, type DashboardIdentity } from "@/lib/api";
 import ThemeToggle from "./ThemeToggle.vue";
 
 const route = useRoute();
-const links = [{ to: "/sessions", label: "Sessions" }, { to: "/requests", label: "Requests" }, { to: "/overview", label: "Overview" }];
+const links = [{ to: "/sessions", label: "Sessions" }, { to: "/requests", label: "Requests" }, { to: "/overview", label: "Overview" }, { to: "/settings", label: "Settings" }];
 const active = (path: string) => route.path === path || route.path.startsWith(`${path}/`);
 const identity = ref<DashboardIdentity | null>(null);
 let controller: AbortController | null = null;

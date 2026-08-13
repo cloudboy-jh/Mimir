@@ -5,11 +5,12 @@ import worker from "../src/index";
 import { finalizeAcceptedExchange } from "../src/capture";
 
 const schema = `
-CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
-CREATE TABLE hermes_credentials (token_hash TEXT PRIMARY KEY, created_at TEXT NOT NULL, authorized_by TEXT);
+CREATE TABLE machines (installation_id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, arch TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT);
+CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT, installation_id TEXT REFERENCES machines(installation_id));
+CREATE TABLE hermes_credentials (token_hash TEXT NOT NULL, installation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, authorized_by TEXT, PRIMARY KEY (token_hash, installation_id));
 CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64 AND substr(harness, 1, 1) GLOB '[a-z0-9]' AND harness NOT GLOB '*[^a-z0-9._-]*'), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
-CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, title TEXT, title_source TEXT CHECK (title_source IN ('manual', 'harness', 'generated', 'derived')), title_updated_at TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
-CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, '')) WHERE boundary = 'heuristic' AND state = 'active';
+CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), installation_id TEXT REFERENCES machines(installation_id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, title TEXT, title_source TEXT CHECK (title_source IN ('manual', 'harness', 'generated', 'derived')), title_updated_at TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, ''), IFNULL(installation_id, '')) WHERE boundary = 'heuristic' AND state = 'active';
  CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT, title_candidate TEXT);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE session_files (session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(session_id, file));
@@ -22,6 +23,12 @@ CREATE TABLE session_outcome_events (id TEXT PRIMARY KEY, session_id TEXT NOT NU
 async function tokenHash(token: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function addMachineToken(installationID: string, token: string) {
+  const now = "2026-08-13T00:00:00Z";
+  await env.DB.prepare("INSERT OR IGNORE INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES (?, ?, 'test', 'test', ?, ?)").bind(installationID, installationID, now, now).run();
+  await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, ?, ?, ?)").bind(await tokenHash(token), token, now, installationID).run();
 }
 
 async function request(path: string, init?: RequestInit) {
@@ -43,7 +50,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens;");
+  await env.DB.exec("DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens; DELETE FROM machines;");
   await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'test', '2026-01-01T00:00:00Z')").bind(await tokenHash("machine-token")).run();
   const objects = await env.LOGS.list();
   await Promise.all(objects.objects.map((object) => env.LOGS.delete(object.key)));
@@ -115,6 +122,125 @@ describe("Worker integration", () => {
     expect(upstreamHeaders.get("authorization")).toBe(`Bearer ${hermesKey}`);
     expect((await request("/whoami", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
     expect((await request("/v1/models", { headers: { authorization: `Bearer ${hermesKey}` } })).status).toBe(401);
+  });
+
+  it("persists authenticated device identity and serves device dashboard APIs", async () => {
+    const now = "2026-08-13T10:00:00Z";
+    await env.DB.prepare("INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('install-1', 'Workstation', 'windows', 'amd64', ?, ?)").bind(now, now).run();
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'device', ?, 'install-1')").bind(await tokenHash("device-token"), now).run();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
+
+    await request("/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer device-token", "content-type": "application/json", "x-mimir-session": "device-session", "x-mimir-harness": "opencode" }, body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Device identity" }] }) });
+    await env.DB.exec(`
+      INSERT INTO sessions(id, installation_id, started_at, boundary, harness) VALUES ('device-root', 'install-1', '2026-08-13T10:01:00Z', 'header', 'codex');
+      INSERT INTO sessions(id, parent_session_id, installation_id, started_at, boundary, harness) VALUES ('device-child', 'device-root', 'install-1', '2026-08-13T10:02:00Z', 'header', 'opencode');
+      INSERT INTO sessions(id, parent_session_id, installation_id, started_at, boundary, harness) VALUES ('device-empty-harness', 'device-root', 'install-1', '2026-08-13T10:03:00Z', 'header', '');
+    `);
+    await env.DB.prepare("INSERT INTO harness_loads(token_hash, token_label, harness, artifact_sha256, installation_id, client_loaded_at, reported_at) VALUES (?, 'device', 'hermes', ?, 'install-1', ?, ?)").bind(await tokenHash("device-token"), "a".repeat(64), now, now).run();
+    expect(await env.DB.prepare("SELECT installation_id FROM sessions WHERE id = 'device-session'").first()).toEqual({ installation_id: "install-1" });
+    expect(await env.DB.prepare("SELECT last_seen_at FROM machines WHERE installation_id = 'install-1'").first<{ last_seen_at: string | null }>()).toEqual({ last_seen_at: expect.any(String) });
+
+    const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<Record<string, unknown>> };
+    expect(listed.sessions[0]).toMatchObject({ id: "device-session", device: { id: "install-1", name: "Workstation", platform: "windows", arch: "amd64" } });
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/device-session")).json() as { session: Record<string, unknown> };
+    expect(detail.session).toMatchObject({ device: { id: "install-1", name: "Workstation" } });
+
+    expect(await (await dashboardRequest("/dashboard/api/devices")).json()).toMatchObject({ devices: [{ id: "install-1", name: "Workstation", session_count: 2, harnesses: ["codex", "opencode"] }] });
+    const renamed = await dashboardRequest("/dashboard/api/devices/install-1", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Desk PC" }) });
+    expect(await renamed.json()).toMatchObject({ device: { id: "install-1", name: "Desk PC", session_count: 2, harnesses: ["codex", "opencode"] } });
+
+    const revoked = await dashboardRequest("/dashboard/api/devices/install-1/revoke", { method: "POST" });
+    expect(await revoked.json()).toMatchObject({ device: { id: "install-1", revoked_at: expect.any(String), session_count: 2, harnesses: ["codex", "opencode"] } });
+    expect((await request("/whoami", { headers: { authorization: "Bearer device-token" } })).status).toBe(401);
+    expect(await env.DB.prepare("SELECT installation_id FROM sessions WHERE id = 'device-session'").first()).toEqual({ installation_id: "install-1" });
+  });
+
+  it("binds Hermes and harness loads to the authenticated installation", async () => {
+    const now = "2026-08-13T10:00:00Z";
+    await env.DB.prepare("INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('install-1', 'Device', 'linux', 'arm64', ?, ?)").bind(now, now).run();
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'device', ?, 'install-1')").bind(await tokenHash("device-token"), now).run();
+    const headers = { authorization: "Bearer device-token", "content-type": "application/json" };
+
+    const mismatch = await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(64), installation_id: "install-2" }) });
+    expect(mismatch.status).toBe(403);
+    await request("/integrations/harness-loads", { method: "POST", headers, body: JSON.stringify({ version: 1, harness: "opencode", source_sha256: "a".repeat(64) }) });
+    expect(await env.DB.prepare("SELECT installation_id FROM harness_loads").first()).toEqual({ installation_id: "install-1" });
+
+    const hermesKey = "device-hermes-key";
+    await request("/integrations/hermes/authorize", { method: "POST", headers, body: JSON.stringify({ token_hash: await tokenHash(hermesKey) }) });
+    expect(await env.DB.prepare("SELECT installation_id FROM hermes_credentials").first()).toEqual({ installation_id: "install-1" });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
+    await request("/v1/hermes/chat/completions", { method: "POST", headers: { authorization: `Bearer ${hermesKey}`, "content-type": "application/json", "x-mimir-session": "hermes-device-session" }, body: JSON.stringify({ model: "openai/test", messages: [] }) });
+    expect(await env.DB.prepare("SELECT installation_id FROM sessions WHERE id = 'hermes-device-session'").first()).toEqual({ installation_id: "install-1" });
+  });
+
+  it("scopes one Hermes key to multiple installations and isolates revocation", async () => {
+    const now = "2026-08-13T10:00:00Z";
+    const firstID = "11111111111111111111111111111111";
+    const secondID = "22222222222222222222222222222222";
+    const hermesKey = "shared-hermes-key";
+    await env.DB.exec(`
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('${firstID}', 'One', 'linux', 'amd64', '${now}', '${now}');
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('${secondID}', 'Two', 'linux', 'amd64', '${now}', '${now}');
+    `);
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'one', ?, ?)").bind(await tokenHash("one-device-token"), now, firstID).run();
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'two', ?, ?)").bind(await tokenHash("two-device-token"), now, secondID).run();
+    for (const token of ["one-device-token", "two-device-token"]) {
+      expect((await request("/integrations/hermes/authorize", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ token_hash: await tokenHash(hermesKey) }),
+      })).status).toBe(200);
+    }
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM hermes_credentials WHERE token_hash = ?").bind(await tokenHash(hermesKey)).first()).toEqual({ count: 2 });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
+    const providerHeaders = { authorization: `Bearer ${hermesKey}` };
+    expect((await request(`/v1/hermes/${firstID}/models`, { headers: providerHeaders })).status).toBe(200);
+    expect((await request(`/v1/hermes/${secondID}/models`, { headers: providerHeaders })).status).toBe(200);
+    expect((await request("/v1/hermes/models", { headers: providerHeaders })).status).toBe(401);
+    expect((await request(`/v1/hermes/${"3".repeat(32)}/models`, { headers: providerHeaders })).status).toBe(401);
+
+    await env.DB.prepare("UPDATE machines SET revoked_at = ? WHERE installation_id = ?").bind(now, firstID).run();
+    expect((await request(`/v1/hermes/${firstID}/models`, { headers: providerHeaders })).status).toBe(401);
+    expect((await request(`/v1/hermes/${secondID}/models`, { headers: providerHeaders })).status).toBe(200);
+    expect((await request("/v1/hermes/models", { headers: providerHeaders })).status).toBe(200);
+  });
+
+  it("restricts scoped Hermes routes to the machine token installation", async () => {
+    const now = "2026-08-13T10:00:00Z";
+    const firstID = "11111111111111111111111111111111";
+    const secondID = "22222222222222222222222222222222";
+    await env.DB.exec(`
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('${firstID}', 'One', 'linux', 'amd64', '${now}', '${now}');
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('${secondID}', 'Two', 'linux', 'amd64', '${now}', '${now}');
+    `);
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'one', ?, ?)").bind(await tokenHash("one-device-token"), now, firstID).run();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
+
+    const scopedHeaders = { authorization: "Bearer one-device-token" };
+    expect((await request(`/v1/hermes/${firstID}/models`, { headers: scopedHeaders })).status).toBe(200);
+    expect((await request(`/v1/hermes/${secondID}/models`, { headers: scopedHeaders })).status).toBe(403);
+    expect((await request(`/v1/hermes/${secondID}/models/extra`, { headers: scopedHeaders })).status).toBe(404);
+    expect((await request(`/v1/hermes/${"A".repeat(32)}/models`, { headers: scopedHeaders })).status).toBe(404);
+    expect((await request(`/v1/hermes/${secondID}/models`, { headers: { authorization: "Bearer machine-token" } })).status).toBe(200);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps heuristic sessions separate by installation while preserving null identity", async () => {
+    const now = "2026-08-13T10:00:00Z";
+    await env.DB.exec(`
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('install-1', 'One', 'linux', 'amd64', '${now}', '${now}');
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('install-2', 'Two', 'linux', 'amd64', '${now}', '${now}');
+    `);
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'one', ?, 'install-1')").bind(await tokenHash("one-token"), now).run();
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'two', ?, 'install-2')").bind(await tokenHash("two-token"), now).run();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }))));
+    const send = (token: string) => request("/v1/chat/completions", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-mimir-repo": "repo", "x-mimir-harness": "agent" }, body: JSON.stringify({ model: "openai/test", messages: [] }) });
+    await send("one-token");
+    await send("two-token");
+    await send("machine-token");
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM sessions WHERE boundary = 'heuristic'").first()).toEqual({ count: 3 });
   });
 
   it("records and lists the authenticated machine token's loaded harness builds", async () => {
@@ -494,7 +620,11 @@ describe("Worker integration", () => {
   it("leaves an accepted exchange for reconciliation when D1 finalization fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ choices: [], usage: { prompt_tokens: 6, completion_tokens: 2 } })));
     const batch = env.DB.batch.bind(env.DB);
-    vi.spyOn(env.DB, "batch").mockImplementationOnce(batch).mockRejectedValueOnce(new Error("injected D1 finalization failure"));
+    let captureBatch = 0;
+    vi.spyOn(env.DB, "batch").mockImplementation((statements) => {
+      captureBatch += 1;
+      return captureBatch === 3 ? Promise.reject(new Error("injected D1 finalization failure")) : batch(statements);
+    });
     await request("/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json", "x-mimir-session": "accepted-session" }, body: JSON.stringify({ model: "openai/test", messages: [{ role: "user", content: "Inspect src/recovered.ts" }, { role: "assistant", content: [{ type: "tool_use", input: { path: "src/recovered.ts" } }] }] }) });
     const accepted = await env.DB.prepare("SELECT id, r2_key, capture_status FROM exchanges WHERE session_id = 'accepted-session'").first<{ id: string; r2_key: string; capture_status: string }>();
     expect(accepted?.capture_status).toBe("accepted");
@@ -581,6 +711,53 @@ describe("Worker integration", () => {
     expect(await env.DB.prepare("SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'status-session'").first()).toEqual({ outcome: "landed", source: "agent", reason: "merged", evidence_json: '{"commit":"abc123"}' });
     const detail = await request("/sessions/status-session", { headers: { authorization: "Bearer machine-token" } });
     expect((await detail.json() as { session: { outcome: string } }).session.outcome).toBe("landed");
+  });
+
+  it("rejects cross-installation mark, outcome, and end mutations before changes or object events", async () => {
+    await addMachineToken("install-a", "machine-a");
+    await addMachineToken("install-b", "machine-b");
+    await env.DB.exec(`
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-mark-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-mark-child', 'owned-mark-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-outcome-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-outcome-child', 'owned-outcome-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-end-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-end-child', 'owned-end-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
+    `);
+    const ownerHeaders = { authorization: "Bearer machine-a", "content-type": "application/json" };
+    await request("/sessions/owned-end-child/events", { method: "POST", headers: ownerHeaders, body: JSON.stringify({ version: 1, kind: "heartbeat", ts: new Date().toISOString() }) });
+    const beforeObject = await (await request("/sessions/owned-end-child/object-state", { headers: ownerHeaders })).json();
+    const otherHeaders = { authorization: "Bearer machine-b", "content-type": "application/json" };
+
+    const responses = await Promise.all([
+      request("/sessions/owned-mark-child/mark", { method: "POST", headers: otherHeaders, body: JSON.stringify({ outcome: "landed" }) }),
+      request("/sessions/owned-outcome-child/outcome", { method: "POST", headers: otherHeaders, body: JSON.stringify({ outcome: "discarded" }) }),
+      request("/sessions/owned-end-child/end", { method: "POST", headers: otherHeaders, body: JSON.stringify({ outcome: "abandoned" }) }),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([403, 403, 403]);
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'owned-mark-root'").first()).toEqual({ work_outcome: "unresolved" });
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'owned-outcome-root'").first()).toEqual({ work_outcome: "unresolved" });
+    expect(await env.DB.prepare("SELECT state, ended_at FROM sessions WHERE id = 'owned-end-child'").first()).toEqual({ state: "active", ended_at: null });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM session_outcome_events").first()).toEqual({ count: 0 });
+    expect(await (await request("/sessions/owned-end-child/object-state", { headers: ownerHeaders })).json()).toEqual(beforeObject);
+  });
+
+  it("allows the owning installation to mark, set outcome, and end sessions", async () => {
+    await addMachineToken("install-a", "machine-a");
+    await env.DB.exec(`
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-mark', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-outcome', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-end', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
+    `);
+    const headers = { authorization: "Bearer machine-a", "content-type": "application/json" };
+
+    expect((await request("/sessions/same-mark/mark", { method: "POST", headers, body: JSON.stringify({ outcome: "landed" }) })).status).toBe(200);
+    expect((await request("/sessions/same-outcome/outcome", { method: "POST", headers, body: JSON.stringify({ outcome: "discarded" }) })).status).toBe(200);
+    expect((await request("/sessions/same-end/end", { method: "POST", headers, body: "{}" })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'same-mark'").first()).toEqual({ work_outcome: "landed" });
+    expect(await env.DB.prepare("SELECT work_outcome FROM sessions WHERE id = 'same-outcome'").first()).toEqual({ work_outcome: "discarded" });
+    expect(await env.DB.prepare("SELECT state FROM sessions WHERE id = 'same-end'").first()).toEqual({ state: "inactive" });
   });
 
   it("ends sessions idempotently and optionally records an outcome", async () => {
@@ -1046,10 +1223,21 @@ describe("Worker integration", () => {
 describe("Session object", () => {
   const authHeaders = { authorization: "Bearer machine-token", "content-type": "application/json" };
   const postEvent = (id: string, event: Record<string, unknown>) => request(`/sessions/${id}/events`, { method: "POST", headers: authHeaders, body: JSON.stringify(event) });
+  const postInstallationEvent = (token: string, id: string, event: Record<string, unknown>) => request(`/sessions/${id}/events`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(event) });
   const objectState = async (id: string) => {
     const response = await request(`/sessions/${id}/object-state`, { headers: { authorization: "Bearer machine-token" } });
     return { status: response.status, body: await response.json<Record<string, unknown>>() };
   };
+
+  async function installOwnershipFixtures() {
+    const now = "2026-08-13T10:00:00Z";
+    await env.DB.exec(`
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('event-install-1', 'One', 'linux', 'amd64', '${now}', '${now}');
+      INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES ('event-install-2', 'Two', 'linux', 'amd64', '${now}', '${now}');
+    `);
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'one', ?, 'event-install-1')").bind(await tokenHash("event-one-token"), now).run();
+    await env.DB.prepare("INSERT INTO access_tokens(token_hash, label, created_at, installation_id) VALUES (?, 'two', ?, 'event-install-2')").bind(await tokenHash("event-two-token"), now).run();
+  }
 
   it("tracks turn events and projects liveness", async () => {
     const accepted = await postEvent("object-live", { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { model: "openai/test", usage: { input_tokens: 5, output_tokens: 3 }, latency_ms: 42 } });
@@ -1059,6 +1247,56 @@ describe("Session object", () => {
     expect(await env.DB.prepare("SELECT state, harness, model_primary FROM sessions WHERE id = 'object-live'").first()).toEqual({ state: "active", harness: null, model_primary: "openai/test" });
     const listed = await (await dashboardRequest("/dashboard/api/sessions")).json() as { sessions: Array<{ id: string; liveness: string }> };
     expect(listed.sessions).toContainEqual(expect.objectContaining({ id: "object-live", liveness: "active" }));
+  });
+
+  it("rejects a conflicting installation heartbeat without reopening or mutating the session", async () => {
+    await installOwnershipFixtures();
+    const id = "object-owner-heartbeat";
+    await postInstallationEvent("event-one-token", id, { version: 1, kind: "end", ts: "2026-08-13T10:01:00Z", reason: "owned end" });
+    const beforeState = (await objectState(id)).body;
+    const beforeSession = await env.DB.prepare("SELECT installation_id, state, ended_at, inactive_at, last_active_at FROM sessions WHERE id = ?").bind(id).first();
+    const beforeTranscript = await (await env.LOGS.get(`sessions/${id}/transcript.json`))!.text();
+
+    const conflict = await postInstallationEvent("event-two-token", id, { version: 1, kind: "heartbeat", ts: "2026-08-13T10:02:00Z", title: "Must not apply" });
+
+    expect(conflict.status).toBe(409);
+    expect((await objectState(id)).body).toEqual(beforeState);
+    expect(await env.DB.prepare("SELECT installation_id, state, ended_at, inactive_at, last_active_at FROM sessions WHERE id = ?").bind(id).first()).toEqual(beforeSession);
+    expect(await (await env.LOGS.get(`sessions/${id}/transcript.json`))!.text()).toBe(beforeTranscript);
+  });
+
+  it("rejects a conflicting installation turn without mutating object or D1 state", async () => {
+    await installOwnershipFixtures();
+    const id = "object-owner-turn";
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, state, boundary) VALUES (?, '2026-08-13T10:00:00Z', 'active', 'header')").bind(id).run();
+    const firstEventAt = new Date().toISOString();
+    await postInstallationEvent("event-one-token", id, { version: 1, kind: "heartbeat", ts: firstEventAt });
+    const beforeState = (await objectState(id)).body;
+    const beforeSession = await env.DB.prepare("SELECT installation_id, state, last_active_at, model_primary FROM sessions WHERE id = ?").bind(id).first();
+    expect(beforeSession).toMatchObject({ installation_id: "event-install-1" });
+
+    const conflict = await postInstallationEvent("event-two-token", id, { version: 1, kind: "turn", ts: new Date(Date.parse(firstEventAt) + 1_000).toISOString(), turn: { model: "openai/conflict", usage: { input_tokens: 7, output_tokens: 3 } } });
+
+    expect(conflict.status).toBe(409);
+    expect((await objectState(id)).body).toEqual(beforeState);
+    expect(await env.DB.prepare("SELECT installation_id, state, last_active_at, model_primary FROM sessions WHERE id = ?").bind(id).first()).toEqual(beforeSession);
+    expect(await env.LOGS.get(`sessions/${id}/transcript.json`)).toBeNull();
+  });
+
+  it("rejects a conflicting installation end without finalizing or writing a transcript", async () => {
+    await installOwnershipFixtures();
+    const id = "object-owner-end";
+    const firstEventAt = new Date().toISOString();
+    await postInstallationEvent("event-one-token", id, { version: 1, kind: "heartbeat", ts: firstEventAt });
+    const beforeState = (await objectState(id)).body;
+    const beforeSession = await env.DB.prepare("SELECT installation_id, state, ended_at, inactive_at, last_active_at FROM sessions WHERE id = ?").bind(id).first();
+
+    const conflict = await postInstallationEvent("event-two-token", id, { version: 1, kind: "end", ts: new Date(Date.parse(firstEventAt) + 1_000).toISOString(), reason: "conflicting end" });
+
+    expect(conflict.status).toBe(409);
+    expect((await objectState(id)).body).toEqual(beforeState);
+    expect(await env.DB.prepare("SELECT installation_id, state, ended_at, inactive_at, last_active_at FROM sessions WHERE id = ?").bind(id).first()).toEqual(beforeSession);
+    expect(await env.LOGS.get(`sessions/${id}/transcript.json`)).toBeNull();
   });
 
   it("serves object state through Access-protected dashboard routes and leaves D1-only history intact", async () => {
@@ -1085,9 +1323,53 @@ describe("Session object", () => {
 		await expect(response.json()).resolves.toMatchObject({
 			service: "mimir",
 			api_version: 1,
-			capabilities: expect.arrayContaining(["harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle"]),
+			capabilities: expect.arrayContaining(["harness_build_identity", "hermes_authorization", "machine_identity_association", "session_events", "session_lifecycle"]),
 		});
 	});
+
+  it("associates an unclaimed token once and updates machine metadata without replacing its name", async () => {
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const installationID = "a".repeat(32);
+    const body = { version: 1, installation_id: installationID, name: "Original", platform: "linux", arch: "amd64" };
+
+    expect((await request("/machine/associate", { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(200);
+    expect((await request("/machine/associate", { method: "POST", headers, body: JSON.stringify({ ...body, name: "Replacement", platform: "darwin", arch: "arm64" }) })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT name, platform, arch FROM machines WHERE installation_id = ?").bind(installationID).first()).toEqual({ name: "Original", platform: "darwin", arch: "arm64" });
+    expect(await env.DB.prepare("SELECT installation_id FROM access_tokens WHERE token_hash = ?").bind(await tokenHash("machine-token")).first()).toEqual({ installation_id: installationID });
+
+    const conflictID = "b".repeat(32);
+    expect((await request("/machine/associate", { method: "POST", headers, body: JSON.stringify({ ...body, installation_id: conflictID }) })).status).toBe(409);
+    expect(await env.DB.prepare("SELECT installation_id FROM access_tokens WHERE token_hash = ?").bind(await tokenHash("machine-token")).first()).toEqual({ installation_id: installationID });
+    expect(await env.DB.prepare("SELECT installation_id FROM machines WHERE installation_id = ?").bind(conflictID).first()).toBeNull();
+  });
+
+  it("leaves an unclaimed token unassociated when the target machine is revoked", async () => {
+    const installationID = "c".repeat(32);
+    const revokedAt = "2026-08-13T01:00:00Z";
+    await env.DB.prepare("INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at, revoked_at) VALUES (?, 'Revoked', 'linux', 'amd64', ?, ?, ?)")
+      .bind(installationID, revokedAt, revokedAt, revokedAt).run();
+
+    const response = await request("/machine/associate", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, installation_id: installationID, name: "Replacement", platform: "darwin", arch: "arm64" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await env.DB.prepare("SELECT installation_id FROM access_tokens WHERE token_hash = ?").bind(await tokenHash("machine-token")).first()).toEqual({ installation_id: null });
+    expect(await env.DB.prepare("SELECT name, platform, arch, revoked_at FROM machines WHERE installation_id = ?").bind(installationID).first()).toEqual({ name: "Revoked", platform: "linux", arch: "amd64", revoked_at: revokedAt });
+  });
+
+  it.each([
+    ["extra fields", { version: 1, installation_id: "a".repeat(32), name: "Machine", platform: "linux", arch: "amd64", token_hash: "secret" }],
+    ["invalid installation", { version: 1, installation_id: "A".repeat(32), name: "Machine", platform: "linux", arch: "amd64" }],
+    ["control characters", { version: 1, installation_id: "a".repeat(32), name: "Bad\nName", platform: "linux", arch: "amd64" }],
+    ["long name", { version: 1, installation_id: "a".repeat(32), name: "x".repeat(201), platform: "linux", arch: "amd64" }],
+    ["invalid platform", { version: 1, installation_id: "a".repeat(32), name: "Machine", platform: "Windows", arch: "amd64" }],
+  ])("rejects machine association with %s", async (_case, body) => {
+    const response = await request("/machine/associate", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(response.status).toBe(400);
+  });
 
   it("deduplicates retried turn events by exchange ID", async () => {
 		const event = { version: 1, kind: "turn", ts: new Date().toISOString(), turn: { exchange_id: "retry-1", model: "openai/test", usage: { input_tokens: 5, output_tokens: 3 } } };

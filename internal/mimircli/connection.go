@@ -1,13 +1,16 @@
 package mimircli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/harness"
+	"github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
@@ -76,4 +79,30 @@ func loadPointer() (mimirapi.Pointer, error) {
 
 func savePointer(p mimirapi.Pointer) error {
 	return mimirapi.SavePointer(p)
+}
+
+func associateMachineIdentity(ctx context.Context, client mimirapi.Client) error {
+	whoami, err := client.WhoAmI(ctx)
+	if err != nil {
+		return err
+	}
+	if !whoami.HasCapability("machine_identity_association") {
+		return nil
+	}
+	installationID, err := install.EnsureInstallationID()
+	if err != nil {
+		return fmt.Errorf("creating machine identity: %w", err)
+	}
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		name = "machine"
+	}
+	name = strings.TrimSpace(name)
+	if len(name) > 200 {
+		name = name[:200]
+	}
+	return client.AssociateMachine(ctx, mimirapi.MachineAssociation{
+		Version: 1, InstallationID: installationID, Name: name,
+		Platform: strings.ToLower(runtime.GOOS), Arch: strings.ToLower(runtime.GOARCH),
+	})
 }

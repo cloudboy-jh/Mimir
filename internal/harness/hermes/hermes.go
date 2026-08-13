@@ -116,7 +116,7 @@ func (s Service) Authorize(ctx context.Context, pointer mimirapi.Pointer, token 
 	return err
 }
 
-func (s Service) Configure(ctx context.Context, pointer mimirapi.Pointer, manifest harness.ConnectionManifest) (bool, error) {
+func (s Service) Configure(ctx context.Context, pointer mimirapi.Pointer, manifest harness.ConnectionManifest, installationID string) (bool, error) {
 	home, found, err := s.Discover()
 	if err != nil || !found {
 		return false, err
@@ -131,7 +131,7 @@ func (s Service) Configure(ctx context.Context, pointer mimirapi.Pointer, manife
 	if err := s.Authorize(ctx, pointer, key); err != nil {
 		return false, fmt.Errorf("authorizing Hermes OpenRouter credential: %w", err)
 	}
-	if err := Install(home, manifest.OpenAIBaseURL); err != nil {
+	if err := Install(home, manifest.OpenAIBaseURL, installationID); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -149,7 +149,7 @@ func (s Service) Uninstall() harness.IntegrationState {
 	return harness.IntegrationState{State: result.State, Provider: "openrouter", Scope: "openrouter", RestartRequired: result.RestartRequired, Detail: result.Detail}
 }
 
-func (s Service) Doctor(ctx context.Context, pointer mimirapi.Pointer, manifest harness.ConnectionManifest) []harness.Diagnostic {
+func (s Service) Doctor(ctx context.Context, pointer mimirapi.Pointer, manifest harness.ConnectionManifest, installationID string) []harness.Diagnostic {
 	home, found, err := s.Discover()
 	if err != nil {
 		return []harness.Diagnostic{{Name: "hermes.home", Status: "failed", Detail: err.Error()}}
@@ -165,7 +165,7 @@ func (s Service) Doctor(ctx context.Context, pointer mimirapi.Pointer, manifest 
 	} else {
 		checks = append(checks, harness.Diagnostic{Name: "hermes.plugin", Status: "ok", Detail: "Mimir plugin is enabled"})
 	}
-	if matches, detail := IntegrationMatches(home, manifest.OpenAIBaseURL); !matches {
+	if matches, detail := IntegrationMatches(home, manifest.OpenAIBaseURL, installationID); !matches {
 		checks = append(checks, harness.Diagnostic{Name: "hermes.openrouter", Status: "failed", Detail: detail, Repair: "mimir update"})
 	} else {
 		checks = append(checks, harness.Diagnostic{Name: "hermes.openrouter", Status: "ok", Detail: detail})
@@ -176,7 +176,7 @@ func (s Service) Doctor(ctx context.Context, pointer mimirapi.Pointer, manifest 
 	}
 	providerPointer := mimirapi.Pointer{URL: pointer.URL, Token: key}
 	for _, endpoint := range []string{"models", "key", "credits"} {
-		path := "/v1/hermes/" + endpoint
+		path := "/v1/hermes/" + installationID + "/" + endpoint
 		if _, err := s.Request(ctx, providerPointer, "GET", path, nil); err != nil {
 			checks = append(checks, harness.Diagnostic{Name: "hermes." + endpoint, Status: "failed", Detail: err.Error(), Repair: "mimir deploy"})
 		} else {
@@ -194,7 +194,10 @@ func ResolveProfileHome(home string) (string, bool, error) {
 	return artifactpaths.ResolveHermesProfile(home)
 }
 
-func Install(home, openAIBaseURL string) error {
+func Install(home, openAIBaseURL, installationID string) error {
+	if !regexp.MustCompile(`^[a-f0-9]{32}$`).MatchString(installationID) {
+		return fmt.Errorf("invalid Mimir installation ID")
+	}
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
@@ -208,7 +211,7 @@ func Install(home, openAIBaseURL string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	updated, err := UpsertEnv(current, openAIBaseURL+"/hermes")
+	updated, err := UpsertEnv(current, openAIBaseURL+"/hermes/"+installationID)
 	if err != nil {
 		return err
 	}
@@ -245,19 +248,19 @@ func Remove(home string) RemovalResult {
 	return RemovalResult{State: "removed", RestartRequired: true, Detail: "Mimir managed OpenRouter route removed; restart Hermes"}
 }
 
-func IntegrationMatches(home, openAIBaseURL string) (bool, string) {
+func IntegrationMatches(home, openAIBaseURL, installationID string) (bool, string) {
 	data, err := os.ReadFile(filepath.Join(home, ".env"))
 	if err != nil {
 		return false, err.Error()
 	}
-	want, err := UpsertEnv(data, openAIBaseURL+"/hermes")
+	want, err := UpsertEnv(data, openAIBaseURL+"/hermes/"+installationID)
 	if err != nil {
 		return false, err.Error()
 	}
 	if string(data) != string(want) {
 		return false, "OpenRouter route or machine credential does not match Mimir"
 	}
-	return true, openAIBaseURL + "/hermes"
+	return true, openAIBaseURL + "/hermes/" + installationID
 }
 
 func OpenRouterKey(home string) (string, error) {
@@ -309,7 +312,7 @@ func RemoveManagedEnv(current []byte) ([]byte, string) {
 	const prefix = "OPENROUTER_BASE_URL="
 	assignment := lines[start+1]
 	value, err := strconv.Unquote(strings.TrimPrefix(assignment, prefix))
-	if !strings.HasPrefix(assignment, prefix) || err != nil || assignment != prefix+strconv.Quote(value) || value != strings.TrimRight(value, "/") || !strings.HasSuffix(value, "/v1/hermes") {
+	if !strings.HasPrefix(assignment, prefix) || err != nil || assignment != prefix+strconv.Quote(value) || value != strings.TrimRight(value, "/") || !regexp.MustCompile(`/v1/hermes(?:/[a-f0-9]{32})?$`).MatchString(value) {
 		return current, "preserved"
 	}
 	removeStart := start

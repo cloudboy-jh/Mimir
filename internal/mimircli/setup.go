@@ -141,8 +141,12 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 			}
 		}
 		pointer := mimirapi.Pointer{URL: strings.TrimRight(opts.URL, "/"), Token: opts.Token}
-		if err := (mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}).Verify(ctx); err != nil {
+		client := mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
+		if err := client.Verify(ctx); err != nil {
 			return fmt.Errorf("verifying existing deployment: %w", err)
+		}
+		if err := associateMachineIdentity(ctx, client); err != nil {
+			return fmt.Errorf("associating this machine: %w", err)
 		}
 		if err := savePointer(pointer); err != nil {
 			return err

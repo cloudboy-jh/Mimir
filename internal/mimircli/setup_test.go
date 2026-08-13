@@ -31,6 +31,7 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	t.Setenv("MIMIR_TOKEN", "machine-token")
 	t.Setenv("OPENROUTER_API_KEY", "hermes-openrouter-key")
 	useStableTestExecutable(t)
+	associated := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer machine-token" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -38,7 +39,20 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/whoami":
-			fmt.Fprint(w, `{"sessions":0,"log":0}`)
+			fmt.Fprint(w, `{"sessions":0,"log":0,"capabilities":["machine_identity_association"]}`)
+		case "/machine/associate":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["version"] != float64(1) || len(fmt.Sprint(body["installation_id"])) != 32 || body["name"] == "" || body["platform"] == "" || body["arch"] == "" {
+				t.Fatalf("association body %#v", body)
+			}
+			if _, exists := body["token_hash"]; exists {
+				t.Fatalf("token hash sent in association body")
+			}
+			associated = true
+			fmt.Fprint(w, `{"associated":true}`)
 		case "/integrations/hermes/authorize":
 			fmt.Fprint(w, `{"authorized":true}`)
 		default:
@@ -62,6 +76,9 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	}
 	if result.State != "connected" || result.URL != server.URL || result.Connection.OpenAIBaseURL != server.URL+"/v1" {
 		t.Fatalf("result %#v", result)
+	}
+	if !associated {
+		t.Fatal("machine was not associated")
 	}
 	if result.Integrations.Hermes.State != "skipped" || !strings.Contains(result.Integrations.Hermes.Detail, "no managed installation receipt") {
 		t.Fatalf("Hermes integration %#v", result.Integrations.Hermes)
@@ -112,6 +129,36 @@ func TestConnectExistingEndpointJSONNeedsToken(t *testing.T) {
 	state, ok := err.(deployment.StateError)
 	if !ok || state.State != "mimir_token_required" {
 		t.Fatalf("error %#v", err)
+	}
+}
+
+func TestAssociateMachineIdentitySkipsOlderWorker(t *testing.T) {
+	isolatedInstallation(t, false)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/whoami" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		fmt.Fprint(w, `{"service":"mimir","api_version":1,"capabilities":["session_events"]}`)
+	}))
+	defer server.Close()
+	client := mimirapi.Client{HTTPClient: server.Client(), Pointer: mimirapi.Pointer{URL: server.URL, Token: "machine-token"}}
+	if err := associateMachineIdentity(context.Background(), client); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d", requests)
+	}
+	if _, err := installpkg.LoadReceipt(); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := installpkg.Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.Receipt); !os.IsNotExist(err) {
+		t.Fatalf("older Worker association created receipt: %v", err)
 	}
 }
 
@@ -227,6 +274,42 @@ func TestLoginExistingPointerHonorsAccountEnvironment(t *testing.T) {
 	err := login(context.Background(), []string{"--json"}, IO{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
 	if err == nil || !strings.Contains(err.Error(), "selected by CLOUDFLARE_ACCOUNT_ID is not among the authenticated accounts") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLoginExistingPointerAssociatesMachine(t *testing.T) {
+	isolatedInstallation(t, false)
+	t.Setenv("HERMES_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "hermes-openrouter-key")
+	useStableTestExecutable(t)
+	associated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/whoami":
+			fmt.Fprint(w, `{"service":"mimir","api_version":1,"capabilities":["machine_identity_association"]}`)
+		case "/machine/associate":
+			associated = true
+			fmt.Fprint(w, `{"associated":true}`)
+		case "/integrations/hermes/authorize":
+			fmt.Fprint(w, `{"authorized":true}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
+		t.Fatal(err)
+	}
+	identity := deployment.Identity{LoggedIn: true}
+	if err := deployment.SaveIdentity(identity); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := login(context.Background(), []string{"--json"}, IO{Out: &output, Err: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if !associated {
+		t.Fatal("fast-path login did not associate the machine")
 	}
 }
 

@@ -22,6 +22,15 @@ func InstallHarnesses(explicitDir string, harnesses []string, executable func() 
 			BuildDate: binary.BuildDate, Hash: binary.Hash,
 		},
 	}
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return InstallReport{}, err
+	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return InstallReport{}, err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return InstallReport{}, err
@@ -41,7 +50,7 @@ func InstallHarnesses(explicitDir string, harnesses []string, executable func() 
 	if harnesses != nil {
 		selection = &harnesses
 	}
-	artifacts, err := reconcileManagedArtifacts(true, "install", true, true, false, receiptUpdate, selection)
+	artifacts, err := reconcileManagedArtifactsLocked(paths, true, "install", true, true, false, receiptUpdate, selection)
 	if err != nil {
 		return InstallReport{}, err
 	}

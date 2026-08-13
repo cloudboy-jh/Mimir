@@ -1,5 +1,5 @@
 name: mimir
 version: "1.0.0"
-description: "Reports event-only turn summaries, heartbeats, and session ends to Mimir. Proxied OpenRouter traffic is liveness-only."
+description: "Reports event-only lifecycle for direct providers. Proxied OpenRouter traffic emits no plugin session events."
 author: Mimir
 kind: standalone

@@ -19,6 +19,8 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
+const testInstallationID = "0123456789abcdef0123456789abcdef"
+
 func testManifest() harness.ConnectionManifest {
 	return harness.ConnectionManifest{OpenAIBaseURL: "https://mimir.example.workers.dev/v1"}
 }
@@ -31,12 +33,12 @@ func TestInstallPreservesEnvAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	if err := Install(home, manifest.OpenAIBaseURL); err != nil {
+	if err := Install(home, manifest.OpenAIBaseURL, testInstallationID); err != nil {
 		t.Fatal(err)
 	}
 	first := mustReadFile(t, path)
 	text := string(first)
-	for _, want := range []string{"OPENROUTER_API_KEY=original-key", "OTHER=value", "OPENROUTER_BASE_URL=\"https://mimir.example.workers.dev/v1/hermes\""} {
+	for _, want := range []string{"OPENROUTER_API_KEY=original-key", "OTHER=value", "OPENROUTER_BASE_URL=\"https://mimir.example.workers.dev/v1/hermes/" + testInstallationID + "\""} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Hermes .env missing %q:\n%s", want, text)
 		}
@@ -44,13 +46,13 @@ func TestInstallPreservesEnvAndIsIdempotent(t *testing.T) {
 	if strings.LastIndex(text, managedEnd) < strings.LastIndex(text, "OPENROUTER_API_KEY=original-key") {
 		t.Fatal("managed values must be last so they override prior dotenv assignments")
 	}
-	if err := Install(home, manifest.OpenAIBaseURL); err != nil {
+	if err := Install(home, manifest.OpenAIBaseURL, testInstallationID); err != nil {
 		t.Fatal(err)
 	}
 	if second := mustReadFile(t, path); !bytes.Equal(first, second) {
 		t.Fatal("idempotent Hermes install changed .env bytes")
 	}
-	if ok, detail := IntegrationMatches(home, manifest.OpenAIBaseURL); !ok {
+	if ok, detail := IntegrationMatches(home, manifest.OpenAIBaseURL, testInstallationID); !ok {
 		t.Fatalf("integration mismatch: %s", detail)
 	}
 	if key, err := OpenRouterKey(home); err != nil || key != "original-key" {
@@ -265,7 +267,7 @@ func TestConfigurePreservesAuthorizationOrdering(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if installed, err := service.Configure(context.Background(), mimirapi.Pointer{URL: "https://mimir.test", Token: "machine"}, testManifest()); err != nil || !installed {
+	if installed, err := service.Configure(context.Background(), mimirapi.Pointer{URL: "https://mimir.test", Token: "machine"}, testManifest(), testInstallationID); err != nil || !installed {
 		t.Fatalf("installed=%v err=%v", installed, err)
 	}
 	order = append(order, "installed")
@@ -276,15 +278,41 @@ func TestConfigurePreservesAuthorizationOrdering(t *testing.T) {
 
 func TestInstallRefreshesManagedValues(t *testing.T) {
 	home := t.TempDir()
-	if err := Install(home, "https://mimir.example/v1"); err != nil {
+	if err := Install(home, "https://mimir.example/v1", testInstallationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := Install(home, "https://new.example/v1"); err != nil {
+	if err := Install(home, "https://new.example/v1", testInstallationID); err != nil {
 		t.Fatal(err)
 	}
 	text := string(mustReadFile(t, filepath.Join(home, ".env")))
-	if strings.Count(text, managedStart) != 1 || !strings.Contains(text, "https://new.example/v1/hermes") {
+	if strings.Count(text, managedStart) != 1 || !strings.Contains(text, "https://new.example/v1/hermes/"+testInstallationID) {
 		t.Fatalf("managed block was not refreshed:\n%s", text)
+	}
+}
+
+func TestInstallUsesScopedInstallationRoute(t *testing.T) {
+	home := t.TempDir()
+	if err := Install(home, "https://mimir.example/v1", testInstallationID); err != nil {
+		t.Fatal(err)
+	}
+	data := string(mustReadFile(t, filepath.Join(home, ".env")))
+	want := `OPENROUTER_BASE_URL="https://mimir.example/v1/hermes/` + testInstallationID + `"`
+	if !strings.Contains(data, want) {
+		t.Fatalf("Hermes installer URL missing %q: %s", want, data)
+	}
+}
+
+func TestUpsertEnvReplacesLegacyManagedRoute(t *testing.T) {
+	legacy := []byte(managedStart + "\n" + `OPENROUTER_BASE_URL="https://mimir.example/v1/hermes"` + "\n" + managedEnd + "\n")
+	updated, err := UpsertEnv(legacy, "https://mimir.example/v1/hermes/"+testInstallationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(updated), managedStart) != 1 || strings.Contains(string(updated), `/v1/hermes"`) || !strings.Contains(string(updated), "/v1/hermes/"+testInstallationID) {
+		t.Fatalf("legacy route was not replaced: %s", updated)
+	}
+	if _, status := RemoveManagedEnv(legacy); status != "removed" {
+		t.Fatalf("legacy managed route removal status = %q", status)
 	}
 }
 
@@ -319,7 +347,7 @@ func TestUninstallReportsRemovalAndAbsence(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Install(home, testManifest().OpenAIBaseURL); err != nil {
+	if err := Install(home, testManifest().OpenAIBaseURL, testInstallationID); err != nil {
 		t.Fatal(err)
 	}
 	service := New()
@@ -384,7 +412,7 @@ func TestInstallRejectsSymlinkedEnv(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(home, ".env")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Install(home, testManifest().OpenAIBaseURL); err == nil || !strings.Contains(err.Error(), "symlinked") {
+	if err := Install(home, testManifest().OpenAIBaseURL, testInstallationID); err == nil || !strings.Contains(err.Error(), "symlinked") {
 		t.Fatalf("error %v", err)
 	}
 }

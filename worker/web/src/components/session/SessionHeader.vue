@@ -2,6 +2,7 @@
 import { nextTick, ref, useTemplateRef } from "vue";
 import { Check, GitBranch, Pencil, X } from "lucide-vue-next";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
+import DeviceIdentity from "@/components/DeviceIdentity.vue";
 import SessionLivenessBadge from "@/components/session/SessionLivenessBadge.vue";
 import { errorMessage, setSessionTitle, type SessionDetail, type SessionLiveness, type SessionTitleUpdate } from "@/lib/api";
 import { compactNumber, duration, shortDate } from "@/lib/format";
@@ -79,7 +80,7 @@ async function saveTitle() {
           <h1 class="min-w-0 text-2xl font-semibold leading-tight tracking-[-0.025em] text-zinc-950 sm:text-[28px] dark:text-zinc-50">{{ displayTitle(session) }}</h1>
           <button ref="editButton" type="button" class="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-[5px] text-zinc-500 hover:bg-stone-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100" aria-label="Edit session title" aria-controls="session-title-editor" :aria-expanded="editing" @click="startEditing"><Pencil class="size-3.5" aria-hidden="true" /></button>
         </div>
-        <div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[13px] text-zinc-500 dark:text-zinc-400"><strong class="font-medium text-zinc-800 dark:text-zinc-200">{{ session.repo || "No repository" }}</strong><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3.5" />{{ session.source_ref }}</span><span>{{ shortDate(session.started_at) }}</span><span class="break-all font-mono text-xs">{{ session.id }}</span></div>
+        <div class="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-[13px] text-zinc-500 dark:text-zinc-400"><strong class="font-medium text-zinc-800 dark:text-zinc-200">{{ session.repo || "No repository" }}</strong><DeviceIdentity v-if="session.device" :device="session.device" /><span v-if="session.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3.5" />{{ session.source_ref }}</span><span>{{ shortDate(session.started_at) }}</span><span class="break-all font-mono text-xs">{{ session.id }}</span></div>
         <dl class="mt-5 flex flex-wrap divide-x divide-zinc-200 border-t border-zinc-200 pt-3 dark:divide-zinc-800 dark:border-zinc-800">
           <div class="pr-4"><dt class="text-[11px] text-zinc-500">Duration</dt><dd class="mt-0.5 font-mono text-xs text-zinc-900 dark:text-zinc-100">{{ duration(session.started_at, session.ended_at) }}</dd></div>
           <div class="px-4"><dt class="text-[11px] text-zinc-500">Requests</dt><dd class="mt-0.5 font-mono text-xs text-zinc-900 dark:text-zinc-100">{{ session.request_count }}</dd></div>

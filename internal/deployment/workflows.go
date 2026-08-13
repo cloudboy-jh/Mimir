@@ -81,7 +81,11 @@ func (s *Service) Provision(ctx context.Context, opts Options, hooks Hooks) (Pro
 	if err != nil {
 		return ProvisionResult{}, err
 	}
-	if err := s.registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
+	installationID, err := s.EnsureInstallationID()
+	if err != nil {
+		return ProvisionResult{}, fmt.Errorf("ensuring machine identity: %w", err)
+	}
+	if err := s.registerMachineToken(ctx, dir, opts.DatabaseName, installationID, token); err != nil {
 		return ProvisionResult{}, err
 	}
 	hooks.step("Machine registered")
@@ -281,7 +285,11 @@ func (s *Service) Login(ctx context.Context, opts Options, hooks Hooks, explicit
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if err := s.registerMachineToken(ctx, dir, opts.DatabaseName, token); err != nil {
+	installationID, err := s.EnsureInstallationID()
+	if err != nil {
+		return LoginResult{}, fmt.Errorf("ensuring machine identity: %w", err)
+	}
+	if err := s.registerMachineToken(ctx, dir, opts.DatabaseName, installationID, token); err != nil {
 		return LoginResult{}, err
 	}
 	hooks.step("Machine registered")

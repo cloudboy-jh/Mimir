@@ -59,7 +59,8 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		pointer, pointerErr := loadPointer()
 		identity, identityErr := deployment.LoadIdentity()
 		if pointerErr == nil && identityErr == nil {
-			if _, err := remoteRequestWithPointer(ctx, pointer, "GET", "/whoami", nil); err == nil {
+			client := mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
+			if err := associateMachineIdentity(ctx, client); err == nil {
 				setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
 				opts.Progress.Finish("Login complete")
 				opts.Progress.Stop()

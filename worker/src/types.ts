@@ -14,5 +14,5 @@ export type DashboardIdentity = {
 
 export type AppEnv = {
   Bindings: Bindings;
-  Variables: { tokenHash: string; tokenLabel: string; upstreamOpenRouterKey?: string; dashboardIdentity: DashboardIdentity };
+  Variables: { tokenHash: string; tokenLabel: string; installationID: string | null; upstreamOpenRouterKey?: string; dashboardIdentity: DashboardIdentity };
 };

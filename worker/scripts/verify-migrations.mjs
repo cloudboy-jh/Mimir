@@ -97,6 +97,56 @@ try {
   cpSync(join(root, "migrations", "0014_session_activity_order.sql"), join(migrations, "0014_session_activity_order.sql"));
   applyMigrations();
 
+  cpSync(join(root, "migrations", "0015_device_identity.sql"), join(migrations, "0015_device_identity.sql"));
+  applyMigrations();
+  execute(`
+    INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at)
+    VALUES ('install-1', 'Migration device', 'linux', 'amd64', '2026-07-15T12:03:00Z', '2026-07-15T12:03:00Z');
+    UPDATE access_tokens SET installation_id = 'install-1' WHERE token_hash = 'machine-hash';
+    UPDATE sessions SET installation_id = 'install-1' WHERE id = 'null-activity-session';
+    UPDATE hermes_credentials SET installation_id = 'install-1' WHERE token_hash = 'hermes-hash';
+    INSERT INTO hermes_credentials(token_hash, created_at, authorized_by)
+    VALUES ('legacy-hermes-hash', '2026-07-15T12:05:00Z', 'migration-test');
+  `);
+
+  cpSync(join(root, "migrations", "0016_scoped_hermes_credentials.sql"), join(migrations, "0016_scoped_hermes_credentials.sql"));
+  applyMigrations();
+  execute(`
+    INSERT INTO hermes_credentials(token_hash, installation_id, created_at, authorized_by)
+    VALUES ('hermes-hash', 'install-2', '2026-07-15T12:04:00Z', 'migration-test');
+    INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at, revoked_at)
+    VALUES ('revoked-install', 'Dashboard name', 'linux', 'amd64', '2026-07-15T12:06:00Z', '2026-07-15T12:06:00Z', '2026-07-15T12:07:00Z');
+    INSERT INTO access_tokens(token_hash, label, installation_id, created_at, revoked_at)
+    VALUES ('revoked-token', 'Dashboard name', 'revoked-install', '2026-07-15T12:06:00Z', '2026-07-15T12:07:00Z');
+    INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at)
+    VALUES ('active-install', 'Active dashboard name', 'linux', 'amd64', '2026-07-15T12:06:00Z', '2026-07-15T12:06:00Z');
+    INSERT INTO access_tokens(token_hash, label, installation_id, created_at, revoked_at)
+    VALUES ('revoked-active-token', 'Active dashboard name', 'active-install', '2026-07-15T12:06:00Z', '2026-07-15T12:07:00Z');
+    INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at)
+    VALUES ('revoked-install', 'Deployment hostname', 'darwin', 'arm64', '2026-07-15T12:08:00Z', '2026-07-15T12:08:00Z')
+    ON CONFLICT(installation_id) DO UPDATE SET platform = excluded.platform, arch = excluded.arch, updated_at = excluded.updated_at
+    WHERE machines.revoked_at IS NULL;
+    INSERT INTO access_tokens(token_hash, label, installation_id, created_at)
+    SELECT 'new-random-token', 'Deployment hostname', 'revoked-install', '2026-07-15T12:08:00Z'
+    WHERE EXISTS (SELECT 1 FROM machines WHERE installation_id = 'revoked-install' AND revoked_at IS NULL)
+    ON CONFLICT(token_hash) DO UPDATE SET label = excluded.label, installation_id = excluded.installation_id
+    WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id;
+    INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at)
+    VALUES ('active-install', 'Deployment hostname', 'darwin', 'arm64', '2026-07-15T12:08:00Z', '2026-07-15T12:08:00Z')
+    ON CONFLICT(installation_id) DO UPDATE SET platform = excluded.platform, arch = excluded.arch, updated_at = excluded.updated_at
+    WHERE machines.revoked_at IS NULL;
+    INSERT INTO access_tokens(token_hash, label, installation_id, created_at)
+    SELECT 'revoked-active-token', 'Deployment hostname', 'active-install', '2026-07-15T12:08:00Z'
+    WHERE EXISTS (SELECT 1 FROM machines WHERE installation_id = 'active-install' AND revoked_at IS NULL)
+    ON CONFLICT(token_hash) DO UPDATE SET label = excluded.label, installation_id = excluded.installation_id
+    WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id;
+    INSERT INTO access_tokens(token_hash, label, installation_id, created_at)
+    SELECT 'revoked-token', 'Deployment hostname', 'revoked-install', '2026-07-15T12:08:00Z'
+    WHERE EXISTS (SELECT 1 FROM machines WHERE installation_id = 'revoked-install' AND revoked_at IS NULL)
+    ON CONFLICT(token_hash) DO UPDATE SET label = excluded.label, installation_id = excluded.installation_id
+    WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id;
+  `);
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
@@ -125,7 +175,21 @@ try {
       (SELECT artifact_sha256 FROM harness_loads WHERE token_hash = 'machine-hash' AND harness = 'opencode') AS harness_artifact_sha256,
       (SELECT COUNT(*) FROM harness_loads WHERE token_hash = 'machine-hash') AS harness_load_count,
       (SELECT last_active_at FROM sessions WHERE id = 'null-activity-session') AS backfilled_activity_at,
-      (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_parent_last_active') AS activity_index
+       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_parent_last_active') AS activity_index,
+       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'machines') AS machines_table,
+       (SELECT installation_id FROM sessions WHERE id = 'null-activity-session') AS session_installation_id,
+       (SELECT MIN(installation_id) FROM hermes_credentials WHERE token_hash = 'hermes-hash') AS hermes_installation_id,
+       (SELECT COUNT(*) FROM hermes_credentials WHERE token_hash = 'hermes-hash') AS hermes_installation_count,
+       (SELECT COUNT(*) FROM hermes_credentials WHERE token_hash = 'legacy-hermes-hash') AS legacy_hermes_count,
+       (SELECT COUNT(*) FROM pragma_table_info('hermes_credentials') WHERE pk > 0) AS hermes_primary_key_columns,
+       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_one_active_heuristic' AND sql LIKE '%installation_id%') AS heuristic_installation_key,
+       (SELECT name FROM machines WHERE installation_id = 'revoked-install') AS revoked_machine_name,
+       (SELECT revoked_at FROM machines WHERE installation_id = 'revoked-install') AS machine_revoked_at,
+       (SELECT revoked_at FROM access_tokens WHERE token_hash = 'revoked-token') AS token_revoked_at,
+       (SELECT COUNT(*) FROM access_tokens WHERE token_hash = 'new-random-token') AS new_revoked_install_token_count,
+       (SELECT name FROM machines WHERE installation_id = 'active-install') AS active_machine_name,
+       (SELECT platform FROM machines WHERE installation_id = 'active-install') AS active_machine_platform,
+       (SELECT revoked_at FROM access_tokens WHERE token_hash = 'revoked-active-token') AS active_machine_token_revoked_at
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -161,6 +225,20 @@ try {
     harness_load_count: 2,
     backfilled_activity_at: "2026-07-15T12:02:00Z",
     activity_index: 1,
+    machines_table: 1,
+    session_installation_id: "install-1",
+    hermes_installation_id: "install-1",
+    hermes_installation_count: 2,
+    legacy_hermes_count: 0,
+    hermes_primary_key_columns: 2,
+    heuristic_installation_key: 1,
+    revoked_machine_name: "Dashboard name",
+    machine_revoked_at: "2026-07-15T12:07:00Z",
+    token_revoked_at: "2026-07-15T12:07:00Z",
+    new_revoked_install_token_count: 0,
+    active_machine_name: "Active dashboard name",
+    active_machine_platform: "darwin",
+    active_machine_token_revoked_at: "2026-07-15T12:07:00Z",
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

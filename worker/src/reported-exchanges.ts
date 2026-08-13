@@ -74,7 +74,8 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       c.env.DB.prepare("DELETE FROM exchanges WHERE id = ? AND session_id = ? AND capture_status = 'failed'").bind(parsed.exchange_id, sessionId),
     ]);
   }
-  const session = await resolveSession(c.env.DB, sessionId, repo, harness, sourceRef, parsed.model, parsed.ts);
+  const installationID = c.get("installationID");
+  const session = await resolveSession(c.env.DB, sessionId, repo, harness, sourceRef, parsed.model, parsed.ts, installationID);
   const patterns = stringArray(config["redact.patterns"]);
   const request = redact(parsed.request, patterns);
   const response = redact(parsed.response, patterns);
@@ -112,7 +113,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       endpoint: "harness",
       request,
       response: { format: "json", body: response },
-      metadata: { repo, harness, git_ref: sourceRef, model: parsed.model, provider, finish_reason: finishReason, request_kind: requestKind },
+      metadata: { repo, harness, git_ref: sourceRef, installation_id: installationID, model: parsed.model, provider, finish_reason: finishReason, request_kind: requestKind },
       usage: parsed.usage,
       latency_ms: parsed.latency_ms,
       redaction: { version: 1 },
@@ -132,6 +133,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
     version: 1,
     kind: "turn",
     session_id: sessionId,
+    installation_id: installationID,
     harness,
     repo,
     ...(parsed.title ? { title: parsed.title } : {}),

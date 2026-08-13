@@ -142,6 +142,11 @@ There are three inputs to one session record:
 `x-mimir-session` is the authoritative session boundary when available. Traffic
 without an exact session ID uses bounded inactivity grouping.
 
+Each installed device also has a stable `installation_id`, separate from its
+editable display name. Sessions retain that device association. The dashboard's
+Devices settings lists, renames, and revokes devices; revocation blocks future
+machine and installation-scoped Hermes authentication without deleting history.
+
 | Traffic path | Durable capture | Session lifecycle | Searchable exchange metadata |
 | --- | --- | --- | --- |
 | Redirected OpenRouter | Full redacted transport exchange | Yes | Yes |
@@ -212,7 +217,8 @@ See [OpenCode capture setup](docs/opencode-capture-setup.md).
 
 ### Hermes desktop and TUI
 
-Mimir redirects Hermes' built-in OpenRouter provider through `/v1/hermes` and
+Mimir redirects Hermes' built-in OpenRouter provider through the installation-scoped
+`/v1/hermes/<installation-id>` route and
 enables a plugin for direct-provider turn summaries and lifecycle events. Those
 direct-provider summaries are event-only; they do not contain request/response
 bodies or create searchable exchanges. Restart Hermes after an install or

@@ -253,7 +253,7 @@ func TestConnectedInstallRepairsHermesThroughLifecycle(t *testing.T) {
 		t.Fatalf("enabled=%v authorized=%v report=%#v", enabled, authorized, report)
 	}
 	env, err := os.ReadFile(filepath.Join(hermesHome, ".env"))
-	if err != nil || !strings.Contains(string(env), `OPENROUTER_BASE_URL="https://mimir.test/v1/hermes"`) {
+	if err != nil || !strings.Contains(string(env), `OPENROUTER_BASE_URL="https://mimir.test/v1/hermes/0123456789abcdef0123456789abcdef"`) {
 		t.Fatalf("Hermes env = %q, %v", env, err)
 	}
 }
@@ -412,9 +412,10 @@ func testReceipt(t *testing.T, path, hash string, artifacts map[string]string) i
 		owned[target] = map[string]string{"source": source, "sha256": "owned"}
 	}
 	data, err := json.Marshal(map[string]any{
-		"schema":    2,
-		"cli":       map[string]string{"path": path, "sha256": hash},
-		"artifacts": owned,
+		"schema":          2,
+		"installation_id": "0123456789abcdef0123456789abcdef",
+		"cli":             map[string]string{"path": path, "sha256": hash},
+		"artifacts":       owned,
 	})
 	if err != nil {
 		t.Fatal(err)

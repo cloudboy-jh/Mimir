@@ -18,7 +18,10 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/artifactpaths"
 )
 
-const installReceiptSchema = 3
+const (
+	installReceiptSchema      = 3
+	installReceiptLockTimeout = 10 * time.Second
+)
 
 type managedArtifactStatus string
 
@@ -237,6 +240,80 @@ func newInstallReceipt() installReceipt {
 	return installReceipt{Schema: installReceiptSchema, Artifacts: map[string]installReceiptArtifact{}}
 }
 
+// EnsureInstallationID returns the stable identity for this Mimir installation,
+// creating the receipt when artifact enrollment has not happened yet.
+func EnsureInstallationID() (string, error) {
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return "", err
+	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	receipt, err := loadInstallReceipt()
+	if err != nil {
+		return "", err
+	}
+	if receipt.InstallationID != "" {
+		return receipt.InstallationID, nil
+	}
+	receipt.InstallationID, err = newInstallationID()
+	if err != nil {
+		return "", err
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		return "", err
+	}
+	return receipt.InstallationID, nil
+}
+
+func lockInstallReceipt(paths installationPaths) (func(), error) {
+	return acquireInstallReceiptLock(paths.Receipt+".lock", installReceiptLockTimeout)
+}
+
+func acquireInstallReceiptLock(path string, timeout time.Duration) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if closeErr := file.Close(); closeErr != nil {
+				_ = os.Remove(path)
+				return nil, closeErr
+			}
+			return func() { _ = os.Remove(path) }, nil
+		}
+		info, statErr := os.Lstat(path)
+		contention := os.IsExist(err) || (runtime.GOOS == "windows" && os.IsPermission(err))
+		if !contention && os.IsNotExist(statErr) {
+			return nil, err
+		}
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
+		if statErr == nil {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("refusing unsafe install receipt lock %s", path)
+			}
+			if info.ModTime().Before(time.Now().Add(-30 * time.Second)) {
+				if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+					return nil, removeErr
+				}
+				continue
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, errors.New("timed out waiting for install receipt lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 type installReceiptUpdate struct {
 	Source string
 	Method string
@@ -263,6 +340,15 @@ func refreshManagedInstallation(enroll bool, operation string) (managedArtifactR
 	if err != nil {
 		return managedArtifactReport{}, err
 	}
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return managedArtifactReport{}, err
@@ -271,12 +357,21 @@ func refreshManagedInstallation(enroll bool, operation string) (managedArtifactR
 		// Artifact refresh must never transfer binary ownership to whichever
 		// executable happened to invoke it. Only an in-place update of the
 		// receipt-recorded binary may refresh its version and hash.
-		return reconcileManagedArtifacts(enroll, operation, true, true, false, nil, nil)
+		return reconcileManagedArtifactsLocked(paths, enroll, operation, true, true, false, nil, nil)
 	}
-	return reconcileManagedArtifacts(enroll, operation, true, true, false, &installReceiptUpdate{CLI: cli}, nil)
+	return reconcileManagedArtifactsLocked(paths, enroll, operation, true, true, false, &installReceiptUpdate{CLI: cli}, nil)
 }
 
 func recordManagedBinaryUpdate(path, previousHash, nextHash, nextVersion string) error {
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		return err
+	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return err
@@ -294,10 +389,6 @@ func recordManagedBinaryUpdate(path, previousHash, nextHash, nextVersion string)
 	receipt.CLI.Hash = nextHash
 	receipt.CLI.Version = nextVersion
 	receipt.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	paths, err := managedInstallationPaths()
-	if err != nil {
-		return err
-	}
 	return writeJSONAtomic(paths.Receipt, receipt)
 }
 
@@ -310,6 +401,11 @@ func setHarnessSelection(harnesses []string) error {
 	if err != nil {
 		return err
 	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return err
@@ -328,6 +424,11 @@ func setHarnessEnabled(id string, enabled bool) (managedArtifactReport, error) {
 	if err != nil {
 		return managedArtifactReport{}, err
 	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return managedArtifactReport{}, err
@@ -341,7 +442,7 @@ func setHarnessEnabled(id string, enabled bool) (managedArtifactReport, error) {
 		}
 	}
 	if enabled {
-		return reconcileManagedArtifacts(true, "harness-enable", true, true, false, nil, &selection)
+		return reconcileManagedArtifactsLocked(paths, true, "harness-enable", true, true, false, nil, &selection)
 	}
 
 	report := managedArtifactReport{Operation: "harness-disable", BundleVersion: version, ReceiptPath: paths.Receipt, LogPath: paths.Log}
@@ -383,6 +484,11 @@ func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
 	if err != nil {
 		return uninstallReport{}, err
 	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return uninstallReport{}, err
+	}
+	defer release()
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		return uninstallReport{}, err
@@ -707,6 +813,18 @@ func reconcileManagedArtifacts(enroll bool, operation string, write, adoptIdenti
 	if err != nil {
 		return managedArtifactReport{}, err
 	}
+	if !write {
+		return reconcileManagedArtifactsLocked(paths, enroll, operation, false, adoptIdentical, requirePriorOwnership, installUpdate, selection)
+	}
+	release, err := lockInstallReceipt(paths)
+	if err != nil {
+		return managedArtifactReport{}, err
+	}
+	defer release()
+	return reconcileManagedArtifactsLocked(paths, enroll, operation, true, adoptIdentical, requirePriorOwnership, installUpdate, selection)
+}
+
+func reconcileManagedArtifactsLocked(paths installationPaths, enroll bool, operation string, write, adoptIdentical, requirePriorOwnership bool, installUpdate *installReceiptUpdate, selection *[]string) (managedArtifactReport, error) {
 	operation = safeInstallOperation(operation)
 	receipt, err := loadInstallReceipt()
 	if err != nil {

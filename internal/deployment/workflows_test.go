@@ -155,9 +155,64 @@ func testWorkflowService(wrangler *workflowWrangler) *Service {
 	service.Installer = &workflowInstaller{}
 	service.Wrangler = wrangler
 	service.Hostname = func() (string, error) { return "test-machine", nil }
+	service.EnsureInstallationID = func() (string, error) { return "installation-123", nil }
+	service.GOOS, service.GOARCH = "darwin", "arm64"
 	service.LoadState = func() (DeploymentState, error) { return DeploymentState{}, nil }
 	service.SaveState = func(DeploymentState) error { return nil }
 	return service
+}
+
+func TestProvisionAndLoginRegisterStableMachineIdentity(t *testing.T) {
+	for _, operation := range []string{"provision", "login"} {
+		t.Run(operation, func(t *testing.T) {
+			wrangler := &workflowWrangler{}
+			service := testWorkflowService(wrangler)
+			ensured := 0
+			service.EnsureInstallationID = func() (string, error) {
+				ensured++
+				return "install'id", nil
+			}
+			service.Hostname = func() (string, error) { return " host'name ", nil }
+			opts := DefaultOptions()
+			opts.WorkerDir = t.TempDir()
+			opts.DatabaseID = "database-uuid"
+			var err error
+			if operation == "provision" {
+				_, err = service.Provision(context.Background(), opts, Hooks{})
+			} else {
+				_, err = service.Login(context.Background(), opts, Hooks{}, "")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ensured != 1 {
+				t.Fatalf("EnsureInstallationID calls = %d", ensured)
+			}
+			sql := machineRegistrationSQL(t, wrangler.calls)
+			for _, want := range []string{"INSERT INTO machines", "install''id", "host''name", "'darwin'", "'arm64'", "created_at", "updated_at", "ON CONFLICT(installation_id) DO UPDATE SET platform = excluded.platform, arch = excluded.arch, updated_at = excluded.updated_at WHERE machines.revoked_at IS NULL", "INSERT INTO access_tokens", "WHERE EXISTS (SELECT 1 FROM machines WHERE installation_id = 'install''id' AND revoked_at IS NULL)", "installation_id = excluded.installation_id", "WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id"} {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("registration SQL missing %q: %s", want, sql)
+				}
+			}
+			if strings.Contains(sql, "revoked_at = NULL") {
+				t.Fatalf("registration SQL clears revocation: %s", sql)
+			}
+			if strings.Contains(sql, "name = excluded.name") {
+				t.Fatalf("registration SQL overwrites machine name: %s", sql)
+			}
+		})
+	}
+}
+
+func machineRegistrationSQL(t *testing.T, calls [][]string) string {
+	t.Helper()
+	for _, args := range calls {
+		if len(args) >= 6 && args[0] == "d1" && args[1] == "execute" && args[4] == "--command" && strings.Contains(args[5], "INSERT INTO machines") {
+			return args[5]
+		}
+	}
+	t.Fatal("machine registration command not found")
+	return ""
 }
 
 func TestDeployReusesVerifiedDeploymentState(t *testing.T) {

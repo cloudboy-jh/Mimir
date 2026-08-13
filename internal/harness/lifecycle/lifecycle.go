@@ -52,6 +52,7 @@ type UpdateReport struct {
 	Binary       install.UpdateBinaryReport `json:"binary"`
 	Artifacts    install.ArtifactReport     `json:"artifacts"`
 	Integrations harness.IntegrationReport  `json:"integrations,omitempty"`
+	Warning      string                     `json:"warning,omitempty"`
 }
 
 type Service struct {
@@ -140,6 +141,7 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 	}
 	s.step("CLI and managed artifacts installed")
 	ctx = context.WithoutCancel(ctx)
+	receipt, receiptErr := s.LoadReceipt()
 	paths, err := s.Paths()
 	if err != nil {
 		return InstallReport{}, err
@@ -147,10 +149,8 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 	selectedSet := selectedHarnessSet(selected)
 	if selected == nil {
 		selectedSet = allHarnessSet()
-		if receipt, loadErr := s.LoadReceipt(); loadErr == nil {
-			if receipt.Harnesses != nil {
-				selectedSet = selectedHarnessSet(receipt.Harnesses)
-			}
+		if receiptErr == nil && receipt.Harnesses != nil {
+			selectedSet = selectedHarnessSet(receipt.Harnesses)
 		}
 	}
 	report := InstallReport{Binary: mechanical.Binary, Artifacts: mechanical.Artifacts, HermesReady: true}
@@ -193,11 +193,17 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 				}
 				report.Hermes = harness.IntegrationState{State: "staged", Scope: "all-providers", RestartRequired: true, Detail: "Mimir capture plugin staged; activation is unverified until a load is reported; connect Mimir to install the OpenRouter route"}
 			} else {
+				if receiptErr != nil {
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, receiptErr)
+				}
+				if receipt.InstallationID == "" {
+					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, fmt.Errorf("managed installation receipt has no installation ID"))
+				}
 				manifest, err := s.Manifest(pointer.URL)
 				if err != nil {
 					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, err)
 				}
-				installed, err := s.Hermes.Configure(ctx, pointer, manifest)
+				installed, err := s.Hermes.Configure(ctx, pointer, manifest, receipt.InstallationID)
 				if err != nil {
 					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, err)
 				}
@@ -246,7 +252,11 @@ func (s Service) restoreHermes(ctx context.Context, paths install.InstallationPa
 	if err != nil {
 		return err
 	}
-	installed, err := s.Hermes.Configure(ctx, pointer, manifest)
+	receipt, err := s.LoadReceipt()
+	if err != nil {
+		return err
+	}
+	installed, err := s.Hermes.Configure(ctx, pointer, manifest, receipt.InstallationID)
 	if err != nil {
 		return err
 	}
@@ -433,7 +443,8 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		return report, err
 	}
 	selected := allHarnessSet()
-	if receipt, loadErr := s.LoadReceipt(); loadErr == nil && receipt.Harnesses != nil {
+	receipt, receiptErr := s.LoadReceipt()
+	if receiptErr == nil && receipt.Harnesses != nil {
 		selected = selectedHarnessSet(receipt.Harnesses)
 	}
 	if !selected["pi"] {
@@ -466,7 +477,13 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	} else if !install.ArtifactsReady(artifacts, paths.HermesHome, hermesintegration.ArtifactSourcePrefixes()...) {
 		report.Hermes = harness.IntegrationState{State: "failed", Scope: "all-providers", Detail: "conflicting or modified Hermes plugin files were preserved"}
 		failures = append(failures, report.Hermes.Detail)
-	} else if installed, configureErr := s.Hermes.Configure(ctx, pointer, manifest); configureErr != nil {
+	} else if receiptErr != nil {
+		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: receiptErr.Error()}
+		failures = append(failures, receiptErr.Error())
+	} else if receipt.InstallationID == "" {
+		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: "managed installation receipt has no installation ID"}
+		failures = append(failures, report.Hermes.Detail)
+	} else if installed, configureErr := s.Hermes.Configure(ctx, pointer, manifest, receipt.InstallationID); configureErr != nil {
 		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: configureErr.Error()}
 		failures = append(failures, configureErr.Error())
 	} else if installed {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,20 +42,23 @@ func (installService) BuildDashboard(ctx context.Context, dir string) error {
 }
 
 type Service struct {
-	Installer WorkerInstaller
-	Wrangler  WranglerClient
-	Access    AccessClient
-	Now       func() time.Time
-	Hostname  func() (string, error)
-	LoadState func() (DeploymentState, error)
-	SaveState func(DeploymentState) error
+	Installer            WorkerInstaller
+	Wrangler             WranglerClient
+	Access               AccessClient
+	Now                  func() time.Time
+	Hostname             func() (string, error)
+	EnsureInstallationID func() (string, error)
+	GOOS, GOARCH         string
+	LoadState            func() (DeploymentState, error)
+	SaveState            func(DeploymentState) error
 }
 
 func NewService(httpClient HTTPDoer) *Service {
 	return &Service{
 		Installer: installService{}, Wrangler: Wrangler{},
 		Access: AccessClient{Base: CloudflareAPIBase, HTTPClient: httpClient},
-		Now:    time.Now, Hostname: os.Hostname, LoadState: LoadState, SaveState: SaveState,
+		Now:    time.Now, Hostname: os.Hostname, EnsureInstallationID: install.EnsureInstallationID,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, LoadState: LoadState, SaveState: SaveState,
 	}
 }
 
@@ -232,17 +236,24 @@ func (s *Service) configure(ctx context.Context, dir string, opts Options) (Opti
 	return opts, nil
 }
 
-func (s *Service) registerMachineToken(ctx context.Context, dir, databaseName, token string) error {
+func (s *Service) registerMachineToken(ctx context.Context, dir, databaseName, installationID, token string) error {
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
-	label, err := s.Hostname()
-	if err != nil || strings.TrimSpace(label) == "" {
-		label = "machine"
+	name, err := s.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		name = "machine"
 	}
-	sql := fmt.Sprintf("INSERT INTO access_tokens(token_hash, label, created_at) VALUES('%s', '%s', '%s') ON CONFLICT(token_hash) DO UPDATE SET revoked_at = NULL", sqlQuote(hash), sqlQuote(label), s.Now().UTC().Format(time.RFC3339))
+	name = strings.TrimSpace(name)
+	platform := normalizePlatform(s.GOOS)
+	now := s.Now().UTC().Format(time.RFC3339)
+	sql := fmt.Sprintf("INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at) VALUES('%s', '%s', '%s', '%s', '%s', '%s') ON CONFLICT(installation_id) DO UPDATE SET platform = excluded.platform, arch = excluded.arch, updated_at = excluded.updated_at WHERE machines.revoked_at IS NULL; INSERT INTO access_tokens(token_hash, label, installation_id, created_at) SELECT '%s', '%s', '%s', '%s' WHERE EXISTS (SELECT 1 FROM machines WHERE installation_id = '%s' AND revoked_at IS NULL) ON CONFLICT(token_hash) DO UPDATE SET label = excluded.label, installation_id = excluded.installation_id WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id", sqlQuote(installationID), sqlQuote(name), sqlQuote(platform), sqlQuote(s.GOARCH), now, now, sqlQuote(hash), sqlQuote(name), sqlQuote(installationID), now, sqlQuote(installationID))
 	if _, err := s.Wrangler.Run(ctx, dir, nil, "d1", "execute", databaseName, "--remote", "--command", sql); err != nil {
 		return fmt.Errorf("registering this machine: %w", err)
 	}
 	return nil
+}
+
+func normalizePlatform(goos string) string {
+	return strings.ToLower(strings.TrimSpace(goos))
 }
 
 func (s *Service) storeDeploymentURL(ctx context.Context, dir, databaseName, url string) error {

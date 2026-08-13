@@ -4,9 +4,9 @@ Mimir combines capture paths around one lifecycle owner. The Worker proxy
 persists full redacted OpenRouter exchanges. Pi, OpenCode, and the Claude Code,
 Codex, and Cursor hook adapter can persist bounded exchanges reconstructed from
 harness-visible prompts and responses. Harness integrations also report
-lifecycle events; Hermes direct providers report event-only turn summaries and
-suppress turns known to have traversed the proxy. One Session Durable Object
-coordinates each exact session ID.
+lifecycle events; Hermes activates plugin lifecycle reporting only after direct
+provider evidence and suppresses turns known to have traversed the proxy. One
+Session Durable Object coordinates each exact session ID.
 
 ```mermaid
 stateDiagram-v2
@@ -41,7 +41,8 @@ Sessions start lazily. There is no separate start command.
 
 A session starts from the first activity carrying its session ID:
 
-1. A harness start hook sends a heartbeat.
+1. A harness start hook sends a heartbeat, except Hermes, whose start hook is
+   intentionally silent until direct-provider evidence activates the plugin.
 2. The first completed turn arrives if the start hook was missed.
 3. The first capture-eligible proxied request carrying `x-mimir-session` is
    successfully saved and reported to the session object.
@@ -102,7 +103,7 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 | Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; report saved exchanges to the session object |
 | Pi extension | Route OpenRouter through Mimir with exact session headers; persist bounded reconstructed direct-provider turns; report heartbeats, titles, and lifecycle events |
 | OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
-| Hermes plugin | Report direct-provider turn summaries and lifecycle events; suppress duplicate turns for known proxied traffic |
+| Hermes plugin | After sticky direct-provider evidence, report an activation heartbeat, direct turn summaries, and an end; emit no exact-ID lifecycle for proxy-only, no-turn, or unclassified managed-route sessions; suppress proxied turns in mixed sessions |
 | Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges and report start/end lifecycle events |
 | Session Durable Object | Coordinate liveness, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
 | CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |

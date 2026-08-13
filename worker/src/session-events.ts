@@ -28,6 +28,7 @@ export type SessionEvent = {
   version: typeof SESSION_EVENT_VERSION;
   kind: SessionEventKind;
   session_id: string;
+  installation_id?: string | null;
   parent_session_id?: string | null;
   harness: string | null;
   repo?: string | null;
@@ -119,7 +120,8 @@ function parseTurn(input: unknown): SessionEventTurn | { error: string } | null 
 export async function reportSessionEvent(env: Bindings, event: SessionEvent): Promise<void> {
   try {
     const stub = env.SESSIONS.get(env.SESSIONS.idFromName(event.session_id));
-    const response = await stub.fetch("https://session-object/event", { method: "POST", body: JSON.stringify(event) });
+    const headers = event.installation_id ? { "x-mimir-installation": event.installation_id } : undefined;
+    const response = await stub.fetch("https://session-object/event", { method: "POST", headers, body: JSON.stringify(event) });
     if (!response.ok) console.error(JSON.stringify({ message: "session event rejected", session_id: event.session_id, kind: event.kind, status: response.status }));
   } catch (error) {
     console.error(JSON.stringify({ message: "session event delivery failed", session_id: event.session_id, kind: event.kind, error: error instanceof Error ? error.message : String(error) }));

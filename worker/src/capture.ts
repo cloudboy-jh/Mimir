@@ -16,6 +16,7 @@ type CaptureInput = {
   repo: string | null;
   harness: string | null;
   accessTokenLabel: string;
+  installationID: string | null;
   declaredSession: string | null;
   requestKind: RequestKind;
   sourceRef: string | null;
@@ -42,7 +43,7 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
     .catch((error: unknown) => ({ text: "", error }));
   const [config, session] = await Promise.all([
     readConfig(env.DB),
-    resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, activityAt),
+    resolveSession(env.DB, input.declaredSession, input.repo, input.harness, input.sourceRef, input.model, activityAt, input.installationID),
   ]);
   const patterns = stringArray(config["redact.patterns"]);
   const redactedRequest = redact(input.request, patterns);
@@ -96,7 +97,7 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
     endpoint: input.endpoint,
     request: redactedRequest,
     response,
-    metadata: { repo: input.repo, harness: input.harness, git_ref: input.sourceRef, model: input.model, provider: prepared.provider, finish_reason: prepared.finishReason, request_kind: requestKind },
+    metadata: { repo: input.repo, harness: input.harness, git_ref: input.sourceRef, installation_id: input.installationID, model: input.model, provider: prepared.provider, finish_reason: prepared.finishReason, request_kind: requestKind },
     usage: { input_tokens: prepared.usage.prompt_tokens, output_tokens: prepared.usage.completion_tokens },
     latency_ms: latency,
     redaction: { version: 1 },
@@ -124,6 +125,7 @@ export async function capture(env: Bindings, input: CaptureInput): Promise<void>
     version: 1,
     kind: "turn",
     session_id: session.id,
+    installation_id: input.installationID,
     harness: input.harness,
     repo: input.repo,
     ts: new Date().toISOString(),
@@ -168,7 +170,7 @@ async function prepareAcceptedExchange(db: D1Database, exchangeId: string, sessi
 
 export async function finalizeAcceptedExchange(db: D1Database, exchangeId: string, sessionId: string, activityAt: string, savedAt: string, harness: string | null, model: string, inputTokens: number, outputTokens: number, r2Bytes: number | null, reactivate: boolean, generatedTitle: string | null = null) {
   await db.batch([
-    db.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(activityAt, activityAt, activityAt, activityAt, harness, reactivate ? 1 : 0, activityAt, reactivate ? 1 : 0, activityAt, model, inputTokens, outputTokens, sessionId, exchangeId),
+    db.prepare("UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(activityAt, activityAt, activityAt, activityAt, harness, reactivate ? 1 : 0, activityAt, reactivate ? 1 : 0, activityAt, model, inputTokens, outputTokens, sessionId, exchangeId),
     db.prepare("INSERT OR IGNORE INTO session_files(session_id, file) SELECT session_id, file FROM exchange_files WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
     db.prepare("INSERT OR IGNORE INTO session_errors(session_id, signature) SELECT session_id, signature FROM exchange_errors WHERE exchange_id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')").bind(exchangeId, exchangeId),
     db.prepare("UPDATE exchanges SET capture_status = 'saved', capture_reason = 'enabled', saved_at = ?, failed_at = NULL, failure_code = NULL, r2_bytes = ? WHERE id = ? AND capture_status = 'accepted'").bind(savedAt, r2Bytes, exchangeId),

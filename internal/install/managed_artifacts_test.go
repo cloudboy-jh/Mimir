@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	mimirassets "github.com/cloudboy-jh/mimir"
 )
@@ -1155,6 +1156,222 @@ func TestInstallReceiptIncludesBinaryLifecycleMetadata(t *testing.T) {
 		if !bytes.Contains(data, []byte(field)) {
 			t.Fatalf("install log missing %s: %s", field, data)
 		}
+	}
+}
+
+func TestEnsureInstallationIDCreatesStableReceiptWithoutEnrollingArtifacts(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+
+	first, err := EnsureInstallationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := EnsureInstallationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || second != first {
+		t.Fatalf("installation IDs = %q, %q", first, second)
+	}
+	receipt := mustLoadReceipt(t)
+	if receipt.InstallationID != first || len(receipt.Artifacts) != 0 || receipt.InstalledAt != "" {
+		t.Fatalf("identity-only receipt = %#v", receipt)
+	}
+	assertPrivateFile(t, paths.Receipt)
+}
+
+func TestEnsureInstallationIDPreservesExistingReceiptMetadata(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	receipt := newInstallReceipt()
+	receipt.Source = "release"
+	receipt.Method = "bootstrap-copy"
+	receipt.BundleVersion = "1.2.3"
+	receipt.CLI = installReceiptCLI{Path: "mimir", Version: "1.2.3", Hash: "hash"}
+	receipt.Harnesses = []string{"opencode"}
+	receipt.Artifacts["plugin"] = installReceiptArtifact{Source: "source", Hash: "hash"}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := EnsureInstallationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := mustLoadReceipt(t)
+	after.InstallationID = ""
+	if id == "" || after.Schema != receipt.Schema || after.Source != receipt.Source || after.Method != receipt.Method || after.BundleVersion != receipt.BundleVersion || after.CLI != receipt.CLI || !equalStrings(after.Harnesses, receipt.Harnesses) || len(after.Artifacts) != 1 || after.Artifacts["plugin"] != receipt.Artifacts["plugin"] {
+		t.Fatalf("receipt metadata changed: before=%#v after=%#v", receipt, after)
+	}
+}
+
+func TestEnsureInstallationIDConcurrentProcesses(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	gate := filepath.Join(paths.MimirHome, "ensure-id-gate")
+	if err := os.MkdirAll(paths.MimirHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const processCount = 16
+	commands := make([]*exec.Cmd, processCount)
+	logs := make([]bytes.Buffer, processCount)
+	outputs := make([]string, processCount)
+	for i := range commands {
+		outputs[i] = filepath.Join(paths.MimirHome, fmt.Sprintf("ensure-id-%d", i))
+		commands[i] = exec.Command(os.Args[0], "-test.run=^TestEnsureInstallationIDProcessHelper$")
+		commands[i].Env = append(os.Environ(),
+			"MIMIR_ENSURE_ID_HELPER=1",
+			"MIMIR_ENSURE_ID_GATE="+gate,
+			"MIMIR_ENSURE_ID_OUTPUT="+outputs[i],
+		)
+		commands[i].Stdout = &logs[i]
+		commands[i].Stderr = &logs[i]
+		if err := commands[i].Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(gate); err != nil {
+		t.Fatal(err)
+	}
+
+	var installationID string
+	for i, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatalf("process %d: %v\n%s", i, err, logs[i].String())
+		}
+		id := strings.TrimSpace(string(mustReadFile(t, outputs[i])))
+		if id == "" {
+			t.Fatalf("process %d returned an empty installation ID", i)
+		}
+		if installationID == "" {
+			installationID = id
+		} else if id != installationID {
+			t.Fatalf("process %d installation ID = %q, want %q", i, id, installationID)
+		}
+	}
+	if receipt := mustLoadReceipt(t); receipt.InstallationID != installationID || len(receipt.Artifacts) != 0 || receipt.InstalledAt != "" {
+		t.Fatalf("identity-only receipt = %#v", receipt)
+	}
+}
+
+func TestConcurrentInstallationIDAndArtifactSelectionPreserveReceipt(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	gate := filepath.Join(paths.MimirHome, "mixed-receipt-gate")
+	if err := os.MkdirAll(paths.MimirHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const processCount = 12
+	commands := make([]*exec.Cmd, 0, processCount*2)
+	logs := make([]bytes.Buffer, processCount*2)
+	outputs := make([]string, processCount)
+	for i := 0; i < processCount; i++ {
+		outputs[i] = filepath.Join(paths.MimirHome, fmt.Sprintf("mixed-id-%d", i))
+		ensure := exec.Command(os.Args[0], "-test.run=^TestMixedInstallReceiptProcessHelper$")
+		ensure.Env = append(os.Environ(),
+			"MIMIR_MIXED_RECEIPT_HELPER=ensure",
+			"MIMIR_MIXED_RECEIPT_GATE="+gate,
+			"MIMIR_MIXED_RECEIPT_OUTPUT="+outputs[i],
+		)
+		commands = append(commands, ensure)
+
+		reconcile := exec.Command(os.Args[0], "-test.run=^TestMixedInstallReceiptProcessHelper$")
+		reconcile.Env = append(os.Environ(),
+			"MIMIR_MIXED_RECEIPT_HELPER=reconcile",
+			"MIMIR_MIXED_RECEIPT_GATE="+gate,
+		)
+		commands = append(commands, reconcile)
+	}
+	for i, command := range commands {
+		command.Stdout = &logs[i]
+		command.Stderr = &logs[i]
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(gate); err != nil {
+		t.Fatal(err)
+	}
+	for i, command := range commands {
+		if err := command.Wait(); err != nil {
+			t.Fatalf("process %d: %v\n%s", i, err, logs[i].String())
+		}
+	}
+
+	receipt := mustLoadReceipt(t)
+	if receipt.InstallationID == "" {
+		t.Fatal("final receipt has no installation ID")
+	}
+	for i, output := range outputs {
+		if id := strings.TrimSpace(string(mustReadFile(t, output))); id != receipt.InstallationID {
+			t.Fatalf("process %d installation ID = %q, final receipt = %q", i, id, receipt.InstallationID)
+		}
+	}
+	wantCLI := installReceiptCLI{Path: "mixed-mimir", Version: "7.8.9", Commit: "mixed-commit", BuildDate: "2026-08-13", Hash: "mixed-hash"}
+	if receipt.Source != "mixed-test" || receipt.Method != "bootstrap-copy" || receipt.CLI != wantCLI {
+		t.Fatalf("install metadata was lost: %#v", receipt)
+	}
+	if !equalStrings(receipt.Harnesses, []string{"opencode"}) || receipt.BundleVersion == "" || receipt.InstalledAt == "" || len(receipt.Artifacts) == 0 {
+		t.Fatalf("artifact selection or reconciliation metadata was lost: %#v", receipt)
+	}
+}
+
+func TestMixedInstallReceiptProcessHelper(t *testing.T) {
+	operation := os.Getenv("MIMIR_MIXED_RECEIPT_HELPER")
+	if operation == "" {
+		return
+	}
+	gate := os.Getenv("MIMIR_MIXED_RECEIPT_GATE")
+	deadline := time.Now().Add(10 * time.Second)
+	for pathExists(gate) {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for process gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if operation == "ensure" {
+		id, err := EnsureInstallationID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("MIMIR_MIXED_RECEIPT_OUTPUT"), []byte(id), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	selection := []string{"opencode"}
+	update := installReceiptUpdate{
+		Source: "mixed-test", Method: "bootstrap-copy",
+		CLI: installReceiptCLI{Path: "mixed-mimir", Version: "7.8.9", Commit: "mixed-commit", BuildDate: "2026-08-13", Hash: "mixed-hash"},
+	}
+	if _, err := reconcileManagedArtifacts(true, "install", true, true, false, &update, &selection); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureInstallationIDProcessHelper(t *testing.T) {
+	if os.Getenv("MIMIR_ENSURE_ID_HELPER") != "1" {
+		return
+	}
+	gate := os.Getenv("MIMIR_ENSURE_ID_GATE")
+	deadline := time.Now().Add(10 * time.Second)
+	for pathExists(gate) {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for process gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	id, err := EnsureInstallationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("MIMIR_ENSURE_ID_OUTPUT"), []byte(id), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

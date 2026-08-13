@@ -3,14 +3,15 @@ import { readConfig, validateConfigValues } from "../config";
 import { buildUpstreamHeaders, proxy } from "../proxy";
 import { ingestReportedExchange } from "../reported-exchanges";
 import { parseSessionEvent, SESSION_ID } from "../session-events";
-import { canonicalOutcome, endSession, expireSessions, ROOT_SESSION_ACTIVITY_AT, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
+import { canMutateSession, canonicalOutcome, endSession, expireSessions, ROOT_SESSION_ACTIVITY_AT, ROOT_SESSION_COLUMNS, SESSION_COLUMNS, SESSION_TREE_CTE, updateOutcome } from "../sessions";
 import { attachCaptureSummary, captureSummary, captureTreeSummary, reconcile, sessionStatusResponse, TREE_CAPTURE_SUMMARY_COLUMNS } from "../storage";
 import { sessionTitleColumns, sessionTitleSearchClause } from "../session-titles";
 import type { AppEnv } from "../types";
 
 const SEARCH_TYPES = ["title", "intent", "excerpts", "files", "errors"] as const;
 const MACHINE_API_VERSION = 1;
-const MACHINE_CAPABILITIES = ["canonical_exchanges", "harness_build_identity", "hermes_authorization", "session_events", "session_lifecycle", "session_outcomes", "session_search", "session_titles"] as const;
+const MACHINE_CAPABILITIES = ["canonical_exchanges", "harness_build_identity", "hermes_authorization", "machine_identity_association", "session_events", "session_lifecycle", "session_outcomes", "session_search", "session_titles"] as const;
+const MACHINE_ASSOCIATION_KEYS = ["version", "installation_id", "name", "platform", "arch"] as const;
 const HARNESS_LOAD_KEYS = ["version", "harness", "source_sha256", "bundle_version", "cli_version", "cli_commit", "installation_id"] as const;
 type SearchType = (typeof SEARCH_TYPES)[number];
 
@@ -41,6 +42,49 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
 			sessions: sessions?.count ?? 0,
 			log: exchanges?.count ?? 0,
 		});
+  });
+
+  app.post("/machine/associate", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "body must be an object" }, 400);
+    const values = body as Record<string, unknown>;
+    if (Object.keys(values).some((key) => !(MACHINE_ASSOCIATION_KEYS as readonly string[]).includes(key)) || Object.keys(values).length !== MACHINE_ASSOCIATION_KEYS.length) {
+      return c.json({ error: "body must contain exactly version, installation_id, name, platform, and arch" }, 400);
+    }
+    if (values.version !== 1) return c.json({ error: "version must be 1" }, 400);
+    if (typeof values.installation_id !== "string" || !/^[a-f0-9]{32}$/.test(values.installation_id)) {
+      return c.json({ error: "installation_id must be 32 lowercase hexadecimal characters" }, 400);
+    }
+    if (typeof values.name !== "string" || values.name.length === 0 || values.name.length > 200 || /[\p{Cc}]/u.test(values.name)) {
+      return c.json({ error: "name must be a non-empty string of at most 200 characters without control characters" }, 400);
+    }
+    for (const key of ["platform", "arch"] as const) {
+      if (typeof values[key] !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(values[key])) {
+        return c.json({ error: `${key} must be a lowercase identifier` }, 400);
+      }
+    }
+
+    const now = new Date().toISOString();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`INSERT INTO machines(installation_id, name, platform, arch, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM access_tokens WHERE token_hash = ? AND (installation_id IS NULL OR installation_id = ?))
+        ON CONFLICT(installation_id) DO UPDATE SET platform = excluded.platform, arch = excluded.arch, updated_at = excluded.updated_at
+        WHERE machines.revoked_at IS NULL`)
+        .bind(values.installation_id, values.name, values.platform, values.arch, now, now, c.get("tokenHash"), values.installation_id),
+      c.env.DB.prepare(`UPDATE access_tokens SET installation_id = ?
+        WHERE token_hash = ? AND (installation_id IS NULL OR installation_id = ?)
+          AND EXISTS (SELECT 1 FROM machines WHERE installation_id = ? AND revoked_at IS NULL)`)
+        .bind(values.installation_id, c.get("tokenHash"), values.installation_id, values.installation_id),
+    ]);
+    const token = await c.env.DB.prepare("SELECT installation_id FROM access_tokens WHERE token_hash = ?").bind(c.get("tokenHash")).first<{ installation_id: string | null }>();
+    if (token?.installation_id !== values.installation_id) return c.json({ error: "token is already associated with another installation" }, 409);
+    return c.json({ associated: true, installation_id: values.installation_id });
   });
 
   app.get("/sessions", async (c) => {
@@ -106,6 +150,16 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     return c.json(sessionStatusResponse(c.req.url, c.req.param("id"), capture, session, dashboardAvailable));
   });
 
+  const requireSessionOwnership = async (c: Context<AppEnv>, next: () => Promise<void>) => {
+    if (!await canMutateSession(c.env.DB, c.req.param("id") ?? "", c.get("installationID"))) {
+      return c.json({ error: "session belongs to another installation" }, 403);
+    }
+    await next();
+  };
+  app.use("/sessions/:id/mark", requireSessionOwnership);
+  app.use("/sessions/:id/outcome", requireSessionOwnership);
+  app.use("/sessions/:id/end", requireSessionOwnership);
+
   app.post("/sessions/:id/mark", async (c) => {
     const body = await c.req.json<{ outcome?: string; source?: string; reason?: unknown; evidence?: unknown }>();
     return updateOutcome(c, { ...body, source: "agent" }, "agent");
@@ -134,7 +188,8 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const parsed = parseSessionEvent({ ...(typeof body === "object" && body && !Array.isArray(body) ? body as Record<string, unknown> : {}), session_id: id });
     if ("error" in parsed) return c.json({ error: parsed.error }, 400);
     const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
-    const response = await stub.fetch("https://session-object/event", { method: "POST", body: JSON.stringify(parsed) });
+    const installationID = c.get("installationID");
+    const response = await stub.fetch("https://session-object/event", { method: "POST", headers: installationID ? { "x-mimir-installation": installationID } : undefined, body: JSON.stringify(parsed) });
     return new Response(response.body, { status: response.status, headers: { "content-type": "application/json" } });
   });
 
@@ -229,8 +284,8 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
     const body = await c.req.json<{ token_hash?: unknown }>();
     const tokenHash = typeof body.token_hash === "string" ? body.token_hash.trim().toLowerCase() : "";
     if (!/^[a-f0-9]{64}$/.test(tokenHash)) return c.json({ error: "token_hash must be a SHA-256 hex digest" }, 400);
-    await c.env.DB.prepare("INSERT INTO hermes_credentials(token_hash, created_at, authorized_by) VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET authorized_by = excluded.authorized_by")
-      .bind(tokenHash, new Date().toISOString(), c.get("tokenLabel")).run();
+    await c.env.DB.prepare("INSERT INTO hermes_credentials(token_hash, created_at, authorized_by, installation_id) VALUES (?, ?, ?, ?) ON CONFLICT(token_hash, installation_id) DO UPDATE SET authorized_by = excluded.authorized_by")
+      .bind(tokenHash, new Date().toISOString(), c.get("tokenLabel"), c.get("installationID") ?? "").run();
     return c.json({ authorized: true });
   });
 
@@ -262,7 +317,9 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
       }
     }
     const reportedAt = new Date().toISOString();
-    const installationID = values.installation_id ?? "";
+    const authenticatedInstallationID = c.get("installationID");
+    if (authenticatedInstallationID && values.installation_id !== undefined && values.installation_id !== authenticatedInstallationID) return c.json({ error: "installation_id must match the authenticated installation" }, 403);
+    const installationID = authenticatedInstallationID ?? values.installation_id ?? "";
     await c.env.DB.prepare(`INSERT INTO harness_loads(token_hash, token_label, harness, artifact_sha256, bundle_version, cli_version, cli_commit, installation_id, client_loaded_at, reported_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(token_hash, harness, installation_id) DO UPDATE SET
@@ -280,8 +337,10 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   });
 
   app.get("/integrations/harness-loads", async (c) => {
-    const result = await c.env.DB.prepare("SELECT harness, artifact_sha256, bundle_version, cli_version, cli_commit, installation_id, client_loaded_at, reported_at, token_label FROM harness_loads WHERE token_hash = ? ORDER BY reported_at DESC, harness")
-      .bind(c.get("tokenHash")).all();
+    const installationID = c.get("installationID");
+    const result = installationID
+      ? await c.env.DB.prepare("SELECT harness, artifact_sha256, bundle_version, cli_version, cli_commit, installation_id, client_loaded_at, reported_at, token_label FROM harness_loads WHERE installation_id = ? ORDER BY reported_at DESC, harness").bind(installationID).all()
+      : await c.env.DB.prepare("SELECT harness, artifact_sha256, bundle_version, cli_version, cli_commit, installation_id, client_loaded_at, reported_at, token_label FROM harness_loads WHERE token_hash = ? ORDER BY reported_at DESC, harness").bind(c.get("tokenHash")).all();
     return c.json({ loads: result.results });
   });
 
@@ -299,6 +358,14 @@ export function registerMachineRoutes(app: Hono<AppEnv>) {
   app.get("/v1/hermes/models", (c) => proxyOpenRouterGet(c, "/models"));
   app.get("/v1/hermes/credits", (c) => proxyOpenRouterGet(c, "/credits"));
   app.get("/v1/hermes/key", (c) => proxyOpenRouterGet(c, "/key"));
+  app.post("/v1/hermes/:installationID/chat/completions", (c) => scopedHermesRoute(c, () => proxy(c, "chat", { harness: "hermes" })));
+  app.get("/v1/hermes/:installationID/models", (c) => scopedHermesRoute(c, () => proxyOpenRouterGet(c, "/models")));
+  app.get("/v1/hermes/:installationID/credits", (c) => scopedHermesRoute(c, () => proxyOpenRouterGet(c, "/credits")));
+  app.get("/v1/hermes/:installationID/key", (c) => scopedHermesRoute(c, () => proxyOpenRouterGet(c, "/key")));
+}
+
+function scopedHermesRoute(c: Context<AppEnv>, next: () => Promise<Response>) {
+  return /^[a-f0-9]{32}$/.test(c.req.param("installationID") ?? "") ? next() : c.notFound();
 }
 
 async function proxyOpenRouterGet(c: Context<AppEnv>, path: "/models" | "/credits" | "/key") {

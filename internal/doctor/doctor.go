@@ -159,7 +159,7 @@ func (s Service) Run(ctx context.Context) Report {
 	if receiptErr != nil {
 		add("harness-selection", "failed", receiptErr.Error(), "mimir install")
 	} else if selectedHarness(receipt.Harnesses, "hermes") {
-		for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest) {
+		for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest, receipt.InstallationID) {
 			add(check.Name, check.Status, check.Detail, check.Repair)
 		}
 	}

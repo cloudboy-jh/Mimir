@@ -4,13 +4,13 @@ import { reportSessionEvent } from "./session-events";
 import { sessionTitleColumns } from "./session-titles";
 import type { AppEnv } from "./types";
 
-export const SESSION_COLUMNS = `id, parent_session_id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent, ${sessionTitleColumns("sessions")}`;
+export const SESSION_COLUMNS = `id, parent_session_id, installation_id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent, ${sessionTitleColumns("sessions")}`;
 
 export const SESSION_TREE_CTE = "WITH RECURSIVE session_tree(root_id, id) AS (SELECT id, id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT session_tree.root_id, sessions.id FROM sessions JOIN session_tree ON sessions.parent_session_id = session_tree.id), root_activity(root_id, activity_at) AS (SELECT session_tree.root_id, MAX(COALESCE(activity.last_active_at, activity.started_at)) FROM session_tree JOIN sessions activity ON activity.id = session_tree.id GROUP BY session_tree.root_id)";
 
 export const ROOT_SESSION_ACTIVITY_AT = "(SELECT root_activity.activity_at FROM root_activity WHERE root_activity.root_id = sessions.id)";
 
-export const ROOT_SESSION_COLUMNS = `sessions.id, sessions.parent_session_id, sessions.started_at, sessions.ended_at, sessions.state, sessions.last_active_at, ${ROOT_SESSION_ACTIVITY_AT} AS activity_at, sessions.inactive_at, sessions.harness, sessions.boundary, sessions.work_outcome AS outcome, sessions.outcome_src, sessions.outcome_updated_at, sessions.outcome_reason, sessions.repo, sessions.source_ref, sessions.model_primary, (SELECT COALESCE(SUM(child.request_count), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS request_count, (SELECT COALESCE(SUM(child.tokens_in), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_in, (SELECT COALESCE(SUM(child.tokens_out), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_out, sessions.intent, ${sessionTitleColumns("sessions")}, (SELECT COUNT(*) - 1 FROM session_tree WHERE session_tree.root_id = sessions.id) AS child_session_count`;
+export const ROOT_SESSION_COLUMNS = `sessions.id, sessions.parent_session_id, sessions.installation_id, sessions.started_at, sessions.ended_at, sessions.state, sessions.last_active_at, ${ROOT_SESSION_ACTIVITY_AT} AS activity_at, sessions.inactive_at, sessions.harness, sessions.boundary, sessions.work_outcome AS outcome, sessions.outcome_src, sessions.outcome_updated_at, sessions.outcome_reason, sessions.repo, sessions.source_ref, sessions.model_primary, (SELECT COALESCE(SUM(child.request_count), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS request_count, (SELECT COALESCE(SUM(child.tokens_in), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_in, (SELECT COALESCE(SUM(child.tokens_out), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_out, sessions.intent, ${sessionTitleColumns("sessions")}, (SELECT COUNT(*) - 1 FROM session_tree WHERE session_tree.root_id = sessions.id) AS child_session_count`;
 
 export type WorkOutcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type OutcomeSource = "agent" | "user" | "git";
@@ -30,18 +30,22 @@ type NormalizedOutcome = {
   evidenceJson: string | null;
 };
 
-export async function resolveSession(db: D1Database, declared: string | null, repo: string | null, harness: string | null, sourceRef: string | null, model: string, now: string) {
+export async function resolveSession(db: D1Database, declared: string | null, repo: string | null, harness: string | null, sourceRef: string | null, model: string, now: string, installationID: string | null = null) {
   if (declared) {
-    await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, source_ref, model_primary) VALUES (?, ?, ?, ?, 'header', ?, ?, ?)").bind(declared, now, now, harness, repo, sourceRef, model).run();
+    await db.prepare("INSERT OR IGNORE INTO sessions(id, installation_id, started_at, last_active_at, harness, boundary, repo, source_ref, model_primary) VALUES (?, ?, ?, ?, ?, 'header', ?, ?, ?)").bind(declared, installationID, now, now, harness, repo, sourceRef, model).run();
+    if (installationID) {
+      const associated = await db.prepare("UPDATE sessions SET installation_id = COALESCE(installation_id, ?) WHERE id = ? AND (installation_id IS NULL OR installation_id = ?)").bind(installationID, declared, installationID).run();
+      if (associated.meta.changes === 0) throw new Error("session belongs to another installation");
+    }
     return { id: declared };
   }
   const config = await readSaveConfig(db);
   const cutoff = new Date(Date.parse(now) - config.gapMinutes * 60_000).toISOString();
-  const prior = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness, cutoff).first<{ id: string }>();
+  const prior = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND installation_id IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness, installationID, cutoff).first<{ id: string }>();
   if (prior) return prior;
   const id = ulid();
-  await db.prepare("INSERT OR IGNORE INTO sessions(id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, 'heuristic', ?, ?)").bind(id, now, now, harness, repo, model).run();
-  const active = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness).first<{ id: string }>();
+  await db.prepare("INSERT OR IGNORE INTO sessions(id, installation_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, 'heuristic', ?, ?)").bind(id, installationID, now, now, harness, repo, model).run();
+  const active = await db.prepare("SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND installation_id IS ? ORDER BY last_active_at DESC LIMIT 1").bind(repo, harness, installationID).first<{ id: string }>();
   if (!active) throw new Error("could not resolve heuristic session");
   return active;
 }
@@ -50,6 +54,12 @@ export async function expireSessions(db: D1Database, gapMinutes?: number, now = 
   const gap = gapMinutes ?? (await readSaveConfig(db)).gapMinutes;
   const cutoff = new Date(Date.parse(now) - gap * 60_000).toISOString();
   await db.prepare("UPDATE sessions SET state = 'inactive', inactive_at = COALESCE(inactive_at, ?), ended_at = COALESCE(ended_at, last_active_at) WHERE state = 'active' AND last_active_at < ?").bind(now, cutoff).run();
+}
+
+export async function canMutateSession(db: D1Database, id: string, installationID: string | null): Promise<boolean> {
+  const root = await db.prepare("WITH RECURSIVE ancestors(id, parent_session_id, installation_id) AS (SELECT id, parent_session_id, installation_id FROM sessions WHERE id = ? UNION ALL SELECT sessions.id, sessions.parent_session_id, sessions.installation_id FROM sessions JOIN ancestors ON sessions.id = ancestors.parent_session_id) SELECT installation_id FROM ancestors WHERE parent_session_id IS NULL LIMIT 1")
+    .bind(id).first<{ installation_id: string | null }>();
+  return !root?.installation_id || !installationID || root.installation_id === installationID;
 }
 
 export async function updateOutcome(c: Context<AppEnv>, input: OutcomeInput, defaultSource: OutcomeSource) {
@@ -103,7 +113,7 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
     ]);
   }
   const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
-  await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
+  await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, installation_id: c.get("installationID"), harness: null, ts: now, reason: "explicit" });
   return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
 }
 
@@ -120,7 +130,7 @@ async function finalizeObjectOnlySession(c: Context<AppEnv>, id: string, now: st
     if (!state.ok) return false;
     const body = await state.json<{ session_id?: string }>();
     if (body.session_id !== id) return false;
-    await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, harness: null, ts: now, reason: "explicit" });
+    await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, installation_id: c.get("installationID"), harness: null, ts: now, reason: "explicit" });
     return await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first() !== null;
   } catch {
     return false;

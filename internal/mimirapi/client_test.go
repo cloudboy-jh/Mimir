@@ -2,6 +2,7 @@ package mimirapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,5 +52,38 @@ func TestVerifyUsesWhoAmI(t *testing.T) {
 	defer server.Close()
 	if err := (Client{HTTPClient: server.Client(), Pointer: Pointer{URL: server.URL, Token: "token"}}).Verify(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWhoAmIAndAssociateMachine(t *testing.T) {
+	var associated MachineAssociation
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/whoami":
+			_, _ = w.Write([]byte(`{"service":"mimir","api_version":1,"capabilities":["machine_identity_association"]}`))
+		case "/machine/associate":
+			if r.Method != http.MethodPost {
+				t.Fatalf("method %s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&associated); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"associated":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := Client{HTTPClient: server.Client(), Pointer: Pointer{URL: server.URL, Token: "token"}}
+	whoami, err := client.WhoAmI(context.Background())
+	if err != nil || !whoami.HasCapability("machine_identity_association") || whoami.HasCapability("missing") {
+		t.Fatalf("whoami = %#v, %v", whoami, err)
+	}
+	want := MachineAssociation{Version: 1, InstallationID: strings.Repeat("a", 32), Name: "Machine", Platform: "linux", Arch: "amd64"}
+	if err := client.AssociateMachine(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	if associated != want {
+		t.Fatalf("association = %#v", associated)
 	}
 }

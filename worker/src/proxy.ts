@@ -50,6 +50,7 @@ export async function proxy(c: Context<AppEnv>, endpoint: "chat" | "messages", d
     repo,
     harness,
     accessTokenLabel: c.get("tokenLabel"),
+    installationID: c.get("installationID"),
     declaredSession,
     requestKind,
     sourceRef: metadata(c.req.header("x-mimir-git-ref")),

@@ -125,12 +125,13 @@ later.
 | `GET` | `/v1/models` | OpenRouter model-list pass-through. |
 | `GET` | `/v1/key` | OpenRouter API-key metadata pass-through. |
 | `GET` | `/v1/credits` | OpenRouter account-credit pass-through. |
-| `POST` | `/v1/hermes/chat/completions` | Hermes-scoped Chat Completions proxy; capture is tagged `hermes`. |
-| `GET` | `/v1/hermes/{models,key,credits}` | Hermes OpenRouter compatibility pass-through. |
+| `POST` | `/v1/hermes/<installation-id>/chat/completions` | Installation-scoped Hermes Chat Completions proxy; capture is tagged `hermes`. |
+| `GET` | `/v1/hermes/<installation-id>/{models,key,credits}` | Installation-scoped Hermes OpenRouter compatibility pass-through. |
+| `POST`, `GET` | `/v1/hermes/{chat/completions,models,key,credits}` | Explicit legacy compatibility routes. |
 
 These routes do not implement the complete OpenAI or Anthropic API surfaces.
-General compatibility routes require a Mimir machine token. `/v1/hermes/*`
-additionally accepts registered Hermes OpenRouter credentials, but those credentials cannot
+General compatibility routes require a Mimir machine token. The listed Hermes routes
+additionally accept registered Hermes OpenRouter credentials, but those credentials cannot
 access session, log, dashboard, or configuration routes. Key and credit routes
 expose the deployment owner's OpenRouter account metadata, matching Mimir's
 personal single-owner trust model.
@@ -140,6 +141,7 @@ personal single-owner trust model.
 | Method | Route | Behavior |
 | --- | --- | --- |
 | `GET` | `/whoami` | Return deployment URL and session/exchange counts. |
+| `POST` | `/machine/associate` | Associate the authenticated token with one installation when `whoami.capabilities` includes `machine_identity_association`. |
 | `GET` | `/sessions` | List up to 100 recent sessions with optional filters. |
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
 | `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
@@ -177,6 +179,9 @@ Session-list filters include repository, model, outcome, and date range.
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `PATCH` | `/dashboard/api/sessions/:id/title` | Set a normalized manual title of at most 200 characters. |
+| `GET` | `/dashboard/api/devices` | List devices with status, activity, harnesses, and root-session counts. |
+| `PATCH` | `/dashboard/api/devices/:id` | Change a device's display name. |
+| `POST` | `/dashboard/api/devices/:id/revoke` | Irreversibly revoke a device through the dashboard. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
 | `GET` | `/dashboard/api/facets` | Return filter vocabulary, optionally scoped to one session subtree. |
 
@@ -521,6 +526,7 @@ The migration sequence defines:
 - `session_files`: normalized file facets
 - `session_errors`: normalized error facets
 - `config`: persisted deployment configuration
+- `machines`: stable installation identities, editable device names, platform metadata, activity, and revocation state
 - `access_tokens`: machine-token hashes and lifecycle fields
 - `hermes_credentials`: OpenRouter credential hashes authorized only for the Hermes proxy surface
 - `harness_loads`: loaded integration source hashes and receipt identity used by diagnostics
@@ -528,7 +534,42 @@ The migration sequence defines:
 D1 remains the searchable source of truth. R2 remains the complete redacted
 archive.
 
-### 9.3 Local Index
+### 9.3 Device Identity And Association
+
+`installation_id` is a locally generated, stable 32-character lowercase
+hexadecimal identifier for an installed Mimir instance. It is the machine key
+used by tokens, sessions, harness-load reports, and scoped Hermes credentials;
+it is not a hostname or user-facing label. `machines.name` is initialized from
+the hostname and is independently editable in the dashboard. Re-association
+refreshes platform metadata but does not overwrite an existing name.
+
+Clients discover association support through the
+`machine_identity_association` capability returned by `/whoami`, then send the
+exact version-1 shape `version`, `installation_id`, `name`, `platform`, and
+`arch` to `POST /machine/associate`. Association is first-writer: an
+unassociated token may bind to one installation, repeated association with that
+installation is idempotent, and an attempt to move it to another installation
+returns `409`. The endpoint cannot rename a device.
+
+Authenticated capture and lifecycle traffic carries the installation derived
+from the token or scoped Hermes credential. A new session records it; an
+existing exact session with no installation may acquire it once, but traffic
+from another installation cannot replace it. Heuristic sessions are grouped by
+installation as well as repository and harness. Dashboard session responses
+resolve the stored installation to its current device name without changing the
+session association.
+
+Revoking a device timestamps the machine and all access tokens associated with
+its installation. Subsequent machine-token requests and both scoped and legacy
+Hermes credential authentication for that installation fail. Revocation does
+not delete or detach historical sessions, exchanges, or the device row, and a
+later rename only changes its display label. The dashboard has no restore
+operation. Privileged setup/login registration never clears machine or token
+revocation; a token generated for a revoked installation is not registered and
+fails connection verification. Reconnect the physical machine with a new
+installation identity instead of reusing the revoked identity.
+
+### 9.4 Local Index
 
 `mimir index` writes `<repo>/.mimir/index.json` atomically. It indexes Git
 working files for selected programming-language extensions and records hashes,
@@ -613,14 +654,20 @@ reload path; Cursor hot-reloads its hooks file.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
 Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in
-OpenRouter provider to `/v1/hermes` while preserving Hermes' OpenRouter key. The CLI
+OpenRouter provider to `/v1/hermes/<installation-id>` while preserving Hermes' OpenRouter key. The CLI
 registers only the key's SHA-256 digest in D1. The Worker
 implements Hermes' required chat, model, key, and credit routes and derives the
 `hermes` capture tag from the route. No custom provider or model-list copy is
-created. Registered OpenRouter credentials are accepted only on `/v1/hermes/*`, so
+created. Each digest is registered independently for the stable installation ID, so the
+same OpenRouter key can be used by multiple devices and revoking one device does not
+revoke another. The unscoped legacy route succeeds only when exactly one active matching
+credential exists. Registered credentials are accepted only on the explicit Hermes routes, so
 Hermes features that still call OpenRouter directly never leak a Mimir machine
-credential. Hermes requests are forwarded with the same OpenRouter credential
-they presented rather than charging the Worker's default key. Direct Hermes
+credential. Migration `0016` preserves credentials already associated with an
+installation and retires unassociated legacy credential rows rather than
+keeping an indefinitely valid unscoped credential. Hermes requests are
+forwarded with the same OpenRouter credential they presented rather than
+charging the Worker's default key. Direct Hermes
 providers remain outside the Worker proxy because their requests do not reach
 it; the bundled Hermes plugin captures their completed-turn summaries and
 lifecycle events from inside the harness.

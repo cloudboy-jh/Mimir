@@ -1,12 +1,13 @@
 """Mimir capture plugin for Hermes.
 
 Reports completed-turn summaries, heartbeats, and session ends to the Mimir
-session object. Reporting happens above provider transport, so providers the
-Mimir proxy cannot reach (Nous portal account, direct providers) are covered.
+session object for providers the Mimir proxy cannot reach (Nous portal
+account, direct providers).
 
 Each turn is classified from Hermes' pre_api_request transport metadata.
-Turns routed through the Mimir OpenRouter redirect are liveness-only to avoid
-double counting; direct-provider turns are reported as event-only summaries.
+Turns routed through the Mimir OpenRouter redirect emit no plugin lifecycle
+events, avoiding a duplicate exact-ID session. Direct-provider evidence is
+sticky for the session and activates event-only lifecycle reporting.
 
 Install: copy this directory to the plugins directory under your Hermes home
 (~/.hermes/plugins/ or %LOCALAPPDATA%/hermes/plugins on Windows). Uninstall:
@@ -222,6 +223,7 @@ class _Reporter:
         self._last_session = None
         self._last_activity = 0.0
         self._turn_routes = {}
+        self._direct_sessions = set()
         self._lock = threading.Lock()
 
     def _dedup(self, key):
@@ -292,11 +294,15 @@ class _Reporter:
         worker.start()
 
     def record_turn_route(self, session_id, turn_id, provider, base_url):
-        if not session_id or not turn_id:
-            return
+        if not session_id:
+            return None
         proxied = turn_uses_proxy(provider, base_url, os.environ, self._connection["url"])
         with self._lock:
-            self._turn_routes[(session_id, turn_id)] = proxied
+            if turn_id:
+                self._turn_routes[(session_id, turn_id)] = proxied
+        if not proxied:
+            self.activate_direct(session_id)
+        return proxied
 
     def take_turn_route(self, session_id, turn_id):
         if not session_id or not turn_id:
@@ -304,12 +310,28 @@ class _Reporter:
         with self._lock:
             return self._turn_routes.pop((session_id, turn_id), None)
 
-    def end(self, session_id, reason):
+    def activate_direct(self, session_id):
         with self._lock:
+            if session_id in self._direct_sessions:
+                return False
+            self._direct_sessions.add(session_id)
+            self._last_session = session_id
+            self._last_activity = time.monotonic()
+        self.deliver(build_simple_event("heartbeat", session_id, self._repo))
+        return True
+
+    def finish(self, session_id, reason):
+        with self._lock:
+            direct = session_id in self._direct_sessions
+            self._direct_sessions.discard(session_id)
+            stale_routes = [key for key in self._turn_routes if key[0] == session_id]
+            for key in stale_routes:
+                del self._turn_routes[key]
             if self._last_session == session_id:
                 self._last_session = None
                 self._last_activity = 0.0
-        self.deliver(build_simple_event("end", session_id, self._repo, reason=reason), wait_on_exit=True)
+        if direct:
+            self.deliver(build_simple_event("end", session_id, self._repo, reason=reason), wait_on_exit=True)
 
     def heartbeat_if_active(self):
         session_id = self.active_session()
@@ -347,23 +369,22 @@ def register(ctx):
     def on_turn(session_id=None, turn_id=None, user_message=None, model=None, **_kwargs):
         if not session_id:
             return
-        reporter.touch(session_id)
         proxied = reporter.take_turn_route(session_id, turn_id)
         if proxied is None:
             proxied = liveness_only(os.environ, connection["url"])
         if proxied:
             return
-        key = f"turn:{turn_id}" if turn_id else None
+        reporter.activate_direct(session_id)
+        reporter.touch(session_id)
+        key = f"turn:{session_id}:{turn_id}" if turn_id else None
         reporter.deliver(build_turn_event(session_id, turn_id, model, user_message, repo), key=key)
 
-    def on_start(session_id=None, **_kwargs):
-        if session_id:
-            reporter.touch(session_id)
-            reporter.deliver(build_simple_event("heartbeat", session_id, repo))
+    def on_start(**_kwargs):
+        pass
 
     def on_finalize(session_id=None, reason=None, **_kwargs):
         if session_id:
-            reporter.end(session_id, reason or "session finalized")
+            reporter.finish(session_id, reason or "session finalized")
 
     ctx.register_hook("pre_api_request", on_transport)
     ctx.register_hook("post_llm_call", on_turn)

@@ -115,6 +115,14 @@ deployment URL, registers a fresh machine token, verifies `/whoami`, and saves
 the connection. It does not need the OpenRouter key, Bun, Go, or dashboard build
 dependencies.
 
+Setup and login create a stable local `installation_id` when the Worker's
+`/whoami` response advertises `machine_identity_association`, then associate the
+new machine token through `POST /machine/associate`. The ID is the durable
+device identity; the initial hostname is only its display name and can be
+changed later in Dashboard Settings. Reconnecting does not overwrite an edited
+name. A token cannot be moved to another installation after its first
+association.
+
 ### Direct URL and token
 
 When Cloudflare discovery is unavailable but a valid machine token already
@@ -192,6 +200,9 @@ After doctor reports the deployment and active integration as healthy:
 4. Inspect it with `mimir session get <id> --json`.
 5. Confirm persistence with `mimir session status <id> --json`.
 6. Open `mimir dashboard` and verify the same session is present.
+
+The session should show the device registered by setup or login. Device names
+are labels; changing one does not alter the session's stable device association.
 
 `mimir session status` is authoritative. Proxy success, plugin activity, or a
 scheduled capture header only proves that persistence was queued. Deployment

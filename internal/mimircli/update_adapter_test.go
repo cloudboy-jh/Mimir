@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
 func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
@@ -58,6 +62,7 @@ func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
 }
 
 func TestCmdUpdatePrintsOnlyIssuesAndRequiredActions(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -96,6 +101,7 @@ func TestCmdUpdatePrintsOnlyIssuesAndRequiredActions(t *testing.T) {
 }
 
 func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -117,6 +123,7 @@ func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
 }
 
 func TestCmdUpdateProgressRemainsLineOriented(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(_ context.Context, _ bool, _ bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -175,6 +182,7 @@ func TestCmdUpdateFailureLeavesOneActivityLine(t *testing.T) {
 }
 
 func TestCmdUpdateForwardsForce(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(_ context.Context, check, force bool, _ func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -205,6 +213,7 @@ func TestCmdUpdateRejectsCheckWithForce(t *testing.T) {
 }
 
 func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
+	t.Setenv(envMimirHome, t.TempDir())
 	old := runLifecycleUpdate
 	t.Cleanup(func() { runLifecycleUpdate = old })
 	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
@@ -222,5 +231,123 @@ func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
 		"NEXT mimir update --force\n"
 	if output.String() != want {
 		t.Fatalf("output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestCmdUpdateAssociatesSavedMachineIdentity(t *testing.T) {
+	isolatedInstallation(t, false)
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0", Latest: "1.1.0"}}, nil
+	}
+	associated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer machine-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/whoami":
+			fmt.Fprint(w, `{"capabilities":["machine_identity_association"]}`)
+		case "/machine/associate":
+			associated = true
+			fmt.Fprint(w, `{"associated":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
+		t.Fatal(err)
+	}
+	oldHTTPClient := httpClient
+	httpClient = server.Client()
+	t.Cleanup(func() { httpClient = oldHTTPClient })
+
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), []string{"--json"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !associated {
+		t.Fatal("machine identity was not associated")
+	}
+	var report lifecyclepkg.UpdateReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Warning != "" || strings.Contains(output.String(), `"warning"`) {
+		t.Fatalf("unexpected warning in %s", output.String())
+	}
+}
+
+func TestCmdUpdateAssociationFailureWarnsWithoutLeakingToken(t *testing.T) {
+	isolatedInstallation(t, false)
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"}}, nil
+	}
+	const token = "secret-machine-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rejected "+token, http.StatusBadGateway)
+	}))
+	defer server.Close()
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: token}); err != nil {
+		t.Fatal(err)
+	}
+	oldHTTPClient := httpClient
+	httpClient = server.Client()
+	t.Cleanup(func() { httpClient = oldHTTPClient })
+
+	var output bytes.Buffer
+	if err := cmdUpdate(context.Background(), []string{"--json"}, &output); err != nil {
+		t.Fatalf("successful update failed: %v", err)
+	}
+	var report lifecyclepkg.UpdateReport
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(report.Warning, "machine identity association failed") || !strings.Contains(report.Warning, "[redacted]") {
+		t.Fatalf("warning = %q", report.Warning)
+	}
+	if strings.Contains(output.String(), token) {
+		t.Fatalf("token leaked in output: %s", output.String())
+	}
+}
+
+func TestRenderUpdatePrintsAssociationWarning(t *testing.T) {
+	var output bytes.Buffer
+	report := lifecyclepkg.UpdateReport{
+		Binary:  installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0"},
+		Warning: "machine identity association failed: unavailable",
+	}
+	if err := renderUpdate(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	if want := "WARN machine identity association failed: unavailable\n"; !strings.Contains(output.String(), want) {
+		t.Fatalf("output = %q, want warning %q", output.String(), want)
+	}
+}
+
+func TestCmdUpdateCheckDoesNotAssociateMachineIdentity(t *testing.T) {
+	isolatedInstallation(t, false)
+	old := runLifecycleUpdate
+	t.Cleanup(func() { runLifecycleUpdate = old })
+	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
+		return lifecyclepkg.UpdateReport{Check: true, Binary: installpkg.UpdateBinaryReport{Status: "available"}}, nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("--check made an identity association request")
+	}))
+	defer server.Close()
+	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
+		t.Fatal(err)
+	}
+	oldHTTPClient := httpClient
+	httpClient = server.Client()
+	t.Cleanup(func() { httpClient = oldHTTPClient })
+
+	if err := cmdUpdate(context.Background(), []string{"--check", "--json"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
 	}
 }

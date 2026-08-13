@@ -1,6 +1,8 @@
 import type {
   CaptureSummary,
   DashboardIdentity,
+  Device,
+  DeviceIdentity,
   Exchange,
   Facets,
   LogEnvelope,
@@ -17,6 +19,13 @@ import type {
 const now = new Date("2026-07-29T17:45:00.000Z");
 const iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000).toISOString();
 const clone = <T>(value: T): T => structuredClone(value);
+
+const devices: Device[] = [
+  { id: "dev_fixture_macbook", name: "Studio MacBook", platform: "darwin", arch: "arm64", created_at: iso(28_800), updated_at: iso(1), last_seen_at: iso(1), revoked_at: null, session_count: 18, harnesses: ["opencode", "claude-code"] },
+  { id: "dev_fixture_linux", name: "Build workstation", platform: "linux", arch: "x64", created_at: iso(86_400), updated_at: iso(332), last_seen_at: null, revoked_at: null, session_count: 9, harnesses: ["hermes", "codex"] },
+  { id: "dev_fixture_windows", name: "Previous desktop", platform: "windows", arch: "x64", created_at: iso(172_800), updated_at: iso(43_200), last_seen_at: iso(43_200), revoked_at: iso(40_320), session_count: 4, harnesses: ["opencode"] },
+];
+const deviceIdentity = ({ id, name, platform, arch }: Device): DeviceIdentity => ({ id, name, platform, arch });
 
 const savedCapture = (saved: number, failed = 0): CaptureSummary => ({
   status: failed ? "partial" : "saved",
@@ -98,6 +107,7 @@ const sessions: Session[] = [
     intent: "Correct session evidence hierarchy, multi-model rendering, and dashboard motion without hiding implementation detail",
     child_session_count: 2,
     capture: savedCapture(21),
+    device: deviceIdentity(devices[0]),
   },
   {
     id: "ses_fixture_active_capture",
@@ -129,6 +139,7 @@ const sessions: Session[] = [
     intent: "Investigate intermittent capture receipts from direct providers",
     child_session_count: 0,
     capture: { status: "pending", saved_exchanges: 6, failed_exchanges: 0, pending_exchanges: 1, last_saved_at: iso(2) },
+    device: deviceIdentity(devices[1]),
   },
   {
     id: "ses_fixture_failed_work",
@@ -160,6 +171,7 @@ const sessions: Session[] = [
     intent: "Prototype a session synchronization path and validate ownership behavior",
     child_session_count: 1,
     capture: savedCapture(8, 1),
+    device: deviceIdentity(devices[2]),
   },
   {
     id: "ses_fixture_empty",
@@ -191,6 +203,7 @@ const sessions: Session[] = [
     intent: null,
     child_session_count: 0,
     capture: { status: "empty", saved_exchanges: 0, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: null },
+    device: null,
   },
 ];
 
@@ -221,6 +234,7 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     title_updated_at: null,
     display_title: "Audit the session detail information architecture and identify evidence regressions",
     intent: "Audit the session detail information architecture and identify evidence regressions",
+    device: deviceIdentity(devices[0]),
   },
   {
     id: "ses_fixture_supporting_motion",
@@ -248,6 +262,7 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     title_updated_at: null,
     display_title: "Inspect shared overlay motion and select transitions",
     intent: "Inspect shared overlay motion and select transitions",
+    device: deviceIdentity(devices[0]),
   },
 ];
 
@@ -356,6 +371,25 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
 
   if (url.pathname === "/dashboard/api/identity") {
     return clone({ email: "developer@mimir.local", name: "Fixture Developer", source: "local-development" } satisfies DashboardIdentity) as T;
+  }
+
+  if (url.pathname === "/dashboard/api/devices") return clone({ devices }) as T;
+
+  if (segments[2] === "devices" && segments[3] && init.method === "PATCH") {
+    const device = devices.find((item) => item.id === segments[3]);
+    if (!device) throw new Error("Fixture device not found.");
+    const body = JSON.parse(String(init.body ?? "{}")) as { name?: string };
+    device.name = body.name?.trim() || device.name;
+    device.updated_at = now.toISOString();
+    return clone({ device }) as T;
+  }
+
+  if (segments[2] === "devices" && segments[3] && segments[4] === "revoke" && init.method === "POST") {
+    const device = devices.find((item) => item.id === segments[3]);
+    if (!device) throw new Error("Fixture device not found.");
+    device.revoked_at = now.toISOString();
+    device.updated_at = now.toISOString();
+    return clone({ device }) as T;
   }
 
   if (url.pathname === "/dashboard/api/sessions") {

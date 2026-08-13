@@ -67,3 +67,18 @@ configured.
 Do not protect the bare Worker host. `/login` remains public for the browser
 handoff, while machine routes remain outside Access and continue to use
 per-machine bearer tokens.
+
+## Devices
+
+Dashboard Settings lists registered devices and their current name, platform,
+last-seen time, observed harnesses, session count, and revocation state. Renaming
+changes only the display label; `installation_id` and historical session
+associations remain unchanged.
+
+Revocation is irreversible in the dashboard. It disables every machine token
+and installation-scoped Hermes credential associated with that device, while
+retaining the device, sessions, and captured history for inspection. Setup and
+login do not reactivate the stable installation or its tokens; registration for
+that identity remains unusable and connection verification fails. To use the
+physical machine again, enroll it with a new installation identity. Dashboard
+renames remain available and change only the retained display label.

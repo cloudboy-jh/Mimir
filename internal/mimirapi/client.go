@@ -27,10 +27,50 @@ type Client struct {
 	Pointer    Pointer
 }
 
+type WhoAmI struct {
+	Service      string   `json:"service"`
+	APIVersion   int      `json:"api_version"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func (w WhoAmI) HasCapability(capability string) bool {
+	for _, available := range w.Capabilities {
+		if available == capability {
+			return true
+		}
+	}
+	return false
+}
+
+type MachineAssociation struct {
+	Version        int    `json:"version"`
+	InstallationID string `json:"installation_id"`
+	Name           string `json:"name"`
+	Platform       string `json:"platform"`
+	Arch           string `json:"arch"`
+}
+
+func (c Client) WhoAmI(ctx context.Context) (WhoAmI, error) {
+	data, err := c.Request(ctx, http.MethodGet, "/whoami", nil)
+	if err != nil {
+		return WhoAmI{}, err
+	}
+	var identity WhoAmI
+	if err := json.Unmarshal(data, &identity); err != nil {
+		return WhoAmI{}, fmt.Errorf("decoding Mimir identity: %w", err)
+	}
+	return identity, nil
+}
+
+func (c Client) AssociateMachine(ctx context.Context, association MachineAssociation) error {
+	_, err := c.Request(ctx, http.MethodPost, "/machine/associate", association)
+	return err
+}
+
 func (c Client) Verify(ctx context.Context) error {
 	var last error
 	for attempt := 0; attempt < 8; attempt++ {
-		if _, err := c.Request(ctx, http.MethodGet, "/whoami", nil); err == nil {
+		if _, err := c.WhoAmI(ctx); err == nil {
 			return nil
 		} else {
 			last = err
