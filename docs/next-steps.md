@@ -10,34 +10,22 @@ OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
 retention cleanup are separate follow-ups because they change setup or session
 lifecycle contracts.
 
-### Adaptive full-terminal Mimir TUI
+### Pi capture validation
 
-The adaptive AltScreen transition, measured full-terminal layout, centered
-sessions-and-Ask-Mimir home surface, state-preserving reload behavior, and
-small-terminal fallback are implemented. Ask Mimir now opens a dedicated
-conversation view, carries selected-session context into prompts, streams Pi
-events, exposes Mimir tools and model selection, and leaves session browsing
-available when Pi cannot start. Deterministic transitions, lifecycle cleanup,
-redraw coalescing, and Windows Unicode input are covered. The remaining work is
-manual cross-platform validation.
-
-The compact `80x20` constraint remains appropriate for temporary setup, deploy,
-login, and lightweight session-browser surfaces, but it wastes space and
-complicates the persistent sessions-and-Pi application. Install and update use
-plain line-oriented output; `mimir tui` uses the measured terminal dimensions
-and AltScreen lifecycle.
+Pi uses a managed extension rather than a separate Mimir terminal application.
+The extension routes Pi's OpenRouter provider through Mimir with exact session
+metadata and reports bounded reconstructed exchanges for direct providers.
+The installed skill and CLI remain the query surface.
 
 Remaining work:
 
-1. **Complete manual terminal validation.**
-   - Run the full Go tests, vet, and CLI build.
-   - Manually resize Windows Terminal horizontally and vertically while
-     browsing, filtering, inspecting detail, typing, streaming, and toggling
-     fullscreen.
-2. **Keep the terminal contract aligned.**
-   - `feat.md`, `internal/ui/README.md`, the README, and CLI docs now describe
-     `mimir tui` as the adaptive AltScreen exception to compact command surfaces.
-   - Update those documents only when behavior changes.
+1. Validate extension loading, OpenRouter routing, exact session grouping,
+   direct-provider reconstruction, reload, resume, compaction, and shutdown on
+   macOS, Linux, and Windows.
+2. Confirm `mimir doctor --json` observes the matching Pi harness-load hash
+   after restart.
+3. Confirm modified or conflicting user extension files are preserved by
+   install, update, and uninstall.
 
 ## Operational Follow-ups
 
@@ -46,17 +34,14 @@ Remaining work:
   release-attached `releases/latest/download` assets.
 - Add required-reviewer protection to the existing GitHub `release`
   environment.
-- Complete first deployed desktop/TUI verification for Hermes and real
-  install, activation, capture, resume, compaction, offline retry, update, and
-  uninstall validation for Claude Code, Codex, and Cursor on each supported
-  operating system. Include Ask Mimir startup, generated extension loading,
-  model switching, streaming, and the Pi-unavailable fallback. Hook
-  installation remains staged until doctor observes a matching harness load.
+- Complete real install, activation, capture, resume, compaction, offline retry,
+  update, and uninstall validation for Pi, OpenCode, Hermes, Claude Code, Codex,
+  and Cursor on each supported operating system. Hook and extension installation
+  remains staged until doctor observes a matching harness load.
 - Define a recommended reconciliation cadence and an explicit policy for stale
   accepted rows and orphaned R2 objects.
 - Keep `docs/Spec.md` synchronized with the live Access-protected dashboard and
-  session-object behavior. The former Access/mock-backed wording is already
-  corrected.
+  session-object behavior.
 
 ## Parked Decisions
 
@@ -66,20 +51,3 @@ Remaining work:
   a harness × provider routing matrix. The proxy remains only for API-key
   providers with redirectable base URLs. Do not intercept TLS, impersonate
   OAuth clients, or turn machine tokens into provider credentials.
-
-## Recently Closed
-
-- Made Ask Mimir session-native with selected-session context, private Mimir
-  tools, model discovery and switching, streaming conversation state, and a
-  dedicated conversation view.
-- Made TUI startup resilient: Mimir now loads its generated Pi extension and
-  keeps session browsing usable with an actionable status when Pi is absent or
-  fails its startup handshake.
-- Enrolled newly introduced managed hook artifacts during update without
-  weakening receipt ownership or conflict preservation.
-- Preserved commit and diff evidence through outcome normalization, OpenCode
-  reporting, CLI presentation, and dashboard rendering.
-- Shipped receipt-owned Claude Code, Codex, and Cursor hooks, first-class
-  session titles, Access-protected live session state, and native macOS and
-  Windows CI coverage. Canonical macOS `/var`, `/tmp`, and `/etc` filesystem
-  aliases are accepted without allowing user-controlled symlink targets.

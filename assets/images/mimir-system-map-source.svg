@@ -99,7 +99,7 @@
   <text x="1164" y="339" class="mono micro">Cloudflare Access</text>
 
   <rect x="1140" y="414" width="220" height="174" rx="6" class="panel"/>
-  <text x="1164" y="447" class="sans heading">CLI and TUI</text>
+  <text x="1164" y="447" class="sans heading">Agent CLI</text>
   <text x="1164" y="475" class="mono machine">list · search · inspect</text>
   <text x="1164" y="498" class="mono machine">status · outcome · doctor</text>
   <line x1="1164" y1="520" x2="1336" y2="520" class="rule"/>

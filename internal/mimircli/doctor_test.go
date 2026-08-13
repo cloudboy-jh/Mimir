@@ -5,19 +5,19 @@ import (
 	"testing"
 )
 
-func TestParseDoctorArgsSupportsJSONAndTUI(t *testing.T) {
-	options, err := parseDoctorArgs([]string{"--json", "--tui"})
+func TestParseDoctorArgsSupportsJSON(t *testing.T) {
+	jsonOutput, err := parseDoctorArgs([]string{"--json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !options.json || !options.tui {
-		t.Fatalf("options %#v", options)
+	if !jsonOutput {
+		t.Fatal("JSON output was not enabled")
 	}
 }
 
 func TestParseDoctorArgsRejectsUnknownArgumentWithUpdatedUsage(t *testing.T) {
-	_, err := parseDoctorArgs([]string{"--unknown"})
-	if err == nil || !strings.Contains(err.Error(), "usage: mimir doctor [--json] [--tui]") {
+	_, err := parseDoctorArgs([]string{"--tui"})
+	if err == nil || !strings.Contains(err.Error(), "usage: mimir doctor [--json]") {
 		t.Fatalf("error = %v", err)
 	}
 }

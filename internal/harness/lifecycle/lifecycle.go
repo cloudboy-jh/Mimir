@@ -24,11 +24,13 @@ type Report struct {
 type InstallReport struct {
 	Binary         install.BinaryReport     `json:"binary"`
 	Artifacts      install.ArtifactReport   `json:"artifacts"`
+	Pi             harness.IntegrationState `json:"pi"`
 	OpenCode       harness.IntegrationState `json:"opencode"`
 	Hermes         harness.IntegrationState `json:"hermes"`
 	ClaudeCode     harness.IntegrationState `json:"claude_code"`
 	Codex          harness.IntegrationState `json:"codex"`
 	Cursor         harness.IntegrationState `json:"cursor"`
+	PiReady        bool                     `json:"pi_ready"`
 	OpenCodeReady  bool                     `json:"open_code_ready"`
 	HermesReady    bool                     `json:"hermes_ready"`
 	ActionRequired bool                     `json:"action_required"`
@@ -95,6 +97,14 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 	}
 	report := InstallReport{Binary: mechanical.Binary, Artifacts: mechanical.Artifacts, HermesReady: true}
 	pointer, pointerErr := s.LoadPointer()
+	if paths.PiHome == "" {
+		report.Pi = harness.IntegrationState{State: "skipped", Detail: "Pi extension path is unavailable"}
+	} else if install.ArtifactsReady(mechanical.Artifacts, paths.PiHome, "plugins/pi/") {
+		report.Pi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Pi capture extension staged; restart Pi to route OpenRouter and capture direct-provider turns"}
+	} else {
+		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
+	}
+	report.PiReady = report.Pi.State != "failed"
 	if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
 		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
@@ -134,7 +144,7 @@ func (s Service) Install(ctx context.Context, explicitDir string, executable fun
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
 	s.step("Hermes integration checked")
-	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
+	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.PiReady || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.Pi, report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
 	return report, nil
 }
 
@@ -266,6 +276,7 @@ func (s Service) RefreshConnected(ctx context.Context, operation string) Report 
 	}
 	if !managed {
 		report.Integrations = harness.IntegrationReport{
+			Pi:         harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt; setup and login do not enroll artifacts"},
 			OpenCode:   harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt; setup and login do not enroll artifacts"},
 			Hermes:     harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
 			ClaudeCode: harness.IntegrationState{State: "skipped", Detail: "no managed installation receipt"},
@@ -281,6 +292,7 @@ func (s Service) finish(ctx context.Context, report Report) Report {
 	pointer, err := s.LoadPointer()
 	if err != nil {
 		report.Integrations = harness.IntegrationReport{
+			Pi:         harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
 			OpenCode:   harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
 			Hermes:     harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
 			ClaudeCode: harness.IntegrationState{State: "skipped", Detail: "Mimir is not connected"},
@@ -311,6 +323,14 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	manifest, err := s.Manifest(pointer.URL)
 	if err != nil {
 		return report, err
+	}
+	if paths.PiHome == "" {
+		report.Pi = harness.IntegrationState{State: "skipped", Detail: "Pi extension path is unavailable"}
+	} else if install.ArtifactsReady(artifacts, paths.PiHome, "plugins/pi/") {
+		report.Pi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Pi capture extension staged; activation is unverified until a load is reported"}
+	} else {
+		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
+		failures = append(failures, report.Pi.Detail)
 	}
 	if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
 		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}

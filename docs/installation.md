@@ -149,6 +149,7 @@ update, apply the activation action for the active harness:
 
 | Harness | Activation action |
 | --- | --- |
+| Pi | Restart Pi |
 | OpenCode | Restart OpenCode |
 | Hermes | Restart Hermes |
 | Claude Code | Run `/reload-plugins` or restart Claude Code |
@@ -158,8 +159,11 @@ update, apply the activation action for the active harness:
 Then run `mimir doctor --json`. A current file that has not been loaded is
 reported as staged rather than healthy.
 
-OpenCode receives the managed capture plugin and skills. Hermes receives its
-plugin, skills, and bounded managed OpenRouter route. Claude Code receives a
+Pi receives a managed global capture extension at
+`~/.pi/agent/extensions/mimir.ts` (or
+`$PI_CODING_AGENT_DIR/extensions/mimir.ts`) and the shared skill. OpenCode
+receives the managed capture plugin and skills. Hermes receives its plugin,
+skills, and bounded managed OpenRouter route. Claude Code receives a
 skills-directory plugin; Codex and Cursor receive managed hook manifests. A
 different existing hook file is preserved as a conflict, never merged or
 overwritten.
@@ -185,6 +189,7 @@ endpoint.
 | Path | Saved evidence |
 | --- | --- |
 | Redirected OpenRouter and other Mimir proxy traffic | Complete redacted request/response transport exchange, streamed upstream and archived in R2 |
+| Pi direct providers and subscription providers | Bounded reconstruction from Pi's completed turn; not byte-for-byte provider transport |
 | OpenCode OAuth, subscription, or direct providers | Bounded reconstruction from OpenCode's session store; not byte-for-byte provider transport |
 | Claude Code, Codex, and Cursor supported hooks | Bounded prompt/assistant reconstruction; tool traces and usage may be unavailable |
 | Hermes Nous portal, OAuth, and direct providers | Event-only completed-turn summary; no searchable exchange object |

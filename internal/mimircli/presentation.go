@@ -50,6 +50,7 @@ func renderInstall(out io.Writer, report lifecyclepkg.InstallReport) error {
 		return err
 	}
 	integrations := []namedIntegration{
+		{name: "Pi", state: report.Pi},
 		{name: "OpenCode", state: report.OpenCode},
 		{name: "Hermes", state: report.Hermes},
 		{name: "Claude Code", state: report.ClaudeCode},

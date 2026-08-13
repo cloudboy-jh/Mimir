@@ -101,9 +101,7 @@ func setup(ctx context.Context, args []string, ioctx IO) (resultErr error) {
 	defer cancelOperation()
 	ctx = operationCtx
 	if !opts.JSON {
-		if !cliui.Interactive(ioctx.In, ioctx.Out) {
-			printSetupBanner(ioctx.Out)
-		}
+		printSetupBanner(ioctx.Out)
 		phases := []string{"Preparing Worker", "Authenticating Cloudflare", "Provisioning database", "Provisioning archive", "Applying schema", "Configuring credentials", "Connecting OpenRouter", "Deploying Worker", "Verifying connection"}
 		if opts.URL != "" {
 			phases = []string{"Verifying connection"}

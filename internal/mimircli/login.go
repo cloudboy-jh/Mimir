@@ -45,9 +45,7 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	defer cancelOperation()
 	ctx = operationCtx
 	if !opts.JSON {
-		if !cliui.Interactive(ioctx.In, ioctx.Out) {
-			printSetupBanner(ioctx.Out)
-		}
+		printSetupBanner(ioctx.Out)
 		opts.Progress = startOperationProgress(ctx, ioctx, "Mimir login", []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"}, cancelOperation)
 		defer opts.Progress.Stop()
 	}

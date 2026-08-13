@@ -76,19 +76,18 @@ Use `/whoami` and direct session APIs for deployment health checks. Do not call
 `/v1/chat/completions`, `/v1/messages`, or another paid model route just to test
 connectivity.
 
-## Dashboard and terminal
+## Dashboard and agents
 
 The private dashboard keeps sessions, outcomes, capture state, harnesses, models,
 and token usage visible in one place.
 
 ![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
 
-The persistent TUI provides the same session-first workflow in the terminal,
-with inline evidence and Ask Mimir for questions grounded in your saved work.
-
-<p align="center">
-  <img src="assets/images/mimir-tui-screenshot.png" width="860" alt="Mimir terminal UI showing the session list, Ask Mimir, contextual status, and keyboard commands.">
-</p>
+Installed agents use the `mimir-use` skill and machine-readable CLI to query
+memory directly. Ask the agent for recent sessions, prior decisions, or evidence;
+it runs Mimir commands itself and presents readable results rather than raw JSON.
+Pi's managed extension routes OpenRouter through Mimir with exact session headers
+and reports bounded reconstructed turns for providers that bypass the proxy.
 
 ## What Mimir remembers
 
@@ -133,7 +132,7 @@ There are three inputs to one session record:
    responses. The Worker preserves streaming, redacts the exchange, writes the
    full object to R2, and indexes searchable metadata in D1.
 2. **Reconstructed harness exchanges** carry the completed prompt and response
-   fields exposed by OpenCode, Claude Code, Codex, or Cursor. The Worker redacts
+   fields exposed by Pi, OpenCode, Claude Code, Codex, or Cursor. The Worker redacts
    and persists them like other exchanges, but they are bounded reconstructions,
    not provider transport archives.
 3. **Harness events** carry turn summaries, heartbeats, titles, session ends,
@@ -146,6 +145,7 @@ without an exact session ID uses bounded inactivity grouping.
 | Traffic path | Durable capture | Session lifecycle | Searchable exchange metadata |
 | --- | --- | --- | --- |
 | Redirected OpenRouter | Full redacted transport exchange | Yes | Yes |
+| Pi direct or subscription provider | Bounded reconstruction from the completed Pi turn | Extension events | Yes, after persistence succeeds |
 | OpenCode OAuth, subscription, or direct provider | Bounded reconstruction from the OpenCode session store | Plugin events | Yes, after persistence succeeds |
 | Claude Code, Codex, or Cursor supported hooks | Bounded prompt/response reconstruction | Hook events | Yes, after persistence succeeds |
 | Hermes Nous portal, OAuth, or direct provider | Event-only turn summary | Plugin events | No |
@@ -191,6 +191,15 @@ The dashboard leads with sessions. Requests remain supporting evidence, one
 click away when you need the raw record.
 
 ## Connect an agent
+
+### Pi
+
+The installer manages a global Pi extension and the shared Mimir skill. The
+extension routes Pi's OpenRouter provider through Mimir with exact session,
+repository, and harness headers. For direct and subscription providers it
+uploads bounded reconstructed completed turns, including tool results exposed
+by Pi. Restart Pi after install or update. Ask Pi for Mimir memory normally;
+the skill runs the machine-readable CLI and formats results.
 
 ### OpenCode
 
@@ -283,14 +292,13 @@ mimir login                           connect another machine
 mimir demo [--no-open]                explore sample sessions locally
 mimir deploy [--worker-dir DIR]       deploy packaged Worker and dashboard changes
 mimir dashboard                       open the private dashboard
-mimir tui                             open the persistent sessions + agent terminal
-mimir list [filters] [--json]         browse recent sessions (interactive on a TTY)
+mimir list [filters] [--json]         list recent sessions
 mimir search <query> [--json]         search saved session memory
 mimir session get <id> [--json]       inspect one session
 mimir session status <id> [--json]    verify durable capture
 mimir session end <id> [--json]       finalize the active generation
 mimir session outcome <id> <value>    record an evidenced work outcome
-mimir doctor [--json] [--tui]         validate deployment, integrations, and optional TUI prerequisites
+mimir doctor [--json]                 validate deployment and integrations
 mimir update [--check]                update Mimir and managed integrations
 mimir uninstall [--keep-binary]       remove verified managed artifacts
 ```
@@ -300,8 +308,10 @@ the default source; arbitrary source requires explicit `--worker-dir <path>`.
 Run `mimir help advanced` for code recall, connection, configuration, and
 diagnostic commands.
 
-`mimir install` creates or reconciles only receipt-managed integrations.
-`mimir setup` and `mimir login` refresh them only when a managed installation
+`mimir install` creates or reconciles only receipt-managed integrations. For
+Pi, it installs `~/.pi/agent/extensions/mimir.ts` (or
+`$PI_CODING_AGENT_DIR/extensions/mimir.ts`); restart Pi to activate it.
+`mimir setup` and `mimir login` refresh integrations only when a managed installation
 receipt already exists; they do not silently enroll global hook files. Updates
 preserve unowned or locally modified files and do not deploy the Worker.
 
@@ -311,7 +321,7 @@ From the repository root, validate the capture and installer surfaces with:
 
 ```bash
 npm --prefix worker test -- src/config.test.ts src/session-titles.test.ts
-bun test plugins/opencode/
+bun test plugins/pi/ plugins/opencode/
 python -m unittest discover -s plugins/hermes -p "test_*.py"
 go test ./internal/harness/hooks ./internal/install ./internal/doctor
 npm --prefix worker run typecheck

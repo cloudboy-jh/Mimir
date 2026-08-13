@@ -545,8 +545,8 @@ diagnostics to the canonical Worker HTTP API. `mimir session status` performs a
 bounded settle/poll while capture is pending and returns the authoritative
 receipt without upgrading a still-pending final read optimistically.
 
-OpenCode, Hermes, Claude Code, Codex, and Cursor integrations are capture and
-lifecycle adapters, not alternate memory servers. OpenCode and the command-hook
+Pi, OpenCode, Hermes, Claude Code, Codex, and Cursor integrations are capture
+and lifecycle adapters, not alternate memory servers. Pi, OpenCode, and the command-hook
 adapter can report reconstructed exchanges; Hermes direct providers report only
 turn summaries and lifecycle events. Future harness-native search or control
 access must call the canonical Worker API through the harness's supported
@@ -581,7 +581,7 @@ and dashboard copy emit canonical values.
 8. Reuses or stores the OpenRouter Worker secret.
 9. Deploys and verifies the Worker.
 10. Saves the local URL/token pointer.
-11. Refreshes exact receipt-owned OpenCode, Claude Code, Codex, Cursor, and,
+11. Refreshes exact receipt-owned Pi, OpenCode, Claude Code, Codex, Cursor, and,
     when detected, Hermes artifacts without rewriting general harness config.
     Without an existing receipt containing managed artifacts, setup does not
     create an installation identity, install log, or global harness files.
@@ -594,8 +594,10 @@ register a new machine token, and return the same connection manifest. Managed
 installation and update may touch exact
 opted-in plugin and skill files recorded in `install-receipt.json`; they do not
 modify general OpenCode JSON/JSONC, providers, credentials, or commands.
-OpenCode integration uses the managed plugin and OpenCode's supported plugin
-loading flow.
+Pi uses a receipt-owned global extension under its configured agent directory;
+the extension overrides only Pi's OpenRouter provider at runtime, adds exact
+session metadata, and reconstructs direct-provider turns. OpenCode integration
+uses the managed plugin and OpenCode's supported plugin loading flow.
 
 `mimir install` enrolls safe absent or byte-identical Claude Code plugin files
 under `~/.claude/skills/mimir/` and hook manifests at `~/.codex/hooks.json` and
@@ -722,7 +724,7 @@ The exact local validation commands for these surfaces are:
 
 ```bash
 npm --prefix worker test -- src/config.test.ts src/session-titles.test.ts
-bun test plugins/opencode/
+bun test plugins/pi/ plugins/opencode/
 python -m unittest discover -s plugins/hermes -p "test_*.py"
 go test ./internal/harness/hooks ./internal/install ./internal/doctor
 npm --prefix worker run typecheck

@@ -9,11 +9,12 @@ import (
 
 func TestIntegrationSummaryUsesRestartRequiredForBothHarnesses(t *testing.T) {
 	report := harness.IntegrationReport{
+		Pi:       harness.IntegrationState{State: "current", RestartRequired: true},
 		OpenCode: harness.IntegrationState{State: "current", RestartRequired: true},
 		Hermes:   harness.IntegrationState{State: "installed", Provider: "openrouter", Scope: "all-providers", RestartRequired: true},
 	}
 	summary := integrationSummary(report)
-	for _, want := range []string{"OpenCode: restart required", "Hermes: restart required", "OpenRouter proxy plus direct providers"} {
+	for _, want := range []string{"Pi: restart required", "OpenCode: restart required", "Hermes: restart required", "OpenRouter proxy plus direct providers"} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary missing %q: %s", want, summary)
 		}

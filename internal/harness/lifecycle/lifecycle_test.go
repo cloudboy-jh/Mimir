@@ -76,18 +76,24 @@ func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
 	}
 }
 
-func TestInstallCurrentReportsManagedOpenCodeCapturePlugin(t *testing.T) {
+func TestInstallCurrentReportsManagedPiAndOpenCodeCapturePlugins(t *testing.T) {
 	root := t.TempDir()
 	service := New()
-	service.Paths = func() (install.InstallationPaths, error) { return install.InstallationPaths{OpenCodeHome: root}, nil }
+	service.Paths = func() (install.InstallationPaths, error) {
+		return install.InstallationPaths{PiHome: root, OpenCodeHome: root}, nil
+	}
 	service.Hermes = hermes.New()
 	service.Hermes.Discover = func() (string, bool, error) { return "", false, nil }
-	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{{
-		Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent,
-	}}}
+	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
+		{Path: filepath.Join(root, "extensions", "mimir.ts"), Source: "plugins/pi/mimir.ts", Status: install.ArtifactCurrent},
+		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent},
+	}}
 	report, err := service.InstallCurrent(context.Background(), mimirapi.Pointer{URL: "https://mimir.test", Token: "machine"}, artifacts)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if report.Pi.State != "staged" || report.Pi.Provider != "openrouter" || report.Pi.Scope != "all-providers" || !report.Pi.RestartRequired {
+		t.Fatalf("Pi state %#v", report.Pi)
 	}
 	if report.OpenCode.State != "staged" || report.OpenCode.Scope != "capture" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, "unverified") {
 		t.Fatalf("OpenCode state %#v", report.OpenCode)

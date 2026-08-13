@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -82,81 +81,14 @@ type Service struct {
 	CheckArtifacts func() (install.ArtifactReport, error)
 	LoadReceipt    func() (install.Receipt, error)
 	LoadPointer    func() (mimirapi.Pointer, error)
-	LookPath       func(string) (string, error)
-	LookupEnv      func(string) (string, bool)
 	Lifecycle      lifecycle.Service
 }
 
 func New(api Requester) Service {
 	return Service{
 		API: api, CheckArtifacts: install.CheckArtifacts, LoadReceipt: install.LoadReceipt, LoadPointer: mimirapi.LoadPointer,
-		LookPath: exec.LookPath, LookupEnv: os.LookupEnv,
 		Lifecycle: lifecycle.New(),
 	}
-}
-
-// providerCredentialEnvVars is the supported Pi provider credential list.
-var providerCredentialEnvVars = [...]string{
-	"ANTHROPIC_API_KEY",
-	"OPENAI_API_KEY",
-	"OPENROUTER_API_KEY",
-	"GOOGLE_API_KEY",
-	"GEMINI_API_KEY",
-	"GROQ_API_KEY",
-	"MISTRAL_API_KEY",
-	"XAI_API_KEY",
-}
-
-// RunTUI runs the ordinary doctor checks and adds readiness checks for the TUI.
-func (s Service) RunTUI(ctx context.Context) Report {
-	report := s.Run(ctx)
-	readiness := s.TUIReadiness()
-	report.Checks = append(report.Checks, readiness.Checks...)
-	if !readiness.OK {
-		report.OK = false
-	}
-	return report
-}
-
-// TUIReadiness checks only local Pi and provider prerequisites.
-func (s Service) TUIReadiness() Report {
-	report := Report{OK: true}
-	add := func(name, status, detail, repair string) {
-		report.Checks = append(report.Checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
-		if status == "failed" {
-			report.OK = false
-		}
-	}
-
-	lookPath := s.LookPath
-	if lookPath == nil {
-		lookPath = exec.LookPath
-	}
-	if path, err := lookPath("pi"); err != nil {
-		add("pi", "failed", "pi was not found on PATH", "install Pi and ensure pi is available on PATH")
-	} else {
-		add("pi", "ok", path, "")
-	}
-
-	lookupEnv := s.LookupEnv
-	if lookupEnv == nil {
-		lookupEnv = os.LookupEnv
-	}
-	credential := ""
-	for _, name := range providerCredentialEnvVars {
-		if value, ok := lookupEnv(name); ok && strings.TrimSpace(value) != "" {
-			credential = name
-			break
-		}
-	}
-	if credential == "" {
-		names := strings.Join(providerCredentialEnvVars[:], ", ")
-		add("provider-credential", "warning", "no provider API-key environment variable detected; Pi may use stored OAuth or provider credentials; checked: "+names, "if Pi is not already authenticated, configure a provider in Pi")
-	} else {
-		add("provider-credential", "ok", credential+" is set", "")
-	}
-
-	return report
 }
 
 func (s Service) Run(ctx context.Context) Report {
@@ -279,6 +211,7 @@ type harnessLoadsResponse struct {
 
 func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.ArtifactReport, add func(string, string, string, string)) {
 	registry := []struct{ harness, label, source, activate string }{
+		{"pi", "Pi", "plugins/pi/mimir.ts", "restart Pi"},
 		{"opencode", "OpenCode", "plugins/opencode/mimir.ts", "restart OpenCode"},
 		{"hermes", "Hermes", "plugins/hermes/__init__.py", "restart Hermes"},
 		{"claude-code", "Claude Code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},

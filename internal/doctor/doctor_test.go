@@ -28,81 +28,6 @@ func TestRunReportsArtifactsBeforeMissingConnection(t *testing.T) {
 	}
 }
 
-func TestRunTUIAddsReadinessChecksWithInjectedLookups(t *testing.T) {
-	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
-	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
-	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
-	service.LookPath = func(name string) (string, error) {
-		if name != "pi" {
-			t.Fatalf("LookPath(%q)", name)
-		}
-		return "/usr/local/bin/pi", nil
-	}
-	service.LookupEnv = func(name string) (string, bool) {
-		return map[string]string{"OPENROUTER_API_KEY": "secret"}[name], name == "OPENROUTER_API_KEY"
-	}
-
-	report := service.RunTUI(context.Background())
-	if report.OK || len(report.Checks) != 3 {
-		t.Fatalf("report %#v", report)
-	}
-	if check := report.Checks[1]; check.Name != "pi" || check.Status != "ok" || check.Detail != "/usr/local/bin/pi" {
-		t.Fatalf("pi check %#v", check)
-	}
-	if check := report.Checks[2]; check.Name != "provider-credential" || check.Status != "ok" || check.Detail != "OPENROUTER_API_KEY is set" {
-		t.Fatalf("provider check %#v", check)
-	}
-}
-
-func TestRunTUIWarnsForMissingCredentialAndFailsForMissingPi(t *testing.T) {
-	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
-	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
-	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
-	service.LookPath = func(string) (string, error) { return "", errors.New("missing") }
-	service.LookupEnv = func(string) (string, bool) { return "", false }
-
-	report := service.RunTUI(context.Background())
-	if len(report.Checks) != 3 {
-		t.Fatalf("report %#v", report)
-	}
-	pi := report.Checks[1]
-	if pi.Status != "failed" || pi.Detail == "" || pi.Repair == "" {
-		t.Fatalf("pi check %#v", pi)
-	}
-	provider := report.Checks[2]
-	if provider.Status != "warning" || provider.Repair == "" {
-		t.Fatalf("provider check %#v", provider)
-	}
-	for _, name := range providerCredentialEnvVars {
-		if !strings.Contains(provider.Detail, name) {
-			t.Fatalf("provider detail %q does not document %s", provider.Detail, name)
-		}
-	}
-}
-
-func TestTUIReadinessAllowsStoredPiAuthentication(t *testing.T) {
-	service := New(nil)
-	service.LookPath = func(string) (string, error) { return "/usr/local/bin/pi", nil }
-	service.LookupEnv = func(string) (string, bool) { return "", false }
-	report := service.TUIReadiness()
-	if !report.OK || len(report.Checks) != 2 || report.Checks[1].Status != "warning" {
-		t.Fatalf("report %#v", report)
-	}
-}
-
-func TestRunDoesNotAddTUIReadinessChecks(t *testing.T) {
-	service := New(requesterFunc(func(context.Context, string, string, any) ([]byte, error) { return nil, nil }))
-	service.CheckArtifacts = func() (install.ArtifactReport, error) { return install.ArtifactReport{}, nil }
-	service.LoadPointer = func() (mimirapi.Pointer, error) { return mimirapi.Pointer{}, errors.New("not connected") }
-	service.LookPath = func(string) (string, error) { t.Fatal("ordinary doctor checked PATH"); return "", nil }
-	service.LookupEnv = func(string) (string, bool) { t.Fatal("ordinary doctor checked credentials"); return "", false }
-
-	report := service.Run(context.Background())
-	if len(report.Checks) != 1 || report.Checks[0].Name != "connection" {
-		t.Fatalf("report %#v", report)
-	}
-}
-
 func TestStructuredReportGroupsOperationalState(t *testing.T) {
 	report := Report{OK: false, Checks: []Check{
 		{Name: "managed-artifact plugins/opencode/mimir.ts", Status: "failed", Detail: "outdated", Repair: "mimir update"},
@@ -148,6 +73,7 @@ func TestHarnessLoadChecksCompareActivePluginHashes(t *testing.T) {
 			t.Fatalf("request %s %s", method, path)
 		}
 		return []byte(`{"loads":[
+			{"harness":"pi","artifact_sha256":"pi-current","installation_id":"install-1","reported_at":"2026-07-26T10:00:00Z"},
 			{"harness":"opencode","artifact_sha256":"opencode-current","installation_id":"install-1","reported_at":"2026-07-26T10:00:00Z"},
 			{"harness":"hermes","artifact_sha256":"hermes-old","installation_id":"install-1","reported_at":"2026-07-26T10:00:00Z"},
 			{"harness":"hermes","artifact_sha256":"other-install","installation_id":"install-2","reported_at":"2026-07-26T11:00:00Z"}
@@ -155,6 +81,7 @@ func TestHarnessLoadChecksCompareActivePluginHashes(t *testing.T) {
 	}))
 	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{InstallationID: "install-1"}, nil }
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
+		{Source: "plugins/pi/mimir.ts", Status: install.ArtifactCurrent, BundleHash: "pi-current"},
 		{Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent, BundleHash: "opencode-current"},
 		{Source: "plugins/hermes/__init__.py", Status: install.ArtifactCurrent, BundleHash: "hermes-current"},
 	}}
@@ -162,14 +89,17 @@ func TestHarnessLoadChecksCompareActivePluginHashes(t *testing.T) {
 	service.addHarnessLoadChecks(context.Background(), artifacts, func(name, status, detail, repair string) {
 		checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
 	})
-	if len(checks) != 2 {
+	if len(checks) != 3 {
 		t.Fatalf("checks %#v", checks)
 	}
-	if checks[0].Name != "opencode.plugin-load" || checks[0].Status != "ok" || !strings.Contains(checks[0].Detail, "installed, active, and current") {
-		t.Fatalf("OpenCode check %#v", checks[0])
+	if checks[0].Name != "pi.plugin-load" || checks[0].Status != "ok" || !strings.Contains(checks[0].Detail, "installed, active, and current") {
+		t.Fatalf("Pi check %#v", checks[0])
 	}
-	if checks[1].Name != "hermes.plugin-load" || checks[1].Status != "failed" || checks[1].Repair != "restart Hermes" || !strings.Contains(checks[1].Detail, "active integration") {
-		t.Fatalf("Hermes check %#v", checks[1])
+	if checks[1].Name != "opencode.plugin-load" || checks[1].Status != "ok" || !strings.Contains(checks[1].Detail, "installed, active, and current") {
+		t.Fatalf("OpenCode check %#v", checks[1])
+	}
+	if checks[2].Name != "hermes.plugin-load" || checks[2].Status != "failed" || checks[2].Repair != "restart Hermes" || !strings.Contains(checks[2].Detail, "active integration") {
+		t.Fatalf("Hermes check %#v", checks[2])
 	}
 }
 

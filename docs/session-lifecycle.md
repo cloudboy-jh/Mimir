@@ -1,7 +1,7 @@
 # Session Lifecycle And Harness Capture
 
 Mimir combines capture paths around one lifecycle owner. The Worker proxy
-persists full redacted OpenRouter exchanges. OpenCode and the Claude Code,
+persists full redacted OpenRouter exchanges. Pi, OpenCode, and the Claude Code,
 Codex, and Cursor hook adapter can persist bounded exchanges reconstructed from
 harness-visible prompts and responses. Harness integrations also report
 lifecycle events; Hermes direct providers report event-only turn summaries and
@@ -100,6 +100,7 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 | Component | Responsibility |
 | --- | --- |
 | Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; report saved exchanges to the session object |
+| Pi extension | Route OpenRouter through Mimir with exact session headers; persist bounded reconstructed direct-provider turns; report heartbeats, titles, and lifecycle events |
 | OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
 | Hermes plugin | Report direct-provider turn summaries and lifecycle events; suppress duplicate turns for known proxied traffic |
 | Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges and report start/end lifecycle events |

@@ -41,6 +41,9 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 			t.Fatalf("%s content hash does not match bundle", artifact.Path)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(paths.PiHome, "extensions", "mimir.ts")); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts")); err != nil {
 		t.Fatal(err)
 	}
@@ -1592,6 +1595,7 @@ func isolatedInstallation(t *testing.T, hermes bool) installationPaths {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("MIMIR_HOME", mimirHome)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	if hermes {

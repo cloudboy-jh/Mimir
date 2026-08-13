@@ -14,39 +14,69 @@ import (
 	mimirassets "github.com/cloudboy-jh/mimir"
 	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
 	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
-	operationui "github.com/cloudboy-jh/mimir/internal/ui/operations"
+	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
+type setupProgress struct {
+	out io.Writer
+}
+
 func setupStep(progress *setupProgress, out io.Writer, jsonOutput bool, label string) {
-	if !jsonOutput {
-		progress.Complete(label)
+	if jsonOutput {
+		return
 	}
-}
-
-type setupProgress = operationui.Progress
-
-func startOperationProgress(ctx context.Context, ioctx IO, title string, phases []string, cancel context.CancelFunc) *setupProgress {
-	return operationui.Start(ctx, ioctx.In, ioctx.Out, title, phases, cancel)
-}
-
-func promptProgressSecret(progress *setupProgress, ioctx IO, label string) (string, error) {
 	if progress != nil {
-		value, handled, err := progress.PromptSecret(strings.TrimSpace(strings.TrimSuffix(label, ":")))
-		if handled {
-			return value, err
-		}
+		progress.Complete(label)
+		return
 	}
+	_ = lineoutput.New(out).Success(label)
+}
+
+func startOperationProgress(_ context.Context, ioctx IO, title string, _ []string, _ context.CancelFunc) *setupProgress {
+	progress := &setupProgress{out: ioctx.Out}
+	if ioctx.Out != nil {
+		_ = lineoutput.New(ioctx.Out).Phase(title)
+	}
+	return progress
+}
+
+func (p *setupProgress) Complete(label string) {
+	if p != nil && p.out != nil {
+		_ = lineoutput.New(p.out).Success(label)
+	}
+}
+
+func (p *setupProgress) Fail() {
+	if p != nil && p.out != nil {
+		_ = lineoutput.New(p.out).Failure("Operation failed")
+	}
+}
+
+func (p *setupProgress) Finish(label string) {
+	if p != nil && p.out != nil {
+		_ = lineoutput.New(p.out).Success(label)
+	}
+}
+
+func (*setupProgress) Pause()            {}
+func (*setupProgress) Resume()           {}
+func (*setupProgress) Stop()             {}
+func (*setupProgress) Commit()           {}
+func (*setupProgress) Output() io.Writer { return nil }
+
+func (p *setupProgress) Handoff(label string, action func() error) error {
+	if p != nil && p.out != nil && strings.TrimSpace(label) != "" {
+		_ = lineoutput.New(p.out).Phase(label)
+	}
+	return action()
+}
+
+func promptProgressSecret(_ *setupProgress, ioctx IO, label string) (string, error) {
 	return promptSecret(ioctx, label)
 }
 
-func writeOperationWarning(progress *setupProgress, fallback io.Writer, format string, args ...any) {
-	if progress != nil {
-		if output := progress.Output(); output != nil {
-			fmt.Fprintf(output, format+"\n", args...)
-			return
-		}
-	}
-	fmt.Fprintf(fallback, format+"\n", args...)
+func writeOperationWarning(_ *setupProgress, fallback io.Writer, format string, args ...any) {
+	_ = lineoutput.New(fallback).Warning(fmt.Sprintf(format, args...))
 }
 
 const setupLogoWidth = 64
@@ -81,9 +111,6 @@ func writeANSIImage(out io.Writer, data []byte, width int) error {
 		return err
 	}
 	bounds := source.Bounds()
-	// Half-blocks provide two vertical samples per terminal cell. A small
-	// correction keeps the artwork from looking compressed in modern IDE
-	// terminals whose cells are slightly shorter than the classic 1:2 ratio.
 	height := max(2, bounds.Dy()*width*6/(bounds.Dx()*5))
 	if height%2 != 0 {
 		height++

@@ -24,6 +24,9 @@ func refreshConnectedLifecycleIntegrations(ctx context.Context, operation string
 
 func integrationSummary(report harness.IntegrationReport) string {
 	var lines []string
+	if report.Pi.RestartRequired {
+		lines = append(lines, "Pi: restart required")
+	}
 	if report.OpenCode.RestartRequired {
 		lines = append(lines, "OpenCode: restart required")
 	}

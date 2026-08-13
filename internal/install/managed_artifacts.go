@@ -48,6 +48,7 @@ type installationPaths struct {
 	MimirHome      string `json:"mimir_home"`
 	Receipt        string `json:"receipt"`
 	Log            string `json:"log"`
+	PiHome         string `json:"pi_home"`
 	OpenCodeHome   string `json:"opencode_home"`
 	ClaudeCodeHome string `json:"claude_code_home"`
 	CodexHome      string `json:"codex_home"`
@@ -145,6 +146,10 @@ func managedInstallationPaths() (installationPaths, error) {
 		return installationPaths{}, err
 	}
 	mimirHome := filepath.Dir(pointer)
+	piHome, err := configuredHome("PI_CODING_AGENT_DIR", filepath.Join(userHome, ".pi", "agent"))
+	if err != nil {
+		return installationPaths{}, err
+	}
 	opencodeHome := filepath.Join(userHome, ".config", "opencode")
 	hermesHome, found, err := artifactpaths.HermesHome()
 	if err != nil {
@@ -162,6 +167,7 @@ func managedInstallationPaths() (installationPaths, error) {
 		MimirHome:      mimirHome,
 		Receipt:        filepath.Join(mimirHome, "install-receipt.json"),
 		Log:            filepath.Join(mimirHome, "install-log.jsonl"),
+		PiHome:         piHome,
 		OpenCodeHome:   opencodeHome,
 		ClaudeCodeHome: claudeHome,
 		CodexHome:      codexHome,
@@ -361,6 +367,9 @@ func receiptManagedArtifactSpec(paths installationPaths, target string, owned in
 	var expected, root, managedDir string
 	source := filepath.ToSlash(filepath.Clean(owned.Source))
 	switch {
+	case strings.HasPrefix(source, "plugins/pi/") && filepath.Base(source) == strings.TrimPrefix(source, "plugins/pi/"):
+		root = paths.PiHome
+		expected = filepath.Join(root, "extensions", filepath.Base(source))
 	case strings.HasPrefix(source, "plugins/opencode/") && filepath.Base(source) == strings.TrimPrefix(source, "plugins/opencode/"):
 		root = paths.OpenCodeHome
 		expected = filepath.Join(root, "plugins", filepath.Base(source))
@@ -1131,6 +1140,7 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 		return nil, err
 	}
 	targets := []struct{ source, target, root string }{
+		{"plugins/pi/mimir.ts", filepath.Join(paths.PiHome, "extensions", "mimir.ts"), paths.PiHome},
 		{"plugins/opencode/mimir.ts", filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts"), paths.OpenCodeHome},
 		{"plugins/claude-code/.claude-plugin/plugin.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"), paths.ClaudeCodeHome},
 		{"plugins/claude-code/hooks/hooks.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"), paths.ClaudeCodeHome},
