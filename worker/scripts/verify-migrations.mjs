@@ -147,6 +147,9 @@ try {
     WHERE access_tokens.installation_id IS NULL OR access_tokens.installation_id = excluded.installation_id;
   `);
 
+  cpSync(join(root, "migrations", "0017_session_summaries.sql"), join(migrations, "0017_session_summaries.sql"));
+  applyMigrations();
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
@@ -189,7 +192,9 @@ try {
        (SELECT COUNT(*) FROM access_tokens WHERE token_hash = 'new-random-token') AS new_revoked_install_token_count,
        (SELECT name FROM machines WHERE installation_id = 'active-install') AS active_machine_name,
        (SELECT platform FROM machines WHERE installation_id = 'active-install') AS active_machine_platform,
-       (SELECT revoked_at FROM access_tokens WHERE token_hash = 'revoked-active-token') AS active_machine_token_revoked_at
+       (SELECT revoked_at FROM access_tokens WHERE token_hash = 'revoked-active-token') AS active_machine_token_revoked_at,
+       (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('summary_text', 'summary_status', 'summary_source', 'summary_updated_at')) AS session_summary_columns,
+       (SELECT summary_status FROM sessions WHERE id = 'legacy-session') AS legacy_summary_status
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -239,6 +244,8 @@ try {
     active_machine_name: "Active dashboard name",
     active_machine_platform: "darwin",
     active_machine_token_revoked_at: "2026-07-15T12:07:00Z",
+    session_summary_columns: 4,
+    legacy_summary_status: "pending",
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");
