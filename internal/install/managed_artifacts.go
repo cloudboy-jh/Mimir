@@ -52,6 +52,7 @@ type installationPaths struct {
 	Receipt        string `json:"receipt"`
 	Log            string `json:"log"`
 	PiHome         string `json:"pi_home"`
+	OhMyPiHome     string `json:"oh_my_pi_home"`
 	OpenCodeHome   string `json:"opencode_home"`
 	ClaudeCodeHome string `json:"claude_code_home"`
 	CodexHome      string `json:"codex_home"`
@@ -154,6 +155,10 @@ func managedInstallationPaths() (installationPaths, error) {
 	if err != nil {
 		return installationPaths{}, err
 	}
+	ohMyPiHome, err := configuredOhMyPiHome(userHome)
+	if err != nil {
+		return installationPaths{}, err
+	}
 	opencodeHome := filepath.Join(userHome, ".config", "opencode")
 	hermesHome, found, err := artifactpaths.HermesHome()
 	if err != nil {
@@ -172,6 +177,7 @@ func managedInstallationPaths() (installationPaths, error) {
 		Receipt:        filepath.Join(mimirHome, "install-receipt.json"),
 		Log:            filepath.Join(mimirHome, "install-log.jsonl"),
 		PiHome:         piHome,
+		OhMyPiHome:     ohMyPiHome,
 		OpenCodeHome:   opencodeHome,
 		ClaudeCodeHome: claudeHome,
 		CodexHome:      codexHome,
@@ -182,6 +188,31 @@ func managedInstallationPaths() (installationPaths, error) {
 		SharedAssets:   filepath.Join(mimirHome, "assets", "images"),
 		SharedSkills:   filepath.Join(userHome, ".agents", "skills"),
 	}, nil
+}
+
+func configuredOhMyPiHome(userHome string) (string, error) {
+	configDir := strings.TrimSpace(os.Getenv("PI_CONFIG_DIR"))
+	if configDir == "" {
+		configDir = ".omp"
+	}
+	base := configDir
+	if !filepath.IsAbs(base) {
+		base = filepath.Join(userHome, base)
+	}
+	profile := strings.TrimSpace(os.Getenv("OMP_PROFILE"))
+	if profile == "" {
+		profile = strings.TrimSpace(os.Getenv("PI_PROFILE"))
+	}
+	if profile != "" && profile != "default" {
+		if strings.ContainsAny(profile, `/\\`) || profile == "." || profile == ".." {
+			return "", fmt.Errorf("invalid OMP_PROFILE")
+		}
+		return filepath.Join(base, "profiles", profile, "agent"), nil
+	}
+	if override := strings.TrimSpace(os.Getenv("OMP_CODING_AGENT_DIR")); override != "" {
+		return configuredHome("OMP_CODING_AGENT_DIR", filepath.Join(base, "agent"))
+	}
+	return configuredHome("PI_CODING_AGENT_DIR", filepath.Join(base, "agent"))
 }
 
 func configuredHome(env, fallback string) (string, error) {
@@ -521,6 +552,9 @@ func uninstallManagedInstallation(keepBinary bool) (uninstallReport, error) {
 	for _, target := range targets {
 		spec := byTarget[target]
 		owned, isOwned := receipt.Artifacts[target]
+		if !isOwned {
+			continue
+		}
 		result, removed := uninstallManagedArtifact(spec, owned, isOwned)
 		report.Artifacts = append(report.Artifacts, result)
 		if removed {
@@ -554,6 +588,9 @@ func receiptManagedArtifactSpec(paths installationPaths, target string, owned in
 	switch {
 	case strings.HasPrefix(source, "plugins/pi/") && filepath.Base(source) == strings.TrimPrefix(source, "plugins/pi/"):
 		root = paths.PiHome
+		expected = filepath.Join(root, "extensions", filepath.Base(source))
+	case strings.HasPrefix(source, "plugins/oh-my-pi/") && filepath.Base(source) == strings.TrimPrefix(source, "plugins/oh-my-pi/"):
+		root = paths.OhMyPiHome
 		expected = filepath.Join(root, "extensions", filepath.Base(source))
 	case strings.HasPrefix(source, "plugins/opencode/") && filepath.Base(source) == strings.TrimPrefix(source, "plugins/opencode/"):
 		root = paths.OpenCodeHome
@@ -842,6 +879,9 @@ func reconcileManagedArtifactsLocked(paths installationPaths, enroll bool, opera
 		selected = legacyHarnesses(paths, receipt.Artifacts)
 	}
 	selectedSet := stringSet(selected)
+	if selectedSet["pi"] && selectedSet["oh-my-pi"] && sameFilePath(paths.PiHome, paths.OhMyPiHome) {
+		return managedArtifactReport{}, fmt.Errorf("Pi and Oh My Pi resolve to the same agent directory; set OMP_PROFILE or OMP_CODING_AGENT_DIR before selecting both")
+	}
 	allSpecs := specs
 	specs = specs[:0]
 	for _, spec := range allSpecs {
@@ -1376,6 +1416,7 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 	}
 	targets := []struct{ source, target, root string }{
 		{"plugins/pi/mimir.ts", filepath.Join(paths.PiHome, "extensions", "mimir.ts"), paths.PiHome},
+		{"plugins/oh-my-pi/mimir.ts", filepath.Join(paths.OhMyPiHome, "extensions", "mimir.ts"), paths.OhMyPiHome},
 		{"plugins/opencode/mimir.ts", filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts"), paths.OpenCodeHome},
 		{"plugins/claude-code/.claude-plugin/plugin.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"), paths.ClaudeCodeHome},
 		{"plugins/claude-code/hooks/hooks.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"), paths.ClaudeCodeHome},

@@ -177,7 +177,16 @@ func installHarnessSelection(ioctx IO, jsonOutput, explicit bool, selected []str
 		if defaultSet[harness.ID] {
 			marker = "●"
 		}
-		if _, err := fmt.Fprintf(ioctx.Out, "%s %s (%s)\n", marker, harness.Name, harness.ID); err != nil {
+		prefix := ""
+		if harness.ID == "pi" {
+			if _, err := fmt.Fprintln(ioctx.Out, "Pi"); err != nil {
+				return nil, err
+			}
+			prefix = "  "
+		} else if harness.ID == "oh-my-pi" {
+			prefix = "  "
+		}
+		if _, err := fmt.Fprintf(ioctx.Out, "%s%s %s (%s)\n", prefix, marker, harness.Name, harness.ID); err != nil {
 			return nil, err
 		}
 	}

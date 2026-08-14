@@ -17,10 +17,10 @@ var LogoPNG []byte
 // compiled dashboard shipped with the CLI. Tests, dashboard build inputs,
 // Wrangler state, and dependency directories are deliberately not embedded.
 //
-//go:embed plugins/pi/mimir.ts plugins/opencode/mimir.ts plugins/hermes/__init__.py plugins/hermes/plugin.yaml
+//go:embed plugins/pi/mimir.ts plugins/oh-my-pi/mimir.ts plugins/opencode/mimir.ts plugins/hermes/__init__.py plugins/hermes/plugin.yaml
 //go:embed plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/hooks/hooks.json plugins/codex/hooks.json plugins/cursor/hooks.json
 //go:embed skills/mimir-setup skills/mimir-use
-//go:embed worker/src/app.ts worker/src/auth.ts worker/src/capture.ts worker/src/config.ts worker/src/index.ts worker/src/proxy.ts worker/src/reported-exchanges.ts worker/src/session-events.ts worker/src/session-object.ts worker/src/session-titles.ts worker/src/sessions.ts worker/src/storage.ts worker/src/types.ts worker/src/routes/dashboard.ts worker/src/routes/machine.ts
+//go:embed worker/src/app.ts worker/src/auth.ts worker/src/capture.ts worker/src/config.ts worker/src/index.ts worker/src/proxy.ts worker/src/reported-exchanges.ts worker/src/session-events.ts worker/src/session-object.ts worker/src/session-summary.ts worker/src/session-titles.ts worker/src/sessions.ts worker/src/storage.ts worker/src/types.ts worker/src/routes/dashboard.ts worker/src/routes/machine.ts
 //go:embed worker/migrations
 //go:embed worker/package.json worker/package-lock.json worker/tsconfig.json worker/worker-configuration.d.ts worker/wrangler.jsonc
 //go:embed worker/web/dist

@@ -18,6 +18,7 @@ type IntegrationState struct {
 
 type IntegrationReport struct {
 	Pi         IntegrationState `json:"pi"`
+	OhMyPi     IntegrationState `json:"oh_my_pi"`
 	OpenCode   IntegrationState `json:"opencode"`
 	Hermes     IntegrationState `json:"hermes"`
 	ClaudeCode IntegrationState `json:"claude_code"`

@@ -110,6 +110,7 @@ func renderUpdate(out io.Writer, report lifecyclepkg.UpdateReport) error {
 	}
 	integrations := []namedIntegration{
 		{name: "Pi", state: report.Integrations.Pi},
+		{name: "Oh My Pi", state: report.Integrations.OhMyPi},
 		{name: "OpenCode", state: report.Integrations.OpenCode},
 		{name: "Hermes", state: report.Integrations.Hermes},
 		{name: "Claude Code", state: report.Integrations.ClaudeCode},
@@ -145,6 +146,8 @@ func updateRestartNames(artifacts installpkg.ArtifactReport, integrations harnes
 		switch {
 		case strings.HasPrefix(source, "plugins/pi/"):
 			changed["Pi"] = true
+		case strings.HasPrefix(source, "plugins/oh-my-pi/"):
+			changed["Oh My Pi"] = true
 		case strings.HasPrefix(source, "plugins/opencode/"):
 			changed["OpenCode"] = true
 		case strings.HasPrefix(source, "plugins/hermes/"):
@@ -159,6 +162,7 @@ func updateRestartNames(artifacts installpkg.ArtifactReport, integrations harnes
 	}
 	candidates := []namedIntegration{
 		{name: "Pi", state: integrations.Pi},
+		{name: "Oh My Pi", state: integrations.OhMyPi},
 		{name: "OpenCode", state: integrations.OpenCode},
 		{name: "Hermes", state: integrations.Hermes},
 		{name: "Claude Code", state: integrations.ClaudeCode},

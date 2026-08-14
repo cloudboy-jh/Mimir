@@ -9,7 +9,7 @@ CREATE TABLE machines (installation_id TEXT PRIMARY KEY, name TEXT NOT NULL, pla
 CREATE TABLE access_tokens (token_hash TEXT PRIMARY KEY, label TEXT NOT NULL, created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT, installation_id TEXT REFERENCES machines(installation_id));
 CREATE TABLE hermes_credentials (token_hash TEXT NOT NULL, installation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, authorized_by TEXT, PRIMARY KEY (token_hash, installation_id));
 CREATE TABLE harness_loads (token_hash TEXT NOT NULL, token_label TEXT NOT NULL, harness TEXT NOT NULL CHECK (length(harness) BETWEEN 1 AND 64 AND substr(harness, 1, 1) GLOB '[a-z0-9]' AND harness NOT GLOB '*[^a-z0-9._-]*'), artifact_sha256 TEXT NOT NULL CHECK (length(artifact_sha256) = 64 AND artifact_sha256 NOT GLOB '*[^0-9a-f]*'), bundle_version TEXT, cli_version TEXT, cli_commit TEXT, installation_id TEXT NOT NULL DEFAULT '', client_loaded_at TEXT NOT NULL, reported_at TEXT NOT NULL, PRIMARY KEY (token_hash, harness, installation_id));
-CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), installation_id TEXT REFERENCES machines(installation_id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, title TEXT, title_source TEXT CHECK (title_source IN ('manual', 'harness', 'generated', 'derived')), title_updated_at TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT REFERENCES sessions(id), installation_id TEXT REFERENCES machines(installation_id), started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL DEFAULT 'active', last_active_at TEXT, inactive_at TEXT, harness TEXT, boundary TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', work_outcome TEXT NOT NULL DEFAULT 'unresolved', outcome_src TEXT, outcome_updated_at TEXT, outcome_reason TEXT, repo TEXT, source_ref TEXT, model_primary TEXT, request_count INTEGER NOT NULL DEFAULT 0, tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '[]', errors TEXT NOT NULL DEFAULT '[]', intent TEXT, summary_text TEXT, summary_status TEXT NOT NULL DEFAULT 'pending', summary_source TEXT, summary_updated_at TEXT, title TEXT, title_source TEXT CHECK (title_source IN ('manual', 'harness', 'generated', 'derived')), title_updated_at TEXT, log_refs TEXT NOT NULL DEFAULT '[]');
 CREATE UNIQUE INDEX sessions_one_active_heuristic ON sessions(IFNULL(repo, ''), IFNULL(harness, ''), IFNULL(installation_id, '')) WHERE boundary = 'heuristic' AND state = 'active';
  CREATE TABLE exchanges (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ts TEXT NOT NULL, endpoint TEXT NOT NULL, model TEXT, request_excerpt TEXT NOT NULL DEFAULT '', response_excerpt TEXT NOT NULL DEFAULT '', usage_json TEXT NOT NULL DEFAULT '{}', latency_ms INTEGER NOT NULL, repo TEXT, harness TEXT, r2_key TEXT NOT NULL, provider TEXT, finish_reason TEXT, access_token_label TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, capture_status TEXT NOT NULL DEFAULT 'accepted', capture_reason TEXT, accepted_at TEXT, saved_at TEXT, failed_at TEXT, failure_code TEXT, schema_version INTEGER NOT NULL DEFAULT 1, r2_bytes INTEGER, request_kind TEXT NOT NULL DEFAULT 'primary', intent_candidate TEXT, title_candidate TEXT);
 CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -1578,5 +1578,23 @@ describe("Session object", () => {
   it("keeps the 404 contract for sessions unknown to D1 and the object", async () => {
     const response = await request("/sessions/object-never-seen/end", { method: "POST", headers: { authorization: "Bearer machine-token" } });
     expect(response.status).toBe(404);
+  });
+
+  it("stores complete outcome patches in R2 and generates finalized summaries", async () => {
+    await env.DB.prepare("INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, intent, request_count) VALUES ('full-diff-session', '2026-08-14T10:00:00Z', '2026-08-14T10:10:00Z', 'inactive', '2026-08-14T10:10:00Z', '2026-08-14T10:10:00Z', 'oh-my-pi', 'header', 'Implement the complete diff view', 4)").run();
+    const patch = `diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n-old\n+new\n+${"x".repeat(40_000)}\n`;
+    const outcome = await request("/sessions/full-diff-session/outcome", { method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" }, body: JSON.stringify({ outcome: "landed", reason: "The complete diff view shipped", evidence: { commit: "abc123", patch } }) });
+    expect(outcome.status).toBe(200);
+    const stored = await env.DB.prepare("SELECT evidence_json FROM session_outcome_events WHERE session_id = 'full-diff-session'").first<{ evidence_json: string }>();
+    const evidence = JSON.parse(stored!.evidence_json);
+    expect(evidence.patch).toBeUndefined();
+    expect(evidence.patch_r2_key).toMatch(/^sessions\/full-diff-session\/diffs\/.+\.patch$/);
+    expect(await env.LOGS.get(evidence.patch_r2_key)).not.toBeNull();
+    const diff = await dashboardRequest("/dashboard/api/sessions/full-diff-session/diff");
+    expect(diff.status).toBe(200);
+    expect(await diff.text()).toBe(patch);
+    const detail = await (await dashboardRequest("/dashboard/api/sessions/full-diff-session")).json() as any;
+    expect(detail.session).toMatchObject({ summary_status: "ready", summary_source: "generated" });
+    expect(detail.session.summary_text).toContain("The complete diff view shipped.");
   });
 });

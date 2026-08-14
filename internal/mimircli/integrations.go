@@ -27,6 +27,9 @@ func integrationSummary(report harness.IntegrationReport) string {
 	if report.Pi.RestartRequired {
 		lines = append(lines, "Pi: restart required")
 	}
+	if report.OhMyPi.RestartRequired {
+		lines = append(lines, "Oh My Pi: restart required")
+	}
 	if report.OpenCode.RestartRequired {
 		lines = append(lines, "OpenCode: restart required")
 	}

@@ -4,13 +4,13 @@ import { reportSessionEvent } from "./session-events";
 import { sessionTitleColumns } from "./session-titles";
 import type { AppEnv } from "./types";
 
-export const SESSION_COLUMNS = `id, parent_session_id, installation_id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent, ${sessionTitleColumns("sessions")}`;
+export const SESSION_COLUMNS = `id, parent_session_id, installation_id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason, repo, source_ref, model_primary, request_count, tokens_in, tokens_out, intent, summary_text, summary_status, summary_source, summary_updated_at, ${sessionTitleColumns("sessions")}`;
 
 export const SESSION_TREE_CTE = "WITH RECURSIVE session_tree(root_id, id) AS (SELECT id, id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT session_tree.root_id, sessions.id FROM sessions JOIN session_tree ON sessions.parent_session_id = session_tree.id), root_activity(root_id, activity_at) AS (SELECT session_tree.root_id, MAX(COALESCE(activity.last_active_at, activity.started_at)) FROM session_tree JOIN sessions activity ON activity.id = session_tree.id GROUP BY session_tree.root_id)";
 
 export const ROOT_SESSION_ACTIVITY_AT = "(SELECT root_activity.activity_at FROM root_activity WHERE root_activity.root_id = sessions.id)";
 
-export const ROOT_SESSION_COLUMNS = `sessions.id, sessions.parent_session_id, sessions.installation_id, sessions.started_at, sessions.ended_at, sessions.state, sessions.last_active_at, ${ROOT_SESSION_ACTIVITY_AT} AS activity_at, sessions.inactive_at, sessions.harness, sessions.boundary, sessions.work_outcome AS outcome, sessions.outcome_src, sessions.outcome_updated_at, sessions.outcome_reason, sessions.repo, sessions.source_ref, sessions.model_primary, (SELECT COALESCE(SUM(child.request_count), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS request_count, (SELECT COALESCE(SUM(child.tokens_in), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_in, (SELECT COALESCE(SUM(child.tokens_out), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_out, sessions.intent, ${sessionTitleColumns("sessions")}, (SELECT COUNT(*) - 1 FROM session_tree WHERE session_tree.root_id = sessions.id) AS child_session_count`;
+export const ROOT_SESSION_COLUMNS = `sessions.id, sessions.parent_session_id, sessions.installation_id, sessions.started_at, sessions.ended_at, sessions.state, sessions.last_active_at, ${ROOT_SESSION_ACTIVITY_AT} AS activity_at, sessions.inactive_at, sessions.harness, sessions.boundary, sessions.work_outcome AS outcome, sessions.outcome_src, sessions.outcome_updated_at, sessions.outcome_reason, sessions.repo, sessions.source_ref, sessions.model_primary, (SELECT COALESCE(SUM(child.request_count), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS request_count, (SELECT COALESCE(SUM(child.tokens_in), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_in, (SELECT COALESCE(SUM(child.tokens_out), 0) FROM sessions child JOIN session_tree ON session_tree.id = child.id WHERE session_tree.root_id = sessions.id) AS tokens_out, sessions.intent, sessions.summary_text, sessions.summary_status, sessions.summary_source, sessions.summary_updated_at, ${sessionTitleColumns("sessions")}, (SELECT COUNT(*) - 1 FROM session_tree WHERE session_tree.root_id = sessions.id) AS child_session_count`;
 
 export type WorkOutcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type OutcomeSource = "agent" | "user" | "git";
@@ -63,12 +63,16 @@ export async function canMutateSession(db: D1Database, id: string, installationI
 }
 
 export async function updateOutcome(c: Context<AppEnv>, input: OutcomeInput, defaultSource: OutcomeSource) {
-  const normalized = normalizeOutcome(input, defaultSource);
-  if ("error" in normalized) return c.json({ error: normalized.error }, 400);
   const id = c.req.param("id");
   if (!id) return c.json({ error: "session id is required" }, 400);
   if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) return c.json({ error: "session not found" }, 404);
   const outcomeSessionID = await rootSessionID(c.env.DB, id);
+  const validation = normalizeOutcome(withoutOutcomePatch(input), defaultSource);
+  if ("error" in validation) return c.json({ error: validation.error }, 400);
+  const prepared = await persistOutcomePatch(c.env.LOGS, outcomeSessionID, input);
+  if ("error" in prepared) return c.json({ error: prepared.error }, 400);
+  const normalized = normalizeOutcome(prepared, defaultSource);
+  if ("error" in normalized) return c.json({ error: normalized.error }, 400);
   const now = new Date().toISOString();
   await c.env.DB.batch(outcomeStatements(c.env.DB, outcomeSessionID, normalized, now));
   return c.json(outcomeResult(outcomeSessionID, normalized, now));
@@ -88,10 +92,14 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   if (input.outcome === undefined && (input.reason !== undefined || input.evidence !== undefined)) {
     return c.json({ error: "outcome is required when reason or evidence is provided" }, 400);
   }
-  const normalized = input.outcome === undefined ? null : normalizeOutcome({ ...input, source: defaultSource }, defaultSource);
-  if (normalized && "error" in normalized) return c.json({ error: normalized.error }, 400);
   const id = c.req.param("id");
   if (!id) return c.json({ error: "session id is required" }, 400);
+  if (input.outcome !== undefined) {
+    const validation = normalizeOutcome(withoutOutcomePatch({ ...input, source: defaultSource }), defaultSource);
+    if ("error" in validation) return c.json({ error: validation.error }, 400);
+    const patchError = outcomePatchError(input);
+    if (patchError) return c.json({ error: patchError }, 400);
+  }
   const now = new Date().toISOString();
   // Sessions known only to the session object (harness-plugin reporting with
   // no captured exchanges yet) have no D1 row until finalize. Explicit end
@@ -101,10 +109,14 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
   if (!await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(id).first()) {
     if (!await finalizeObjectOnlySession(c, id, now)) return c.json({ error: "session not found" }, 404);
   }
+  const outcomeSessionID = await rootSessionID(c.env.DB, id);
+  const prepared = input.outcome === undefined ? input : await persistOutcomePatch(c.env.LOGS, outcomeSessionID, { ...input, source: defaultSource });
+  if ("error" in prepared) return c.json({ error: prepared.error }, 400);
+  const normalized = prepared.outcome === undefined ? null : normalizeOutcome(prepared, defaultSource);
+  if (normalized && "error" in normalized) return c.json({ error: normalized.error }, 400);
   const endStatement = c.env.DB.prepare("UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE ended_at END, inactive_at = CASE WHEN inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at THEN ? ELSE inactive_at END WHERE id = ?").bind(now, now, id);
   await endStatement.run();
   if (normalized && !("error" in normalized)) {
-    const outcomeSessionID = await rootSessionID(c.env.DB, id);
     if (normalized.evidenceJson === null) {
       const current = await c.env.DB.prepare("SELECT work_outcome AS outcome FROM sessions WHERE id = ?").bind(outcomeSessionID).first<{ outcome: string }>();
       if (current?.outcome === normalized.outcome) {
@@ -119,12 +131,51 @@ export async function endSession(c: Context<AppEnv>, defaultSource: OutcomeSourc
     const eventID = await endOutcomeEventID(outcomeSessionID, generation?.value ?? "", normalized);
     await c.env.DB.batch([
       c.env.DB.prepare("INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(eventID, outcomeSessionID, normalized.outcome, normalized.source, normalized.reason, normalized.evidenceJson, now),
-      c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = (SELECT created_at FROM session_outcome_events WHERE id = ?), outcome_reason = ? WHERE id = ?").bind(normalized.outcome, legacyOutcome(normalized.outcome), normalized.source, eventID, normalized.reason, outcomeSessionID),
+      c.env.DB.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = (SELECT created_at FROM session_outcome_events WHERE id = ?), outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ?").bind(normalized.outcome, legacyOutcome(normalized.outcome), normalized.source, eventID, normalized.reason, outcomeSessionID),
     ]);
   }
   const session = await c.env.DB.prepare("SELECT id, state, ended_at, inactive_at, work_outcome AS outcome, outcome_src, outcome_updated_at, outcome_reason FROM sessions WHERE id = ?").bind(id).first();
   await reportSessionEvent(c.env, { version: 1, kind: "end", session_id: id, installation_id: c.get("installationID"), harness: null, ts: now, reason: "explicit" });
   return c.json({ session, evidence: normalized && !("error" in normalized) ? normalized.evidence ?? null : null });
+}
+
+const MAX_PATCH_BYTES = 5 * 1024 * 1024;
+
+function outcomePatchError(input: OutcomeInput): string {
+  if (!input.evidence || typeof input.evidence !== "object" || Array.isArray(input.evidence)) return "";
+  const patch = (input.evidence as Record<string, unknown>).patch;
+  return typeof patch === "string" && new TextEncoder().encode(patch).byteLength > MAX_PATCH_BYTES ? "outcome patch exceeds 5 MiB" : "";
+}
+
+function withoutOutcomePatch(input: OutcomeInput): OutcomeInput {
+  if (!input.evidence || typeof input.evidence !== "object" || Array.isArray(input.evidence)) return input;
+  const { patch: _patch, ...evidence } = input.evidence as Record<string, unknown>;
+  return { ...input, evidence };
+}
+
+async function persistOutcomePatch(bucket: R2Bucket, sessionID: string, input: OutcomeInput): Promise<OutcomeInput | { error: string }> {
+  if (!input.evidence || typeof input.evidence !== "object" || Array.isArray(input.evidence)) return input;
+  const evidence = input.evidence as Record<string, unknown>;
+  if (typeof evidence.patch !== "string" || evidence.patch.length === 0) return input;
+  const bytes = new TextEncoder().encode(evidence.patch);
+  if (bytes.byteLength > MAX_PATCH_BYTES) return { error: "outcome patch exceeds 5 MiB" };
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const key = `sessions/${sessionID}/diffs/${hash}.patch`;
+  let files = 0, additions = 0, deletions = 0;
+  for (const line of evidence.patch.split("\n")) {
+    if (line.startsWith("diff --git ")) files++;
+    else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+  }
+  const { patch: _patch, ...rest } = evidence;
+  const prepared = { ...input, evidence: { ...rest, patch_r2_key: key, patch_bytes: bytes.byteLength, patch_files: files, patch_additions: additions, patch_deletions: deletions } };
+  if (JSON.stringify(prepared.evidence).length > 32_000) return { error: "outcome evidence too large" };
+  await bucket.put(key, bytes, {
+    httpMetadata: { contentType: "text/plain; charset=utf-8" },
+    customMetadata: { session_id: sessionID, sha256: hash },
+  });
+  return prepared;
 }
 
 async function rootSessionID(db: D1Database, id: string): Promise<string> {
@@ -173,7 +224,7 @@ function normalizeOutcome(input: OutcomeInput, defaultSource: OutcomeSource): No
 
 function outcomeStatements(db: D1Database, id: string, outcome: NormalizedOutcome, now: string) {
   return [
-    db.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ? WHERE id = ?").bind(outcome.outcome, legacyOutcome(outcome.outcome), outcome.source, now, outcome.reason, id),
+    db.prepare("UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ?").bind(outcome.outcome, legacyOutcome(outcome.outcome), outcome.source, now, outcome.reason, id),
     db.prepare("INSERT INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(ulid(), id, outcome.outcome, outcome.source, outcome.reason, outcome.evidenceJson, now),
   ];
 }

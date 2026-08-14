@@ -81,7 +81,7 @@ func TestHarnessListUsesCanonicalOrderAndMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 6 || !strings.HasPrefix(lines[0], "● OpenCode") || !strings.HasPrefix(lines[1], "○ Pi") || !strings.HasPrefix(lines[5], "● Cursor") {
+	if len(lines) != 7 || !strings.HasPrefix(lines[0], "● OpenCode") || !strings.HasPrefix(lines[1], "○ Pi") || !strings.HasPrefix(lines[2], "○ Oh My Pi") || !strings.HasPrefix(lines[6], "● Cursor") {
 		t.Fatalf("output = %q", output.String())
 	}
 }

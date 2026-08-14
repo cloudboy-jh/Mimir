@@ -481,6 +481,23 @@ func TestManagedInstallationPathsHonorOfficialHomeOverrides(t *testing.T) {
 	}
 }
 
+func TestManagedInstallationPathsHonorOhMyPiProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("MIMIR_HOME", filepath.Join(home, "mimir"))
+	t.Setenv("PI_CONFIG_DIR", ".custom-omp")
+	t.Setenv("OMP_PROFILE", "work")
+	paths, err := managedInstallationPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".custom-omp", "profiles", "work", "agent")
+	if paths.OhMyPiHome != want {
+		t.Fatalf("OhMyPiHome = %q, want %q", paths.OhMyPiHome, want)
+	}
+}
+
 func TestSyncManagedArtifactsMovesOwnedClaudePluginToSkillsDirectory(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	oldManifest := filepath.Join(paths.ClaudeCodeHome, "plugins", "mimir", ".claude-plugin", "plugin.json")

@@ -206,6 +206,14 @@ uploads bounded reconstructed completed turns, including tool results exposed
 by Pi. Restart Pi after install or update. Ask Pi for Mimir memory normally;
 the skill runs the machine-readable CLI and formats results.
 
+### Oh My Pi
+
+Oh My Pi is selected independently under the Pi group during setup. Mimir
+installs its adapter at `~/.omp/agent/extensions/mimir.ts` (or the active OMP
+profile), reports exact lifecycle heartbeats from session start, and captures
+OpenRouter plus bounded direct-provider evidence. Restart `omp` after install
+or update. Use `OMP_CODING_AGENT_DIR` when OMP has a nonstandard agent home.
+
 ### OpenCode
 
 The installer manages the Mimir plugin and skills without rewriting general
@@ -317,7 +325,7 @@ Run `mimir help advanced` for code recall, connection, configuration, and
 diagnostic commands.
 
 `mimir install` accepts repeatable `--harness <id>` flags in canonical order:
-OpenCode, Pi, Hermes, Claude Code, Codex, and Cursor. Use `--harness all` for
+OpenCode, Pi, Oh My Pi, Hermes, Claude Code, Codex, and Cursor. Use `--harness all` for
 every integration. Interactive installs without flags prompt once and default
 to detected harnesses; JSON and other noninteractive installs require explicit
 selection. `mimir harness disable` removes only unmodified receipt-owned files

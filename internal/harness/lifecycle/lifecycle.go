@@ -25,12 +25,14 @@ type InstallReport struct {
 	Binary         install.BinaryReport     `json:"binary"`
 	Artifacts      install.ArtifactReport   `json:"artifacts"`
 	Pi             harness.IntegrationState `json:"pi"`
+	OhMyPi         harness.IntegrationState `json:"oh_my_pi"`
 	OpenCode       harness.IntegrationState `json:"opencode"`
 	Hermes         harness.IntegrationState `json:"hermes"`
 	ClaudeCode     harness.IntegrationState `json:"claude_code"`
 	Codex          harness.IntegrationState `json:"codex"`
 	Cursor         harness.IntegrationState `json:"cursor"`
 	PiReady        bool                     `json:"pi_ready"`
+	OhMyPiReady    bool                     `json:"oh_my_pi_ready"`
 	OpenCodeReady  bool                     `json:"open_code_ready"`
 	HermesReady    bool                     `json:"hermes_ready"`
 	ActionRequired bool                     `json:"action_required"`
@@ -165,6 +167,16 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
 	}
 	report.PiReady = report.Pi.State != "failed"
+	if !selectedSet["oh-my-pi"] {
+		report.OhMyPi = unselectedState()
+	} else if paths.OhMyPiHome == "" {
+		report.OhMyPi = harness.IntegrationState{State: "skipped", Detail: "Oh My Pi extension path is unavailable"}
+	} else if install.ArtifactsReady(mechanical.Artifacts, paths.OhMyPiHome, "plugins/oh-my-pi/") {
+		report.OhMyPi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Oh My Pi capture extension staged; restart Oh My Pi to activate it"}
+	} else {
+		report.OhMyPi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Oh My Pi extension files were preserved"}
+	}
+	report.OhMyPiReady = report.OhMyPi.State != "failed"
 	if !selectedSet["opencode"] {
 		report.OpenCode = unselectedState()
 	} else if install.ArtifactsReady(mechanical.Artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
@@ -217,7 +229,7 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}
 	s.step("Hermes integration checked")
-	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.PiReady || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.Pi, report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
+	report.ActionRequired = install.ArtifactIssueCount(mechanical.Artifacts) > 0 || !report.PiReady || !report.OhMyPiReady || !report.OpenCodeReady || !report.HermesReady || integrationStaged(report.Pi, report.OhMyPi, report.OpenCode, report.Hermes, report.ClaudeCode, report.Codex, report.Cursor)
 	return report, nil
 }
 
@@ -465,6 +477,14 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
 		failures = append(failures, report.OpenCode.Detail)
 	}
+	if !selected["oh-my-pi"] {
+		report.OhMyPi = unselectedState()
+	} else if install.ArtifactsReady(artifacts, paths.OhMyPiHome, "plugins/oh-my-pi/") {
+		report.OhMyPi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Oh My Pi capture extension staged; activation is unverified until a load is reported"}
+	} else {
+		report.OhMyPi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Oh My Pi extension files were preserved"}
+		failures = append(failures, report.OhMyPi.Detail)
+	}
 	report.ClaudeCode = selectedHookState(selected["claude-code"], artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
 	report.Codex = selectedHookState(selected["codex"], artifacts, paths.CodexHome, "plugins/codex/", "Codex")
 	report.Cursor = selectedHookState(selected["cursor"], artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
@@ -506,7 +526,7 @@ func selectedHarnessSet(selected []string) map[string]bool {
 }
 
 func allHarnessSet() map[string]bool {
-	return map[string]bool{"opencode": true, "pi": true, "hermes": true, "claude-code": true, "codex": true, "cursor": true}
+	return map[string]bool{"opencode": true, "pi": true, "oh-my-pi": true, "hermes": true, "claude-code": true, "codex": true, "cursor": true}
 }
 
 func unselectedState() harness.IntegrationState {

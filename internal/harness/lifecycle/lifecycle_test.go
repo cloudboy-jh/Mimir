@@ -58,6 +58,9 @@ func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
 		return install.InstallationPaths{OpenCodeHome: root, ClaudeCodeHome: root, CodexHome: root, CursorHome: root}, nil
 	}
 	service.Hermes = hermes.New()
+	service.LoadReceipt = func() (install.Receipt, error) {
+		return install.Receipt{Harnesses: []string{"opencode", "claude-code", "codex", "cursor"}}, nil
+	}
 	service.Hermes.Discover = func() (string, bool, error) { return "", false, nil }
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
 		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent},

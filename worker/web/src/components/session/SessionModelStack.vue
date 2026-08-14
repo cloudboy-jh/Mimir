@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import type { SessionModel } from "@/lib/api";
+import { harnessLabel } from "@/lib/format";
 
 const props = withDefaults(defineProps<{ app: string | null; primary: string | null; models?: SessionModel[]; mode?: "compact" | "tree" }>(), { models: () => [], mode: "compact" });
 
@@ -16,7 +17,7 @@ const modelSummary = computed(() => secondaryModels.value.map((model) => model.n
 
 <template>
   <div v-if="mode === 'compact'" class="min-w-0 space-y-1.5">
-    <IdentityBadge :label="app || 'Unknown app'" />
+    <IdentityBadge :label="harnessLabel(app)" />
     <div class="flex min-w-0 items-center gap-2">
       <IdentityBadge :label="primaryModel?.name || primary || 'Unknown model'" />
       <span v-if="secondaryModels.length" class="shrink-0 text-[11px] font-medium text-zinc-500 dark:text-zinc-400" :title="modelSummary">+{{ secondaryModels.length }} {{ secondaryModels.length === 1 ? "model" : "models" }}</span>
@@ -24,7 +25,7 @@ const modelSummary = computed(() => secondaryModels.value.map((model) => model.n
   </div>
 
   <div v-else class="min-w-0 text-[13px]">
-    <IdentityBadge :label="app || 'Unknown app'" :truncate="false" />
+    <IdentityBadge :label="harnessLabel(app)" :truncate="false" />
     <ul class="ml-2.5 mt-2 border-l border-zinc-300 dark:border-zinc-700">
       <li v-for="model in orderedModels" :key="model.name" class="relative grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-1.5 pl-5 before:absolute before:left-0 before:top-3.5 before:w-3 before:border-t before:border-zinc-300 dark:before:border-zinc-700">
         <IdentityBadge :label="model.name" :truncate="false" />

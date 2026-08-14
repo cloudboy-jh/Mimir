@@ -342,6 +342,7 @@ export default function (pi: ExtensionAPI) {
     Object.assign(session, await gitMetadata(pi, ctx.cwd));
     const load = loadHarnessLoad();
     if (load) delivery.deliver(`load:${load.source_sha256}`, "/integrations/harness-loads", load);
+    startActivity();
   });
 
   pi.on("before_provider_headers", (event, ctx) => {

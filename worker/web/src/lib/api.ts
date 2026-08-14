@@ -62,6 +62,10 @@ export type Session = {
   title_updated_at: string | null;
   display_title: string | null;
   intent: string | null;
+  summary_text: string | null;
+  summary_status: "pending" | "ready" | "unavailable";
+  summary_source: string | null;
+  summary_updated_at: string | null;
   child_session_count: number;
   capture: CaptureSummary;
   device: DeviceIdentity | null;
@@ -167,9 +171,14 @@ export type OutcomeEvidence = {
   repository_url?: string;
   commit_url?: string;
   ref?: string;
+  patch_r2_key?: string;
+  patch_bytes?: number;
+  patch_files?: number;
+  patch_additions?: number;
+  patch_deletions?: number;
 };
 
-const evidenceKeys = ["commit", "base_commit", "patch", "provenance", "url", "note", "repository_url", "commit_url", "ref"] as const;
+const evidenceKeys = ["commit", "base_commit", "patch", "provenance", "url", "note", "repository_url", "commit_url", "ref", "patch_r2_key"] as const;
 
 export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | null {
   if (!json) return null;
@@ -181,6 +190,9 @@ export function parseOutcomeEvidence(json: string | null): OutcomeEvidence | nul
     const evidence: OutcomeEvidence = {};
     for (const key of evidenceKeys) {
       if (typeof record[key] === "string" && record[key]) evidence[key] = record[key] as string;
+    }
+    for (const key of ["patch_bytes", "patch_files", "patch_additions", "patch_deletions"] as const) {
+      if (typeof record[key] === "number" && Number.isFinite(record[key])) evidence[key] = record[key];
     }
     return Object.keys(evidence).length ? evidence : null;
   } catch {
@@ -195,7 +207,7 @@ export function currentOutcomeEvidence(events: OutcomeEvent[], outcome: Outcome)
   const latest = events[0];
   if (!latest) return null;
   const current = parseOutcomeEvidence(latest.evidence_json);
-  if (current?.commit || current?.commit_url || current?.url) return current;
+  if (current?.commit || current?.commit_url || current?.url || current?.patch || current?.patch_r2_key) return current;
   if (latest.source === "user") return current;
   const prior = events.slice(1).find((event) => event.outcome === outcome && parseOutcomeEvidence(event.evidence_json)?.commit);
   const git = prior ? parseOutcomeEvidence(prior.evidence_json) : null;
@@ -315,6 +327,21 @@ export async function listSessions(filters: SessionFilters = {}, signal?: AbortS
 
 export async function getSession(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/dashboard/api/sessions/${encodeURIComponent(id)}`, { signal });
+}
+
+export async function getSessionDiff(id: string, signal?: AbortSignal) {
+  if (fixtureDataEnabled) {
+    const detail = await getSession(id, signal);
+    const patch = currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)?.patch;
+    if (!patch) throw new ApiError("Diff unavailable.", 404);
+    return patch;
+  }
+  const response = await fetch(`/dashboard/api/sessions/${encodeURIComponent(id)}/diff`, { signal, cache: "no-store", credentials: "same-origin", redirect: "manual" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new ApiError(body?.error ?? `Request failed (${response.status}).`, response.status);
+  }
+  return response.text();
 }
 
 export async function getSessionObjectState(id: string, signal?: AbortSignal) {

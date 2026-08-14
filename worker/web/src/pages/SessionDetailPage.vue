@@ -8,6 +8,7 @@ import SessionEvidenceSidebar from "@/components/session/SessionEvidenceSidebar.
 import SessionHeader from "@/components/session/SessionHeader.vue";
 import SessionOutcome from "@/components/session/SessionOutcome.vue";
 import SessionChanges from "@/components/session/SessionChanges.vue";
+import SessionSummary from "@/components/session/SessionSummary.vue";
 import LiveSessionTurns from "@/components/session/LiveSessionTurns.vue";
 import { ApiError, connectSessionLive, currentOutcomeEvidence, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
@@ -212,12 +213,13 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
       </div>
     </div>
     <SessionHeader :session="detail.session" :liveness="liveness" @saved="applyTitleUpdate" />
+    <SessionSummary :session="detail.session" />
     <div class="grid gap-8 border-b border-zinc-200 py-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(260px,.5fr)] dark:border-zinc-800">
       <SessionOutcome :detail="detail" @saved="refreshDetail" />
       <SessionCapture :capture="detail.capture" />
     </div>
     <div class="grid gap-x-8 gap-y-7 pt-8 xl:grid-cols-[minmax(0,1fr)_360px] xl:grid-rows-[auto_1fr] xl:items-start">
-      <SessionChanges class="xl:col-start-2 xl:row-start-1" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
+      <SessionChanges class="xl:col-start-2 xl:row-start-1" :session-id="detail.session.id" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
       <div class="grid gap-8 xl:col-start-1 xl:row-span-2 xl:row-start-1">
         <LiveSessionTurns v-if="hasSessionObject" :turns="liveTurns" :liveness="liveness" />
         <RequestTimeline :session-id="detail.session.id" />

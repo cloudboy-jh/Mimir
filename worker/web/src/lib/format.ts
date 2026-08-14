@@ -27,3 +27,10 @@ export function duration(start: string, end: string | null) {
 export function outputSpeed(tokens: number, latency: number) {
   return tokens && latency ? `${Math.round(tokens / latency * 1000)} tok/s` : "-";
 }
+
+export function harnessLabel(value: string | null | undefined) {
+  if (value === "oh-my-pi") return "Oh My Pi";
+  if (value === "opencode") return "OpenCode";
+  if (value === "pi") return "Pi";
+  return value || "Unknown app";
+}

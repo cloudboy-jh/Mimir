@@ -229,6 +229,7 @@ type harnessLoadsResponse struct {
 func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.ArtifactReport, add func(string, string, string, string)) {
 	registry := []struct{ harness, label, source, activate string }{
 		{"pi", "Pi", "plugins/pi/mimir.ts", "restart Pi"},
+		{"oh-my-pi", "Oh My Pi", "plugins/oh-my-pi/mimir.ts", "restart Oh My Pi"},
 		{"opencode", "OpenCode", "plugins/opencode/mimir.ts", "restart OpenCode"},
 		{"hermes", "Hermes", "plugins/hermes/__init__.py", "restart Hermes"},
 		{"claude-code", "Claude Code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},

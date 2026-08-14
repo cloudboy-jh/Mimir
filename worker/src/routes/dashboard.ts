@@ -4,6 +4,7 @@ import { attachCaptureSummary, captureSummary, captureTreeSummary, sessionStatus
 import type { AppEnv } from "../types";
 import { MAX_SESSION_TITLE_CHARS, normalizeSessionTitle, sessionTitleColumns, sessionTitleSearchClause, titleUpdateStatement } from "../session-titles";
 import { SESSION_ID } from "../session-events";
+import { ensureSessionSummary } from "../session-summary";
 
 const FACET_LIMIT = 50;
 
@@ -270,6 +271,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
       ? await c.env.DB.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`).bind(c.req.param("id")).first()
       : await c.env.DB.prepare(`${SESSION_TREE_CTE} SELECT ${ROOT_SESSION_COLUMNS} FROM sessions WHERE sessions.id = ?`).bind(c.req.param("id")).first();
     if (!session) return c.json({ error: "session not found" }, 404);
+    const outcomeRoot = await c.env.DB.prepare("WITH RECURSIVE ancestors(id, parent_session_id) AS (SELECT id, parent_session_id FROM sessions WHERE id = ? UNION ALL SELECT sessions.id, sessions.parent_session_id FROM sessions JOIN ancestors ON sessions.id = ancestors.parent_session_id) SELECT id FROM ancestors WHERE parent_session_id IS NULL LIMIT 1").bind(c.req.param("id")).first<{ id: string }>();
     const subtree = "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id)";
     const [files, signatures, aggregates, latestLinks, capture, outcomeEvents, children] = await Promise.all([
       c.env.DB.prepare(`${subtree} SELECT DISTINCT file FROM session_files WHERE session_id IN (SELECT id FROM subtree) ORDER BY file`).bind(c.req.param("id")).all<{ file: string }>(),
@@ -277,7 +279,7 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
       c.env.DB.prepare(`${subtree} SELECT ee.signature, COUNT(DISTINCT ee.exchange_id) AS count, MIN(e.ts) AS first_seen_at, MAX(e.ts) AS last_seen_at FROM exchange_errors ee JOIN exchanges e ON e.id = ee.exchange_id WHERE ee.session_id IN (SELECT id FROM subtree) AND e.capture_status = 'saved' GROUP BY ee.signature`).bind(c.req.param("id")).all<{ signature: string; count: number; first_seen_at: string | null; last_seen_at: string | null }>(),
       c.env.DB.prepare(`${subtree} SELECT ee.signature, ee.exchange_id FROM exchange_errors ee JOIN exchanges e ON e.id = ee.exchange_id WHERE ee.session_id IN (SELECT id FROM subtree) AND e.capture_status = 'saved' ORDER BY e.ts DESC, e.id DESC`).bind(c.req.param("id")).all<{ signature: string; exchange_id: string }>(),
       captureTreeSummary(c.env.DB, c.req.param("id")),
-      c.env.DB.prepare("SELECT id, outcome, source, reason, evidence_json, created_at FROM session_outcome_events WHERE session_id = ? ORDER BY created_at DESC").bind(c.req.param("id")).all(),
+      c.env.DB.prepare("SELECT id, outcome, source, reason, evidence_json, created_at FROM session_outcome_events WHERE session_id = ? ORDER BY created_at DESC").bind(outcomeRoot?.id ?? c.req.param("id")).all(),
       c.env.DB.prepare(`${subtree} SELECT ${SESSION_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM subtree) AND id <> ? ORDER BY started_at`).bind(c.req.param("id"), c.req.param("id")).all(),
     ]);
     const aggregateBySignature = new Map(aggregates.results.map((row) => [row.signature, row]));
@@ -295,8 +297,31 @@ export function registerDashboardRoutes(app: Hono<AppEnv>) {
         latest_exchange_id: latestBySignature.get(signature) ?? null,
       };
     });
-    const modeled = await attachSessionDevices(c.env.DB, await attachSessionModels(c.env.DB, [session as Record<string, unknown>, ...children.results]));
+    const summarized = await ensureSessionSummary(c.env.DB, session as Record<string, unknown>, files.results.length, errors.length);
+    const modeled = await attachSessionDevices(c.env.DB, await attachSessionModels(c.env.DB, [summarized, ...children.results]));
     return c.json({ session: modeled[0], capture, outcome_events: outcomeEvents.results, supporting_sessions: modeled.slice(1), files: files.results.map((row) => row.file), errors });
+  });
+
+  app.get("/dashboard/api/sessions/:id/diff", async (c) => {
+    const id = c.req.param("id");
+    const root = await c.env.DB.prepare("WITH RECURSIVE ancestors(id, parent_session_id) AS (SELECT id, parent_session_id FROM sessions WHERE id = ? UNION ALL SELECT sessions.id, sessions.parent_session_id FROM sessions JOIN ancestors ON sessions.id = ancestors.parent_session_id) SELECT id FROM ancestors WHERE parent_session_id IS NULL LIMIT 1").bind(id).first<{ id: string }>();
+    if (!root) return c.json({ error: "session not found" }, 404);
+    const events = await c.env.DB.prepare("SELECT evidence_json FROM session_outcome_events WHERE session_id = ? AND evidence_json IS NOT NULL ORDER BY created_at DESC, rowid DESC").bind(root.id).all<{ evidence_json: string }>();
+    for (const event of events.results) {
+      let evidence: Record<string, unknown>;
+      try { evidence = JSON.parse(event.evidence_json) as Record<string, unknown>; } catch { continue; }
+      if (typeof evidence.patch_r2_key === "string") {
+        const prefix = `sessions/${root.id}/diffs/`;
+        if (!evidence.patch_r2_key.startsWith(prefix)) continue;
+        const object = await c.env.LOGS.get(evidence.patch_r2_key);
+        if (!object) return c.json({ error: "diff artifact not found" }, 404);
+        return new Response(object.body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "private, no-store" } });
+      }
+      if (typeof evidence.patch === "string" && evidence.patch) {
+        return new Response(evidence.patch, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "private, no-store" } });
+      }
+    }
+    return c.json({ error: "diff unavailable" }, 404);
   });
 
   app.get("/dashboard/api/sessions/:id/status", async (c) => {

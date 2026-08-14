@@ -19,6 +19,7 @@ type Harness struct {
 var canonicalHarnesses = []Harness{
 	{ID: "opencode", Name: "OpenCode"},
 	{ID: "pi", Name: "Pi"},
+	{ID: "oh-my-pi", Name: "Oh My Pi"},
 	{ID: "hermes", Name: "Hermes"},
 	{ID: "claude-code", Name: "Claude Code"},
 	{ID: "codex", Name: "Codex"},
@@ -48,7 +49,7 @@ func NormalizeHarnesses(values []string) ([]string, error) {
 			}
 		}
 		if !valid {
-			return nil, fmt.Errorf("unknown harness %q (want opencode, pi, hermes, claude-code, codex, cursor, or all)", raw)
+			return nil, fmt.Errorf("unknown harness %q (want opencode, pi, oh-my-pi, hermes, claude-code, codex, cursor, or all)", raw)
 		}
 	}
 	result := make([]string, 0, len(requested))
@@ -108,6 +109,9 @@ func detectedHarnessSet(paths installationPaths) map[string]bool {
 			result[check.id] = true
 		}
 	}
+	if _, err := exec.LookPath("omp"); err == nil {
+		result["oh-my-pi"] = true
+	}
 	return result
 }
 
@@ -137,6 +141,8 @@ func artifactHarness(paths installationPaths, target, source string) string {
 		return "opencode"
 	case strings.HasPrefix(source, "plugins/pi/"):
 		return "pi"
+	case strings.HasPrefix(source, "plugins/oh-my-pi/"):
+		return "oh-my-pi"
 	case strings.HasPrefix(source, "plugins/hermes/"):
 		return "hermes"
 	case strings.HasPrefix(source, "plugins/claude-code/"):
