@@ -1,4 +1,6 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
+@source "./**/*.{ts,vue}";
+@source "../index.html";
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
@@ -15,7 +17,7 @@
   html { color-scheme: light; }
   html.dark { color-scheme: dark; }
   body { margin: 0; min-width: 320px; background: var(--color-stone-100); font-family: var(--font-sans); text-rendering: optimizeLegibility; }
-  html.dark body { background: var(--color-zinc-950); }
+  html.dark body { background: var(--color-stone-950); }
   button, input, select { font: inherit; }
   ::selection { background: var(--color-teal-200); color: var(--color-zinc-950); }
 }
