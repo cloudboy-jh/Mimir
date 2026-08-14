@@ -9,7 +9,7 @@ const standalone = computed(() => route.meta.standalone === true);
 </script>
 
 <template>
-  <div class="min-h-screen bg-stone-100 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-100">
+  <div class="min-h-screen bg-stone-100 text-zinc-950 dark:bg-stone-950 dark:text-zinc-100">
     <template v-if="standalone"><RouterView /></template>
     <template v-else>
       <Header />

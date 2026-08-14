@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { ArrowDown, ArrowUp, Filter, RotateCw, Search, X } from "lucide-vue-next";
+import { Filter, RotateCw, Search, X } from "lucide-vue-next";
 import { useRoute, useRouter } from "vue-router";
 import IdentityBadge from "@/components/IdentityBadge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -19,7 +19,7 @@ const facets = [
   { key: "rfinish", label: "Finish reason", field: "finish_reasons", allLabel: "All finish reasons" },
 ] as const;
 
-const props = defineProps<{ sessionId: string }>();
+const props = defineProps<{ sessionId: string; rootSessionId: string; refreshKey?: number }>();
 const route = useRoute();
 const router = useRouter();
 const exchanges = ref<SessionExchange[]>([]);
@@ -71,18 +71,24 @@ function currentFilters(cursor?: string): SessionExchangeFilters {
   };
 }
 
-async function load() {
+async function load(background = false) {
   controller?.abort();
   const active = new AbortController();
   controller = active;
   loadingMore.value = false;
   nextCursor.value = null;
-  loading.value = true;
+  if (!background) loading.value = true;
   error.value = "";
   try {
     const result = await listSessionExchanges(props.sessionId, currentFilters(), active.signal);
-    exchanges.value = result.exchanges;
-    nextCursor.value = result.next_cursor;
+    if (background && exchanges.value.length) {
+      const combined = order.value === "desc" ? [...result.exchanges, ...exchanges.value] : [...exchanges.value, ...result.exchanges];
+      exchanges.value = combined.filter((exchange, index) => combined.findIndex((candidate) => candidate.id === exchange.id) === index);
+      if (!nextCursor.value && exchanges.value.length <= result.exchanges.length) nextCursor.value = result.next_cursor;
+    } else {
+      exchanges.value = result.exchanges;
+      nextCursor.value = result.next_cursor;
+    }
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "Request evidence could not be loaded.");
   } finally {
@@ -144,21 +150,23 @@ watch([() => props.sessionId, () => route.fullPath], () => {
   if (queryValue("rq") !== search.value.trim()) search.value = queryValue("rq");
   void load();
 }, { immediate: true });
+watch(() => props.refreshKey, () => { void load(true); });
 onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 </script>
 
 <template>
-  <section aria-labelledby="timeline-heading">
+  <section id="session-activity" aria-labelledby="timeline-heading">
     <div class="mb-3 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h2 id="timeline-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Request timeline</h2>
-        <p class="mt-1 text-xs text-zinc-500">{{ exchanges.length }} loaded · {{ order === "desc" ? "Newest first" : "Oldest first" }}</p>
+        <h2 id="timeline-heading" class="text-base font-semibold text-zinc-900 dark:text-zinc-100">Activity</h2>
+        <p class="mt-1 text-xs text-zinc-500">{{ exchanges.length }} {{ exchanges.length === 1 ? "request" : "requests" }} loaded · {{ order === "desc" ? "Newest first" : "Oldest first" }}</p>
       </div>
     </div>
 
     <div class="border-y border-zinc-200 py-3 dark:border-zinc-800">
-      <div class="flex flex-col gap-2 sm:flex-row">
-        <form class="relative min-w-0 flex-1" role="search" @submit.prevent="commitSearch">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div class="flex min-w-0 flex-1 gap-2">
+        <form class="relative min-w-0 flex-1 lg:max-w-lg" role="search" @submit.prevent="commitSearch">
           <label class="sr-only" for="timeline-search">Search request evidence</label>
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
           <input id="timeline-search" v-model="search" type="search" placeholder="Search request excerpt or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" />
@@ -177,8 +185,11 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
             <Button type="submit" form="timeline-filters">Apply filters</Button>
           </template>
         </DropdownPanel>
-        <Select :model-value="order" label="Timeline order" :options="orderOptions" class="sm:w-36" @update:model-value="setParams({ rorder: $event })" />
-        <Select :model-value="limit" label="Requests per page" :options="pageSizeOptions" class="sm:w-28" @update:model-value="setParams({ rlimit: $event })" />
+        </div>
+        <div class="flex gap-2">
+          <Select :model-value="order" label="Timeline order" :options="orderOptions" class="min-w-0 flex-1 sm:w-36 sm:flex-none" @update:model-value="setParams({ rorder: $event })" />
+          <Select :model-value="limit" label="Requests per page" :options="pageSizeOptions" class="min-w-0 flex-1 sm:w-28 sm:flex-none" @update:model-value="setParams({ rlimit: $event })" />
+        </div>
       </div>
       <ul v-if="activeFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
         <li v-for="facet in activeFacets" :key="facet.key">
@@ -191,12 +202,20 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
       </ul>
     </div>
 
-    <div class="border-t border-zinc-200 dark:border-zinc-800">
+    <div>
       <div v-if="loading" aria-busy="true" aria-label="Loading request timeline"><div v-for="index in 4" :key="index" class="grid gap-3 border-b border-zinc-200 py-4 sm:grid-cols-[120px_minmax(0,1fr)_100px] sm:px-3 dark:border-zinc-800"><div class="h-3 w-24 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-2/3 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div></div>
-      <div v-else-if="error && !exchanges.length" class="border-b border-zinc-200 py-10 text-center dark:border-zinc-800"><p class="text-sm text-zinc-600 dark:text-zinc-400">{{ error }}</p><button class="mt-3 inline-flex items-center gap-2 text-sm font-medium text-teal-700 dark:text-teal-400" @click="load"><RotateCw class="size-4" />Retry</button></div>
+      <div v-else-if="error && !exchanges.length" class="border-b border-zinc-200 py-10 text-center dark:border-zinc-800"><p class="text-sm text-zinc-600 dark:text-zinc-400">{{ error }}</p><button class="mt-3 inline-flex items-center gap-2 text-sm font-medium text-teal-700 dark:text-teal-400" @click="load()"><RotateCw class="size-4" />Retry</button></div>
       <template v-else>
-        <RouterLink v-for="exchange in exchanges" :key="exchange.id" :to="`/requests/${exchange.id}`" class="grid gap-3 border-b border-zinc-200 py-4 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 sm:grid-cols-[120px_minmax(0,1fr)_100px] sm:px-3 dark:border-zinc-800 dark:hover:bg-zinc-900"><time class="font-mono text-xs text-zinc-500">{{ shortDate(exchange.ts) }}</time><div><div class="flex flex-wrap items-center gap-3"><IdentityBadge :label="exchange.provider || 'Unknown provider'" /><IdentityBadge :label="exchange.model" /><span v-if="exchange.finish_reason" class="text-[11px] text-zinc-500">{{ exchange.finish_reason }}</span></div><p class="mt-2 line-clamp-1 text-xs text-zinc-500">{{ exchange.request_excerpt || exchange.id }}</p></div><div class="flex items-center gap-1 font-mono text-xs text-zinc-500 sm:justify-end"><ArrowDown v-if="order === 'desc'" class="size-3" /><ArrowUp v-else class="size-3" />{{ exchange.input_tokens.toLocaleString() }} in</div></RouterLink>
-        <p v-if="!exchanges.length" class="border-b border-zinc-200 py-10 text-sm text-zinc-500 dark:border-zinc-800">No request evidence matches these filters.</p>
+        <RouterLink v-for="exchange in exchanges" :key="exchange.id" :to="{ path: `/requests/${exchange.id}`, query: { session: sessionId } }" class="grid gap-3 border-b border-zinc-200 py-4 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 sm:grid-cols-[136px_minmax(0,1fr)_auto] sm:px-3 dark:border-zinc-800 dark:hover:bg-stone-900">
+          <div><time class="whitespace-nowrap font-mono text-xs text-zinc-500" :datetime="exchange.ts">{{ shortDate(exchange.ts) }}</time><p class="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">{{ exchange.latency_ms.toLocaleString() }} ms</p></div>
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2"><IdentityBadge :label="exchange.provider || 'Unknown provider'" /><IdentityBadge :label="exchange.model" /><span v-if="exchange.session_id !== rootSessionId" class="rounded-[4px] border border-zinc-300 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">Supporting run</span><span v-if="exchange.finish_reason" class="text-xs text-zinc-500">{{ exchange.finish_reason }}</span></div>
+            <p class="mt-2 line-clamp-2 break-words text-[13px] leading-5 text-zinc-600 dark:text-zinc-400">{{ exchange.request_excerpt || exchange.id }}</p>
+            <p v-if="exchange.capture_status !== 'saved' || exchange.failure_code" class="mt-1.5 text-xs" :class="exchange.capture_status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'">Capture {{ exchange.capture_status }}<template v-if="exchange.failure_code"> · {{ exchange.failure_code }}</template><template v-else-if="exchange.capture_reason"> · {{ exchange.capture_reason }}</template></p>
+          </div>
+          <dl class="flex gap-4 text-right font-mono text-[11px] text-zinc-500 sm:block"><div><dt class="sr-only">Input tokens</dt><dd>{{ exchange.input_tokens.toLocaleString() }} in</dd></div><div><dt class="sr-only">Output tokens</dt><dd>{{ exchange.output_tokens.toLocaleString() }} out</dd></div></dl>
+        </RouterLink>
+        <div v-if="!exchanges.length" class="border-b border-zinc-200 py-10 dark:border-zinc-800"><p class="text-sm font-medium text-zinc-700 dark:text-zinc-300">No saved requests match this view.</p><p class="mt-1 text-xs text-zinc-500">Clear filters or wait for pending capture to finish.</p></div>
       </template>
     </div>
     <div v-if="nextCursor || error" class="mt-3 flex items-center justify-between gap-4"><p class="text-xs text-red-700 dark:text-red-400" role="alert">{{ error }}</p><Button v-if="nextCursor" variant="outline" class="ml-auto" :disabled="loading || loadingMore" @click="loadMore">{{ loadingMore ? "Loading..." : "Load more requests" }}</Button></div>

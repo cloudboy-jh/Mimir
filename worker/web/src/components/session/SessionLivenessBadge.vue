@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SessionLiveness } from "@/lib/api";
 
-defineProps<{ liveness: SessionLiveness }>();
+defineProps<{ liveness: SessionLiveness; announce?: boolean }>();
 
 const labels: Record<SessionLiveness, string> = {
   active: "Active",
@@ -15,7 +15,7 @@ const labels: Record<SessionLiveness, string> = {
     'text-emerald-700 dark:text-emerald-400': liveness === 'active',
     'text-amber-700 dark:text-amber-400': liveness === 'disconnected',
     'text-zinc-500 dark:text-zinc-400': liveness === 'finalized',
-  }" role="status">
+  }" :role="announce ? 'status' : undefined">
     <span class="size-1.5 shrink-0 rounded-full" :class="{
       'bg-emerald-500': liveness === 'active',
       'bg-amber-500': liveness === 'disconnected',

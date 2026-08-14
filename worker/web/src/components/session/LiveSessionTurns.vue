@@ -10,12 +10,12 @@ defineProps<{ turns: LiveSessionTurn[]; liveness: SessionLiveness }>();
   <section v-if="turns.length || liveness !== 'finalized'" aria-labelledby="live-turns-heading">
     <div class="mb-3 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h2 id="live-turns-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Live turns</h2>
-        <p class="mt-1 text-xs text-zinc-500">Harness-reported activity, retained as a bounded live buffer.</p>
+        <h2 id="live-turns-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Incoming activity</h2>
+        <p class="mt-1 max-w-2xl text-xs text-zinc-500">Temporary harness events. Saved requests move into the canonical activity record below.</p>
       </div>
-      <span class="text-xs text-zinc-500">{{ turns.length }} {{ turns.length === 1 ? 'turn' : 'turns' }}</span>
+      <span class="text-xs text-zinc-500" aria-live="polite">{{ turns.length }} {{ turns.length === 1 ? 'event' : 'events' }}</span>
     </div>
-    <ol class="border-t border-zinc-200 dark:border-zinc-800" aria-live="polite" aria-relevant="additions">
+    <ol class="border-t border-zinc-200 dark:border-zinc-800">
       <li v-for="(turn, index) in turns" :key="turn.exchange_id || `${turn.ts}-${index}`" class="grid gap-2 border-b border-zinc-200 py-3 sm:grid-cols-[120px_minmax(0,1fr)_auto] sm:px-3 dark:border-zinc-800">
         <time class="font-mono text-xs text-zinc-500" :datetime="turn.ts">{{ shortDate(turn.ts) }}</time>
         <div class="min-w-0">

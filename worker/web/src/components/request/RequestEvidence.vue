@@ -13,10 +13,10 @@ watch([() => props.side, structured], () => { mode.value = structured.value.reco
 
 <template>
   <div>
-    <div class="mb-3 flex items-center justify-between gap-3">
+    <div class="mb-3 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
       <p class="text-xs text-zinc-500 dark:text-zinc-400">{{ structured.recognized ? "Readable conversation evidence" : "This payload does not match a recognized message format." }}</p>
-      <div class="inline-flex rounded-[5px] border border-zinc-300 p-0.5 dark:border-zinc-700" aria-label="Evidence format">
-        <button v-for="option in ['structured', 'raw'] as const" :key="option" type="button" class="rounded-[3px] px-2.5 py-1 text-xs font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600" :class="mode === option ? 'bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-950' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'" :disabled="option === 'structured' && !structured.recognized" @click="mode = option">{{ option }}</button>
+      <div class="inline-flex rounded-[5px] border border-zinc-300 p-0.5 dark:border-zinc-700" role="group" aria-label="Evidence format">
+        <button v-for="option in ['structured', 'raw'] as const" :key="option" type="button" :aria-pressed="mode === option" class="rounded-[3px] px-2.5 py-1 text-xs font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-not-allowed disabled:opacity-50" :class="mode === option ? 'bg-zinc-900 text-zinc-50 dark:bg-zinc-100 dark:text-zinc-950' : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'" :disabled="option === 'structured' && !structured.recognized" @click="mode = option">{{ option }}</button>
       </div>
     </div>
     <div v-if="mode === 'structured'" class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">

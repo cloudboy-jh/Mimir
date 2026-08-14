@@ -24,16 +24,16 @@ watch(() => props.evidence?.commit, () => { showAllReferenced.value = false; });
 
 <template>
   <div>
-    <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100"><FileCode2 class="size-4" />Touched files <span v-if="referenced.length" class="font-mono text-[11px] font-normal text-zinc-500">{{ referenced.length }}</span></h2>
+    <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100"><FileCode2 class="size-4" aria-hidden="true" />Referenced files <span v-if="referenced.length" class="font-mono text-[11px] font-normal text-zinc-500">{{ referenced.length }}</span></h2>
 
     <template v-if="referenced.length">
-      <p class="mb-2 text-[11px] leading-4 text-zinc-500">Read or edited during the session. Not part of the result diff.</p>
+      <p class="mb-2 text-[11px] leading-4 text-zinc-500">Mentioned in captured traffic. Change status may be unknown when the full patch is stored separately.</p>
       <ul class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
         <li v-for="file in visibleReferenced" :key="file" class="truncate py-2.5 font-mono text-xs text-zinc-600 dark:text-zinc-400" :title="file">{{ file }}</li>
       </ul>
       <button v-if="referenced.length > REFERENCED_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllReferenced = !showAllReferenced">{{ showAllReferenced ? "Show fewer files" : `Show all ${referenced.length} files` }}</button>
     </template>
 
-    <p v-if="!referenced.length" class="text-sm text-zinc-500">No additional files detected.</p>
+    <p v-if="!referenced.length" class="text-sm text-zinc-500">No additional file references detected.</p>
   </div>
 </template>

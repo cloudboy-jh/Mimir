@@ -132,9 +132,9 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
 
 <template>
   <section aria-labelledby="outcome-heading">
-    <div class="flex items-center justify-between gap-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 id="outcome-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Work outcome</h2>
-      <div class="flex items-center gap-1.5">
+      <div class="flex flex-wrap items-center gap-1.5">
         <span v-if="savedFlash" class="mr-1 text-xs font-medium text-emerald-700 dark:text-emerald-400" role="status">Saved</span>
         <PopoverRoot v-if="detail.outcome_events.length">
           <PopoverTrigger as-child><Button variant="ghost" class="px-2.5"><HistoryIcon class="size-3.5" />History · {{ detail.outcome_events.length }}</Button></PopoverTrigger>

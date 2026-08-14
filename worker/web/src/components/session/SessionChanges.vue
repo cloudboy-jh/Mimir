@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ExternalLink, GitCommitHorizontal } from "lucide-vue-next";
+import { ChevronDown, ExternalLink, GitCommitHorizontal } from "lucide-vue-next";
 import type { OutcomeEvidence } from "@/lib/api";
 import { parsePatch } from "@/lib/diff";
 import { commitUrl, shortCommit } from "@/lib/git";
@@ -35,27 +35,28 @@ watch(() => props.evidence?.commit, () => { showAll.value = false; });
 
     <div v-if="evidence?.commit" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-200 py-2.5 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
       <GitCommitHorizontal class="size-3.5 text-zinc-500" aria-hidden="true" />
-      <a v-if="commitHref" :href="commitHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(evidence.commit) }}<ExternalLink class="size-3" aria-hidden="true" /></a>
+      <a v-if="commitHref" :href="commitHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(evidence.commit) }}<ExternalLink class="size-3" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a>
       <span v-else class="font-mono text-zinc-800 dark:text-zinc-200">{{ shortCommit(evidence.commit) }}</span>
       <span v-if="evidence.ref || sourceRef" class="font-mono">{{ evidence.ref || sourceRef }}</span>
       <span v-if="evidence.base_commit">on {{ shortCommit(evidence.base_commit) }}</span>
       <span v-if="evidence.provenance">via {{ evidence.provenance }}</span>
     </div>
-    <p v-else-if="evidenceHref" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="evidenceHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ evidenceHref }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /></a></p>
+    <p v-else-if="evidenceHref" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="evidenceHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ evidenceHref }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a></p>
     <p v-else-if="evidence?.note" class="border-b border-zinc-200 py-2.5 text-xs leading-5 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">{{ evidence.note }}</p>
     <p v-else-if="hasDiff" class="border-b border-zinc-200 py-2.5 text-xs text-zinc-500 dark:border-zinc-800">Recorded patch evidence</p>
     <p v-else class="pt-3 text-sm text-zinc-500">No committed changes recorded.</p>
 
     <template v-if="evidence?.commit || hasDiff">
       <p v-if="!hasDiff" class="pt-3 text-xs text-zinc-500">Diff unavailable for this commit.</p>
-      <ul v-else class="divide-y divide-zinc-200 border-b border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+      <p v-if="hasDiff && !diffs.length" class="pt-3 text-xs leading-5 text-zinc-500">The patch is stored separately. Open the full diff to inspect changed files.</p>
+      <ul v-else-if="diffs.length" class="divide-y divide-zinc-200 border-b border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
         <li v-for="file in visibleDiffs" :key="file.file" class="min-w-0">
-          <details>
-            <summary class="flex cursor-pointer list-none items-baseline justify-between gap-3 py-2.5 [&::-webkit-details-marker]:hidden">
+          <details class="group">
+            <summary class="flex cursor-pointer list-none items-baseline justify-between gap-3 rounded-[3px] py-2.5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 [&::-webkit-details-marker]:hidden">
               <span class="min-w-0 truncate font-mono text-xs text-zinc-700 dark:text-zinc-300" :title="file.file">{{ file.file }}</span>
-              <span class="shrink-0 font-mono text-[11px]"><span class="text-emerald-700 dark:text-emerald-400">+{{ file.added }}</span> <span class="text-red-700 dark:text-red-400">−{{ file.removed }}</span></span>
+              <span class="flex shrink-0 items-center gap-1.5 font-mono text-[11px]"><span><span class="text-emerald-700 dark:text-emerald-400">+{{ file.added }}</span> <span class="text-red-700 dark:text-red-400">−{{ file.removed }}</span></span><ChevronDown class="size-3.5 text-zinc-500 transition-transform duration-200 group-open:rotate-180 motion-reduce:transition-none" aria-hidden="true" /></span>
             </summary>
-            <div class="max-h-72 overflow-auto border-t border-zinc-200 dark:border-zinc-800"><pre class="min-w-max py-1 font-mono text-[11px] leading-4"><div v-for="(line, index) in file.lines" :key="index" class="whitespace-pre px-2.5" :class="line.type === 'add' ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200' : line.type === 'del' ? 'bg-red-50 text-red-900 dark:bg-red-950/60 dark:text-red-200' : line.type === 'meta' ? 'text-zinc-400 dark:text-zinc-500' : 'text-zinc-600 dark:text-zinc-400'">{{ line.text || " " }}</div></pre></div>
+            <div class="max-h-72 overflow-auto border-t border-zinc-200 dark:border-zinc-800"><pre class="min-w-max py-1 font-mono text-[11px] leading-4"><code><span v-for="(line, index) in file.lines" :key="index" class="block whitespace-pre px-2.5" :class="line.type === 'add' ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200' : line.type === 'del' ? 'bg-red-50 text-red-900 dark:bg-red-950/60 dark:text-red-200' : line.type === 'meta' ? 'text-zinc-400 dark:text-zinc-500' : 'text-zinc-600 dark:text-zinc-400'">{{ line.text || " " }}</span></code></pre></div>
           </details>
         </li>
       </ul>
