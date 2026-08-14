@@ -87,6 +87,7 @@ func TestInstallCurrentReportsManagedPiAndOpenCodeCapturePlugins(t *testing.T) {
 	}
 	service.Hermes = hermes.New()
 	service.Hermes.Discover = func() (string, bool, error) { return "", false, nil }
+	service.LoadReceipt = func() (install.Receipt, error) { return install.Receipt{}, errors.New("not installed") }
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
 		{Path: filepath.Join(root, "extensions", "mimir.ts"), Source: "plugins/pi/mimir.ts", Status: install.ArtifactCurrent},
 		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent},
@@ -100,6 +101,9 @@ func TestInstallCurrentReportsManagedPiAndOpenCodeCapturePlugins(t *testing.T) {
 	}
 	if report.OpenCode.State != "staged" || report.OpenCode.Scope != "capture" || !report.OpenCode.RestartRequired || !strings.Contains(report.OpenCode.Detail, "unverified") {
 		t.Fatalf("OpenCode state %#v", report.OpenCode)
+	}
+	if report.OhMyPi.State != "skipped" || !strings.Contains(report.OhMyPi.Detail, "unavailable") {
+		t.Fatalf("Oh My Pi state %#v", report.OhMyPi)
 	}
 }
 

@@ -479,6 +479,8 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	}
 	if !selected["oh-my-pi"] {
 		report.OhMyPi = unselectedState()
+	} else if paths.OhMyPiHome == "" {
+		report.OhMyPi = harness.IntegrationState{State: "skipped", Detail: "Oh My Pi extension path is unavailable"}
 	} else if install.ArtifactsReady(artifacts, paths.OhMyPiHome, "plugins/oh-my-pi/") {
 		report.OhMyPi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Oh My Pi capture extension staged; activation is unverified until a load is reported"}
 	} else {
