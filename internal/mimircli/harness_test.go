@@ -109,9 +109,23 @@ func TestHarnessOverviewShowsOnlySelectedOrDetectedHarnesses(t *testing.T) {
 	if !strings.Contains(text, "● OpenCode") || !strings.Contains(text, "Active") {
 		t.Fatalf("output = %q", text)
 	}
-	for _, hidden := range []string{"Hermes", "Claude Code", "Codex", "Cursor"} {
-		if strings.Contains(text, hidden) {
-			t.Fatalf("output unexpectedly contains %q: %q", hidden, text)
+	harnesses, err := installpkg.Harnesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for _, harness := range harnesses {
+		found := false
+		for _, line := range lines[1:] {
+			for _, marker := range []string{"● ", "○ "} {
+				prefix := marker + harness.Name
+				if strings.HasPrefix(line, prefix) && len(line) > len(prefix) && line[len(prefix)] == ' ' {
+					found = true
+				}
+			}
+		}
+		if found != (harness.Selected || harness.Detected) {
+			t.Fatalf("%s row present=%v, selected=%v detected=%v: %q", harness.Name, found, harness.Selected, harness.Detected, text)
 		}
 	}
 }
