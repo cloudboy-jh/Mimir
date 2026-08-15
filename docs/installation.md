@@ -33,9 +33,10 @@ binary when no other binary owner is recorded.
 Interactive `mimir install` prompts once for harness selection and defaults to
 detected harnesses in this order: OpenCode, Pi, Hermes, Claude Code, Codex, and
 Cursor. Automation must select explicitly with repeatable `--harness <id>` or
-`--harness all`; JSON and noninteractive installs never prompt. Inspect or
-change the persisted selection with `mimir harness list`, `mimir harness enable
-<id>`, and `mimir harness disable <id>`. Disable removes only receipt-owned,
+`--harness all`; JSON and noninteractive installs never prompt. Run `mimir
+harness` to inspect activation state and change the persisted selection using
+friendly names. `mimir enable|disable <name>` provides case-insensitive
+shortcuts for Pi, OpenCode, and Hermes. Disable removes only receipt-owned,
 unmodified artifacts. Modified or otherwise unsafe files remain owned and are
 preserved for a later enable or full ownership-driven uninstall.
 

@@ -152,6 +152,8 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return cmdInstallIO(ctx, args[1:], ioctx)
 	case "harness":
 		return cmdHarness(ctx, args[1:], ioctx)
+	case "enable", "disable":
+		return cmdPrimaryHarness(ctx, args[0], args[1:], ioctx)
 	case "uninstall":
 		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
@@ -628,7 +630,8 @@ func usage(out io.Writer) error {
 	commands := []cliui.CommandItem{
 		{Usage: "mimir setup [--account-id <id>] [--json]", Description: "Provision or reconnect Mimir."},
 		{Usage: "mimir install --harness <id|all> [--json]", Description: "Install the CLI and selected harness files."},
-		{Usage: "mimir harness <list|enable|disable>", Description: "Inspect or change installed harnesses."},
+		{Usage: "mimir harness [--json]", Description: "Inspect or change detected harnesses."},
+		{Usage: "mimir enable|disable <pi|opencode|hermes>", Description: "Quickly enable or disable a primary harness."},
 		{Usage: "mimir uninstall [--keep-binary] [--json]", Description: "Remove owned local files without deleting memory."},
 		{Usage: "mimir deploy [--account-id <id>] [--json]", Description: "Deploy the bundled Worker and dashboard."},
 		{Usage: "mimir access [--account-id <id>] [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
@@ -664,6 +667,7 @@ func advancedUsage(out io.Writer) error {
 		{Usage: "mimir config set <key> <json-value> [--json]", Description: "Update canonical Worker configuration."},
 		{Usage: "mimir index [--full]", Description: "Refresh the local repository code index."},
 		{Usage: "mimir recall <query> [--budget 4000] [--json]", Description: "Search local code memory."},
+		{Usage: "mimir harness <list|enable|disable> [id]", Description: "Legacy harness automation commands."},
 	}
 	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir advanced commands"), render.Commands(commands))
 	return err

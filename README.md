@@ -301,8 +301,8 @@ accidental retention, but it cannot guarantee removal of every secret.
 
 ```text
 mimir install --harness <id|all>      install selected harness integrations
-mimir harness list                    list selected and detected harnesses
-mimir harness enable|disable <id>     change the persisted harness selection
+mimir harness                         inspect or change detected harnesses
+mimir enable|disable <name>           toggle Pi, OpenCode, or Hermes quickly
 mimir setup                           provision and deploy Mimir
 mimir login                           connect another machine
 mimir demo [--no-open]                explore sample sessions locally
@@ -328,8 +328,12 @@ diagnostic commands.
 OpenCode, Pi, Oh My Pi, Hermes, Claude Code, Codex, and Cursor. Use `--harness all` for
 every integration. Interactive installs without flags prompt once and default
 to detected harnesses; JSON and other noninteractive installs require explicit
-selection. `mimir harness disable` removes only unmodified receipt-owned files
-and preserves modified files and their ownership records.
+selection. Run `mimir harness` to see selected and detected integrations, their
+activation state, and change the selection by friendly name. `mimir enable` and
+`mimir disable` are case-insensitive shortcuts for Pi, OpenCode, and Hermes;
+other integrations remain available through `mimir harness`. Removal deletes
+only unmodified receipt-owned files and preserves modified files and their
+ownership records.
 
 `mimir install` creates or reconciles only selected receipt-managed
 integrations. For Pi, it installs `~/.pi/agent/extensions/mimir.ts` (or

@@ -15,7 +15,7 @@ chat, print `$MIMIR_HOME/token`, or pass secrets as command arguments.
    the user explicitly requested a fresh deployment.
 2. If `mimir` is absent, install the checksum-verified release with the platform
    bootstrap from the repository README. Do not require Go or build from the Go
-   module cache. If Mimir exists, inspect `mimir harness list --json`, then run
+   module cache. If Mimir exists, inspect `mimir harness --json`, then run
    `mimir install --harness <selected-id> --json` with one repeatable flag for
    each selected harness to reconcile managed files. Stop when
    `action_required` is true and preserve every reported
