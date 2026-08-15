@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,9 +14,12 @@ import (
 
 	doctorpkg "github.com/cloudboy-jh/mimir/internal/doctor"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/ui/selector"
 )
 
 var installTerminal = isTerminal
+var runHarnessSelector = selector.Run
+var harnessSelectorAvailable = selector.Available
 
 var runHarnessDoctor = func(ctx context.Context) doctorpkg.Report {
 	service := doctorpkg.New(apiRequester{})
@@ -278,46 +282,38 @@ func cmdHarnessOverview(ctx context.Context, ioctx IO, jsonOutput bool) error {
 	if jsonOutput {
 		return json.NewEncoder(ioctx.Out).Encode(views)
 	}
-	if err := renderHarnessViews(ioctx.Out, views); err != nil {
-		return err
+	if len(views) == 0 {
+		return renderHarnessViews(ioctx.Out, views)
 	}
 	in, inputTTY := ioctx.In.(*os.File)
 	out, outputTTY := ioctx.Out.(*os.File)
-	if !inputTTY || !outputTTY || !installTerminal(in) || !installTerminal(out) {
-		return nil
+	if !inputTTY || !outputTTY || !installTerminal(in) || !installTerminal(out) || !harnessSelectorAvailable(in, out) {
+		return renderHarnessViews(ioctx.Out, views)
 	}
-	if _, err := fmt.Fprintln(ioctx.Out, "\nEnter harness names to keep enabled, separated by commas (Enter keeps current selection; type none to disable all):"); err != nil {
-		return err
+	items := make([]selector.Item, len(views))
+	for i, view := range views {
+		items[i] = selector.Item{
+			Label:    fmt.Sprintf("%-16s %s", view.Name, harnessStatus(view)),
+			Selected: view.Selected,
+		}
 	}
-	line, err := bufio.NewReader(ioctx.In).ReadString('\n')
-	if err != nil && err != io.EOF {
-		return err
-	}
-	line = strings.TrimSpace(line)
-	if line == "" || line == "\x1b" {
-		return nil
-	}
-	selected, err := normalizeHarnessNames(strings.Split(line, ","))
+	result, err := runHarnessSelector(in, out, "Mimir harnesses", items)
 	if err != nil {
 		return err
 	}
-	if err := validateVisibleHarnessSelection(selected, views); err != nil {
-		return err
+	if !result.Accepted {
+		return nil
 	}
-	return applyHarnessSelection(ctx, harnesses, selected, ioctx.Out)
-}
-
-func validateVisibleHarnessSelection(selected []string, views []harnessView) error {
-	visible := map[string]bool{}
-	for _, view := range views {
-		visible[view.ID] = true
+	if len(result.Selected) != len(views) {
+		return errors.New("harness selector returned an invalid selection")
 	}
-	for _, id := range selected {
-		if !visible[id] {
-			return fmt.Errorf("%s is not detected; only displayed harnesses can be selected", harnessDisplayName(id))
+	selected := make([]string, 0, len(result.Selected))
+	for i, enabled := range result.Selected {
+		if enabled {
+			selected = append(selected, views[i].ID)
 		}
 	}
-	return nil
+	return applyHarnessSelection(ctx, harnesses, selected, ioctx.Out)
 }
 
 func selectedHarnessExists(harnesses []installpkg.Harness) bool {
@@ -477,62 +473,29 @@ func renderHarnessViews(out io.Writer, views []harnessView) error {
 		if view.Selected {
 			marker = "●"
 		}
-		status := "Detected"
-		switch view.Status {
-		case "active":
-			status = "Active"
-		case "installed":
-			status = "Installed"
-			if view.ActivationAction != "" {
-				status += ", " + view.ActivationAction + " to activate"
-			}
-		case "activation_unknown":
-			status = "Installed, activation unknown"
-		case "needs_attention":
-			status = "Needs attention"
-		}
-		if _, err := fmt.Fprintf(out, "%s %-16s %s\n", marker, view.Name, status); err != nil {
+		if _, err := fmt.Fprintf(out, "%s %-16s %s\n", marker, view.Name, harnessStatus(view)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func normalizeHarnessNames(values []string) ([]string, error) {
-	if len(values) == 1 && compactHarnessName(values[0]) == "none" {
-		return []string{}, nil
-	}
-	aliases := map[string]string{}
-	for _, harness := range installpkg.CanonicalHarnesses() {
-		aliases[compactHarnessName(harness.ID)] = harness.ID
-		aliases[compactHarnessName(harness.Name)] = harness.ID
-	}
-	requested := map[string]bool{}
-	for _, value := range values {
-		id, ok := aliases[compactHarnessName(value)]
-		if !ok {
-			return nil, fmt.Errorf("unknown harness %q", strings.TrimSpace(value))
+func harnessStatus(view harnessView) string {
+	status := "Detected"
+	switch view.Status {
+	case "active":
+		status = "Active"
+	case "installed":
+		status = "Installed"
+		if view.ActivationAction != "" {
+			status += ", " + view.ActivationAction + " to activate"
 		}
-		requested[id] = true
+	case "activation_unknown":
+		status = "Installed, activation unknown"
+	case "needs_attention":
+		status = "Needs attention"
 	}
-	var selected []string
-	for _, harness := range installpkg.CanonicalHarnesses() {
-		if requested[harness.ID] {
-			selected = append(selected, harness.ID)
-		}
-	}
-	return selected, nil
-}
-
-func compactHarnessName(value string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case ' ', '\t', '\n', '\r', '-', '_':
-			return -1
-		default:
-			return r
-		}
-	}, strings.ToLower(strings.TrimSpace(value)))
+	return status
 }
 
 func applyHarnessSelection(ctx context.Context, current []installpkg.Harness, selected []string, out io.Writer) error {

@@ -328,8 +328,9 @@ diagnostic commands.
 OpenCode, Pi, Oh My Pi, Hermes, Claude Code, Codex, and Cursor. Use `--harness all` for
 every integration. Interactive installs without flags prompt once and default
 to detected harnesses; JSON and other noninteractive installs require explicit
-selection. Run `mimir harness` to see selected and detected integrations, their
-activation state, and change the selection by friendly name. `mimir enable` and
+selection. Run `mimir harness` in a terminal to see selected and detected
+integrations, move with the arrow keys, toggle `●`/`○` with Space, and apply
+with Enter. `mimir harness --json` remains noninteractive. `mimir enable` and
 `mimir disable` are case-insensitive shortcuts for Pi, OpenCode, and Hermes;
 other integrations remain available through `mimir harness`. Removal deletes
 only unmodified receipt-owned files and preserves modified files and their

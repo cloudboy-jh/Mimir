@@ -12,6 +12,7 @@ import (
 
 	doctorpkg "github.com/cloudboy-jh/mimir/internal/doctor"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
+	"github.com/cloudboy-jh/mimir/internal/ui/selector"
 )
 
 func TestParseInstallHarnessesCanonicalizesRepeatableFlags(t *testing.T) {
@@ -130,6 +131,54 @@ func TestHarnessOverviewShowsOnlySelectedOrDetectedHarnesses(t *testing.T) {
 	}
 }
 
+func TestHarnessOverviewUsesInteractiveChecklist(t *testing.T) {
+	isolatedInstallation(t, false)
+	selected, _ := installpkg.NormalizeHarnesses([]string{"opencode"})
+	if _, err := installpkg.RefreshSelectedArtifacts("install", selected); err != nil {
+		t.Fatal(err)
+	}
+	oldTerminal := installTerminal
+	installTerminal = func(*os.File) bool { return true }
+	t.Cleanup(func() { installTerminal = oldTerminal })
+	oldSelector := runHarnessSelector
+	runHarnessSelector = func(_ *os.File, _ *os.File, title string, items []selector.Item) (selector.Result, error) {
+		if title != "Mimir harnesses" || len(items) == 0 || !strings.Contains(items[0].Label, "OpenCode") || !items[0].Selected {
+			t.Fatalf("title=%q items=%#v", title, items)
+		}
+		return selector.Result{Selected: make([]bool, len(items)), Accepted: true}, nil
+	}
+	t.Cleanup(func() { runHarnessSelector = oldSelector })
+	oldAvailable := harnessSelectorAvailable
+	harnessSelectorAvailable = func(*os.File, *os.File) bool { return true }
+	t.Cleanup(func() { harnessSelectorAvailable = oldAvailable })
+	oldDoctor := runHarnessDoctor
+	runHarnessDoctor = func(context.Context) doctorpkg.Report { return doctorpkg.Report{OK: true} }
+	t.Cleanup(func() { runHarnessDoctor = oldDoctor })
+
+	input, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	output, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	if err := cmdHarness(context.Background(), nil, IO{In: input, Out: output}); err != nil {
+		t.Fatal(err)
+	}
+	harnesses, err := installpkg.Harnesses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, harness := range harnesses {
+		if harness.Selected {
+			t.Fatalf("%s remains selected", harness.Name)
+		}
+	}
+}
+
 func TestHarnessOverviewJSONIncludesCombinedState(t *testing.T) {
 	isolatedInstallation(t, false)
 	selected, _ := installpkg.NormalizeHarnesses([]string{"pi"})
@@ -195,16 +244,6 @@ func TestHarnessOverviewPrefersHermesDiagnosticFailureOverOldActiveLoad(t *testi
 	t.Fatal("Hermes view not found")
 }
 
-func TestNormalizeHarnessNamesAcceptsFriendlyVariants(t *testing.T) {
-	selected, err := normalizeHarnessNames([]string{"Open Code", "PI", "claude_code", "Oh-My-Pi"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(selected, ","); got != "opencode,pi,oh-my-pi,claude-code" {
-		t.Fatalf("selected = %q", got)
-	}
-}
-
 func TestPrimaryHarnessIDAcceptsCaseAndSeparators(t *testing.T) {
 	for input, want := range map[string]string{
 		"PI":        "pi",
@@ -220,23 +259,6 @@ func TestPrimaryHarnessIDAcceptsCaseAndSeparators(t *testing.T) {
 	}
 	if _, err := primaryHarnessID("codex"); err == nil || !strings.Contains(err.Error(), "mimir harness") {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestHarnessSelectionRejectsHiddenHarness(t *testing.T) {
-	views := []harnessView{{ID: "opencode", Name: "OpenCode", Detected: true}}
-	if err := validateVisibleHarnessSelection([]string{"codex"}, views); err == nil || !strings.Contains(err.Error(), "not detected") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestNormalizeHarnessNamesAllowsDisablingAll(t *testing.T) {
-	selected, err := normalizeHarnessNames([]string{"none"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(selected) != 0 {
-		t.Fatalf("selected = %#v", selected)
 	}
 }
 
