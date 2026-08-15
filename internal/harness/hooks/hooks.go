@@ -642,7 +642,8 @@ func acquireFileLock(path string, timeout time.Duration) (func(), error) {
 		if !contention && os.IsNotExist(statErr) {
 			return nil, err
 		}
-		if statErr != nil && !os.IsNotExist(statErr) {
+		transientStatError := runtime.GOOS == "windows" && contention && os.IsPermission(statErr)
+		if statErr != nil && !os.IsNotExist(statErr) && !transientStatError {
 			return nil, statErr
 		}
 		if statErr == nil {
