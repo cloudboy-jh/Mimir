@@ -8,6 +8,9 @@ import claude from "@lobehub/icons-static-svg/icons/claude-color.svg";
 import gemini from "@lobehub/icons-static-svg/icons/gemini-color.svg";
 import opencode from "@lobehub/icons-static-svg/icons/opencode.svg";
 import hermes from "@lobehub/icons-static-svg/icons/hermesagent.svg";
+import pi from "@lobehub/icons-static-svg/icons/pi.svg";
+import codex from "@lobehub/icons-static-svg/icons/codex.svg";
+import cursor from "@lobehub/icons-static-svg/icons/cursor.svg";
 import nous from "@lobehub/icons-static-svg/icons/nousresearch.svg";
 import claudeCode from "@lobehub/icons-static-svg/icons/claudecode-color.svg";
 import openrouter from "@lobehub/icons-static-svg/icons/openrouter.svg";
@@ -29,14 +32,19 @@ import perplexity from "@lobehub/icons-static-svg/icons/perplexity-color.svg";
 import together from "@lobehub/icons-static-svg/icons/together-color.svg";
 import fireworks from "@lobehub/icons-static-svg/icons/fireworks-color.svg";
 import nvidia from "@lobehub/icons-static-svg/icons/nvidia-color.svg";
+import ohMyPi from "@/assets/oh-my-pi.svg";
 
 const props = defineProps<{ label: string }>();
 
 // Matches run most specific first: a harness or product name must win over the
 // vendor name it contains, and a vendor must win over a bare model family.
 const matchers: Array<{ test: (value: string) => boolean; src: string; monochrome: boolean }> = [
+  { test: (v) => v === "oh my pi" || v === "oh-my-pi", src: ohMyPi, monochrome: true },
   { test: (v) => v.includes("claude code") || v.includes("claudecode"), src: claudeCode, monochrome: false },
   { test: (v) => v.includes("opencode"), src: opencode, monochrome: true },
+  { test: (v) => v === "pi", src: pi, monochrome: true },
+  { test: (v) => v === "codex", src: codex, monochrome: true },
+  { test: (v) => v.includes("cursor"), src: cursor, monochrome: true },
   { test: (v) => v.includes("openrouter"), src: openrouter, monochrome: true },
   { test: (v) => v.includes("hermes"), src: hermes, monochrome: true },
   { test: (v) => v.includes("nous"), src: nous, monochrome: true },
@@ -73,6 +81,6 @@ const icon = computed(() => {
 </script>
 
 <template>
-  <img v-if="icon" :src="icon.src" alt="" class="size-5 shrink-0 object-contain" :class="icon.monochrome ? 'dark:invert' : ''" />
+  <img v-if="icon" :src="icon.src" alt="" class="size-5 shrink-0 object-contain" :class="icon.monochrome ? 'dark:brightness-0 dark:invert' : ''" />
   <span v-else aria-hidden="true" class="grid size-5 shrink-0 place-items-center rounded-[4px] border border-zinc-200 bg-zinc-50 text-xs font-semibold text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">{{ label.charAt(0).toUpperCase() }}</span>
 </template>

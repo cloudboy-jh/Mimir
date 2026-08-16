@@ -21,7 +21,7 @@ const iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000
 const clone = <T>(value: T): T => structuredClone(value);
 
 const devices: Device[] = [
-  { id: "dev_fixture_macbook", name: "Studio MacBook", platform: "darwin", arch: "arm64", created_at: iso(28_800), updated_at: iso(1), last_seen_at: iso(1), revoked_at: null, session_count: 18, harnesses: ["opencode", "claude-code"] },
+  { id: "dev_fixture_macbook", name: "Studio MacBook", platform: "darwin", arch: "arm64", created_at: iso(28_800), updated_at: iso(1), last_seen_at: iso(1), revoked_at: null, session_count: 18, harnesses: ["opencode", "pi", "oh-my-pi", "claude-code", "cursor"] },
   { id: "dev_fixture_linux", name: "Build workstation", platform: "linux", arch: "x64", created_at: iso(86_400), updated_at: iso(332), last_seen_at: null, revoked_at: null, session_count: 9, harnesses: ["hermes", "codex"] },
   { id: "dev_fixture_windows", name: "Previous desktop", platform: "windows", arch: "x64", created_at: iso(172_800), updated_at: iso(43_200), last_seen_at: iso(43_200), revoked_at: iso(40_320), session_count: 4, harnesses: ["opencode"] },
 ];
@@ -34,6 +34,52 @@ const savedCapture = (saved: number, failed = 0): CaptureSummary => ({
   pending_exchanges: 0,
   last_saved_at: iso(4),
 });
+
+function harnessFixture(
+  id: string,
+  harness: string,
+  title: string,
+  model: string,
+  minutesAgo: number,
+  device: Device,
+): Session {
+  return {
+    id: `ses_fixture_harness_${id}`,
+    parent_session_id: null,
+    started_at: iso(minutesAgo + 18),
+    ended_at: iso(minutesAgo),
+    state: "inactive",
+    liveness: "finalized",
+    last_active_at: iso(minutesAgo),
+    activity_at: iso(minutesAgo),
+    inactive_at: iso(minutesAgo - 1),
+    harness,
+    boundary: "exact",
+    outcome: "landed",
+    outcome_src: "agent",
+    outcome_updated_at: iso(minutesAgo - 1),
+    outcome_reason: `Verified the ${title} development fixture.`,
+    repo: "mimir",
+    source_ref: `fixtures/${id}`,
+    model_primary: model,
+    models: [{ name: model, request_count: 4, first_seen_at: iso(minutesAgo + 18), last_seen_at: iso(minutesAgo) }],
+    request_count: 4,
+    tokens_in: 24_000,
+    tokens_out: 3_200,
+    title: `${title} harness fixture`,
+    title_source: "harness",
+    title_updated_at: iso(minutesAgo),
+    display_title: `${title} harness fixture`,
+    intent: `Exercise the dashboard session presentation for ${title}`,
+    summary_text: `Fixture session for validating ${title} identity, model, capture, and outcome presentation.`,
+    summary_status: "ready",
+    summary_source: "generated",
+    summary_updated_at: iso(minutesAgo),
+    child_session_count: 0,
+    capture: savedCapture(4),
+    device: deviceIdentity(device),
+  };
+}
 
 const primaryPatch = `diff --git a/worker/web/src/components/session/SessionHeader.vue b/worker/web/src/components/session/SessionHeader.vue
 index 1122334..2233445 100644
@@ -143,6 +189,11 @@ const sessions: Session[] = [
     capture: { status: "pending", saved_exchanges: 6, failed_exchanges: 0, pending_exchanges: 1, last_saved_at: iso(2) },
     device: deviceIdentity(devices[1]),
   },
+  harnessFixture("pi", "pi", "Pi", "anthropic/claude-sonnet-4.5", 8, devices[0]),
+  harnessFixture("oh_my_pi", "oh-my-pi", "Oh My Pi", "openai/gpt-5.6-sol", 10, devices[0]),
+  harnessFixture("claude_code", "claude-code", "Claude Code", "anthropic/claude-opus-4.1", 12, devices[0]),
+  harnessFixture("codex", "codex", "Codex", "openai/gpt-5.4", 14, devices[1]),
+  harnessFixture("cursor", "cursor", "Cursor", "google/gemini-2.5-pro", 16, devices[0]),
   {
     id: "ses_fixture_failed_work",
     parent_session_id: null,
@@ -363,7 +414,7 @@ function paginate<T>(items: T[], params: URLSearchParams) {
 function facetsFor(): Facets {
   return {
     repos: ["mimir"],
-    apps: ["opencode", "hermes"],
+    apps: [...new Set(sessions.flatMap((session) => session.harness ? [session.harness] : []))],
     models: [...new Set(sessions.flatMap((session) => session.models.map((model) => model.name)))],
     providers: ["openai", "anthropic", "google"],
     finish_reasons: ["stop", "tool-calls"],
@@ -506,11 +557,12 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
   }
 
   if (url.pathname === "/dashboard/api/overview") {
+    const apps = facetsFor().apps.map((name) => ({ name, requests: sessions.reduce((sum, session) => sum + (session.harness === name ? session.request_count : 0), 0) }));
     const overview: Overview = {
       totals: { requests: 37, sessions: sessions.length, saved_exchanges: 35, capture_failures: 1, input_tokens: 614_420, output_tokens: 73_110 },
       models: facetsFor().models.slice(0, 4).map((name) => ({ name, requests: sessions.reduce((sum, session) => sum + (session.models.find((model) => model.name === name)?.request_count ?? 0), 0) })),
       providers: [{ name: "openai", requests: 21 }, { name: "anthropic", requests: 13 }, { name: "google", requests: 3 }],
-      apps: [{ name: "opencode", requests: 30 }, { name: "hermes", requests: 7 }],
+      apps,
     };
     return clone(overview) as T;
   }
