@@ -24,15 +24,16 @@ describe("capture", () => {
     await expect(readBoundedText(stream, 3)).rejects.toThrow("capture limit exceeded");
   });
 
-  it("derives files from tool activity in either provider shape", () => {
+  it("derives files from provider and harness tool activity", () => {
     const request = {
       messages: [
         { role: "user", content: "look at worker/src/never-touched.ts and reference/craft.md" },
         { role: "assistant", content: [{ type: "tool_use", input: { file_path: "worker/src/auth.ts" } }] },
         { role: "assistant", tool_calls: [{ function: { name: "edit", arguments: JSON.stringify({ path: "worker/web/src/lib/api.ts", edits: [{ path: "docs/Spec.md" }] }) } }] },
+        { role: "assistant", content: [{ type: "toolCall", name: "edit", arguments: { path: "plugins/oh-my-pi/mimir.ts" } }] },
       ],
     };
-    expect(deriveSessionFields(request, {}).files).toEqual(["worker/src/auth.ts", "worker/web/src/lib/api.ts", "docs/Spec.md"]);
+    expect(deriveSessionFields(request, {}).files).toEqual(["worker/src/auth.ts", "worker/web/src/lib/api.ts", "docs/Spec.md", "plugins/oh-my-pi/mimir.ts"]);
   });
 
   it("ignores prose paths, dependency directories, and non-path values", () => {

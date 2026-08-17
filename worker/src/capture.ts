@@ -303,14 +303,18 @@ function deriveFiles(request: unknown, response: unknown): string[] {
   return files;
 }
 
-// toolInputs collects the argument objects of tool calls in either the OpenAI
-// (function.arguments JSON string) or Anthropic (tool_use.input object) shape.
+// toolInputs collects argument objects from Anthropic tool_use blocks, OpenAI
+// function calls, and normalized harness toolCall blocks.
 function toolInputs(value: unknown, depth = 0): unknown[] {
   if (depth > MAX_WALK_DEPTH || !value || typeof value !== "object") return [];
   if (Array.isArray(value)) return value.flatMap((item) => toolInputs(item, depth + 1));
   const record = value as Record<string, unknown>;
   const found: unknown[] = [];
   if (record.type === "tool_use" && record.input && typeof record.input === "object") found.push(record.input);
+  if (record.type === "toolCall") {
+    const argumentsValue = typeof record.arguments === "string" ? parseJSON(record.arguments) : record.arguments;
+    if (argumentsValue && typeof argumentsValue === "object") found.push(argumentsValue);
+  }
   const fn = record.function && typeof record.function === "object" ? record.function as Record<string, unknown> : null;
   if (fn && typeof fn.arguments === "string") {
     const parsed = parseJSON(fn.arguments);
