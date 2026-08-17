@@ -1,5 +1,31 @@
 // Mimir capture extension for Oh My Pi.
-type ExtensionAPI = any;
+type ExtensionHandler = (...args: never[]) => unknown;
+type ExtensionAPI = {
+  on(event: string, handler: ExtensionHandler): void;
+  registerProvider(name: string, provider: { baseUrl: string; apiKey: string; headers: Record<string, string> }): void;
+  getSessionName(): unknown;
+  exec(command: string, args: string[], options: { timeout: number }): Promise<{ code: number; stdout: string }>;
+};
+type SessionContext = {
+  cwd?: string;
+  sessionManager?: {
+    getSessionId?: () => unknown;
+    buildSessionContext?: () => { messages?: unknown };
+  };
+};
+type TurnStart = { turnIndex: number; timestamp: number };
+type TurnEnd = {
+  turnIndex: number;
+  message?: {
+    role?: unknown;
+    provider?: unknown;
+    model?: unknown;
+    timestamp?: unknown;
+    usage?: { input?: unknown; cacheRead?: unknown; output?: unknown };
+  };
+  toolResults?: unknown;
+};
+type SessionShutdown = { reason?: unknown };
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -11,7 +37,7 @@ const HEARTBEAT_MS = 60_000;
 const MAX_EXCHANGE_BYTES = 512 * 1024;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 type Connection = { url: string; token: string };
-type Session = { id: string; cwd: string; repo: string | null; gitRef: string | null };
+type Session = { id: string; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
 type RequestKind = "primary" | "summary" | "compaction";
 
 function read(path: string): string | null {
@@ -86,6 +112,10 @@ async function gitMetadata(pi: ExtensionAPI, cwd: string) {
   } catch { /* metadata is optional */ }
   return { repo, gitRef };
 }
+function sessionTitle(pi: ExtensionAPI): string | undefined {
+  const value = pi.getSessionName();
+  return typeof value === "string" ? value.trim().slice(0, 200) || undefined : undefined;
+}
 
 export default function (pi: ExtensionAPI) {
   const config = connection();
@@ -97,37 +127,56 @@ export default function (pi: ExtensionAPI) {
   let requestKind: RequestKind = "primary";
   let initialization = 0;
 
-  const headers = () => current ? {
-    "x-mimir-session": current.id,
+  const headersFor = (session: Session) => ({
+    "x-mimir-session": session.id,
     "x-mimir-harness": "oh-my-pi",
     "x-mimir-request-kind": requestKind,
-    ...(current.repo ? { "x-mimir-repo": current.repo } : {}),
-    ...(current.gitRef ? { "x-mimir-git-ref": current.gitRef } : {}),
-  } : { "x-mimir-harness": "oh-my-pi" };
+    ...(session.repo ? { "x-mimir-repo": session.repo } : {}),
+    ...(session.gitRef ? { "x-mimir-git-ref": session.gitRef } : {}),
+  });
+  const headers = () => current ? headersFor(current) : { "x-mimir-harness": "oh-my-pi" };
 
   const configureProvider = () => pi.registerProvider("openrouter", { baseUrl: `${config.url}/v1`, apiKey: config.token, headers: headers() });
   configureProvider();
 
-  const event = (kind: "heartbeat" | "end", reason?: string) => current ? {
-    version: 1, kind, session_id: current.id, harness: "oh-my-pi", repo: current.repo ?? undefined,
-    title: pi.getSessionName()?.trim().slice(0, 200) || undefined, ts: new Date().toISOString(), reason,
-  } : null;
+  const event = (session: Session, kind: "heartbeat" | "end", reason?: string) => ({
+    version: 1, kind, session_id: session.id, harness: "oh-my-pi", repo: session.repo ?? undefined,
+    title: reason === "switch" ? undefined : sessionTitle(pi), ts: new Date().toISOString(), reason,
+  });
 
   const sendHeartbeat = () => {
-    const body = event("heartbeat");
-    if (body && current) deliver(`heartbeat:${current.id}:${body.ts}`, `/sessions/${encodeURIComponent(current.id)}/events`, body);
+    if (!current?.active) return;
+    const body = event(current, "heartbeat");
+    deliver(`heartbeat:${current.id}:${body.ts}`, `/sessions/${encodeURIComponent(current.id)}/events`, body);
+  };
+  const activate = () => {
+    if (!current || current.active) return;
+    current.active = true;
+    sendHeartbeat();
+    heartbeat = setInterval(sendHeartbeat, HEARTBEAT_MS);
+    heartbeat.unref?.();
   };
 
-  const initialize = async (_event: unknown, ctx: any) => {
+  const initialize = async (_event: unknown, ctx: SessionContext) => {
     const generation = ++initialization;
     clearInterval(heartbeat);
+    heartbeat = undefined;
     snapshots.clear();
     const cwd = ctx?.cwd || process.cwd();
     const rawID = ctx?.sessionManager?.getSessionId?.();
     if (!rawID) return;
-    const candidate: Session = { id: sessionID(String(rawID)), cwd, repo: basename(cwd) || null, gitRef: null };
+    const previous = current;
+    const id = sessionID(String(rawID));
+    const candidate: Session = {
+      id, cwd, repo: basename(cwd) || null, gitRef: null,
+      active: previous?.id === id && previous.active,
+    };
     Object.assign(candidate, await gitMetadata(pi, cwd));
     if (generation !== initialization) return;
+    if (previous?.active && previous.id !== candidate.id) {
+      await post(config, `/sessions/${encodeURIComponent(previous.id)}/events`, event(previous, "end", "switch"), headersFor(previous));
+      if (generation !== initialization) return;
+    }
     current = candidate;
     requestKind = "primary";
     configureProvider();
@@ -139,9 +188,11 @@ export default function (pi: ExtensionAPI) {
       const load = { version: 1, harness: "oh-my-pi", source_sha256: createHash("sha256").update(source).digest("hex"), installation_id };
       deliver(`load:${load.source_sha256}`, "/integrations/harness-loads", load);
     }
-    sendHeartbeat();
-    heartbeat = setInterval(sendHeartbeat, HEARTBEAT_MS);
-    heartbeat.unref?.();
+    if (current.active) {
+      sendHeartbeat();
+      heartbeat = setInterval(sendHeartbeat, HEARTBEAT_MS);
+      heartbeat.unref?.();
+    }
   };
 
   pi.on("session_start", initialize);
@@ -152,33 +203,37 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_tree", () => { requestKind = "summary"; configureProvider(); });
   pi.on("session_tree", () => { requestKind = "primary"; configureProvider(); });
 
-  pi.on("turn_start", (turn: any, ctx: any) => {
-    const messages = ctx?.sessionManager?.buildSessionContext?.()?.messages;
+  pi.on("turn_start", (turn: TurnStart, ctx: SessionContext) => {
+    activate();
+    const messages = ctx.sessionManager?.buildSessionContext?.().messages;
     snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [] });
   });
 
-  pi.on("turn_end", (turn: any) => {
+  pi.on("turn_end", (turn: TurnEnd) => {
     const snapshot = snapshots.get(turn.turnIndex);
     snapshots.delete(turn.turnIndex);
-    if (!current || turn.message?.role !== "assistant" || !turn.message?.provider || turn.message.provider === "openrouter" || !turn.message.model) return;
+    if (!current || turn.message?.role !== "assistant" || typeof turn.message.provider !== "string" || turn.message.provider === "openrouter" || typeof turn.message.model !== "string") return;
     const timestamp = Number(turn.message.timestamp) || Date.now();
     const payload: Record<string, unknown> = {
       exchange_id: `oh-my-pi:${createHash("sha256").update(`${current.id}\0${timestamp}\0${turn.turnIndex}`).digest("hex").slice(0, 40)}`,
       ts: new Date(timestamp).toISOString(), provider: turn.message.provider, model: turn.message.model, request_kind: "primary",
       request: { messages: safe(snapshot?.messages ?? []) }, response: { message: safe(turn.message), tool_results: safe(turn.toolResults ?? []) },
       usage: { input_tokens: Math.max(0, Number(turn.message.usage?.input || 0) + Number(turn.message.usage?.cacheRead || 0)), output_tokens: Math.max(0, Number(turn.message.usage?.output || 0)) },
-      latency_ms: Math.max(0, Date.now() - (snapshot?.startedAt ?? timestamp)), title: pi.getSessionName()?.trim().slice(0, 200) || undefined,
+      latency_ms: Math.max(0, Date.now() - (snapshot?.startedAt ?? timestamp)), title: sessionTitle(pi),
     };
     if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > MAX_EXCHANGE_BYTES) return;
     deliver(`exchange:${payload.exchange_id}`, `/sessions/${encodeURIComponent(current.id)}/exchanges`, payload, headers());
   });
 
-  pi.on("session_shutdown", async (shutdown: any) => {
+  pi.on("session_shutdown", async (shutdown: SessionShutdown) => {
     initialization++;
     clearInterval(heartbeat);
+    heartbeat = undefined;
     const reason = typeof shutdown?.reason === "string" ? shutdown.reason : "shutdown";
-    const body = reason === "reload" ? null : event("end", reason);
-    if (body && current) await post(config, `/sessions/${encodeURIComponent(current.id)}/events`, body, headers());
+    const session = current;
+    if (reason !== "reload" && session?.active) {
+      await post(config, `/sessions/${encodeURIComponent(session.id)}/events`, event(session, "end", reason), headersFor(session));
+    }
     current = null;
     snapshots.clear();
   });

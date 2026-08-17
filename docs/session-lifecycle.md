@@ -41,8 +41,9 @@ Sessions start lazily. There is no separate start command.
 
 A session starts from the first activity carrying its session ID:
 
-1. A harness start hook sends a heartbeat, except Hermes, whose start hook is
-   intentionally silent until direct-provider evidence activates the plugin.
+1. A harness start hook normally sends a heartbeat. Oh My Pi waits for the
+   first real turn so an idle draft does not create a session. Hermes waits
+   until direct-provider evidence activates the plugin.
 2. The first completed turn arrives if the start hook was missed.
 3. The first capture-eligible proxied request carrying `x-mimir-session` is
    successfully saved and reported to the session object.

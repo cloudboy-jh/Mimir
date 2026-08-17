@@ -210,9 +210,10 @@ the skill runs the machine-readable CLI and formats results.
 
 Oh My Pi is selected independently under the Pi group during setup. Mimir
 installs its adapter at `~/.omp/agent/extensions/mimir.ts` (or the active OMP
-profile), reports exact lifecycle heartbeats from session start, and captures
-OpenRouter plus bounded direct-provider evidence. Restart `omp` after install
-or update. Use `OMP_CODING_AGENT_DIR` when OMP has a nonstandard agent home.
+profile), activates exact lifecycle heartbeats on the first real turn, and
+captures OpenRouter plus bounded direct-provider evidence. Idle drafts do not
+create dashboard sessions. Restart `omp` after install or update. Use
+`OMP_CODING_AGENT_DIR` when OMP has a nonstandard agent home.
 
 ### OpenCode
 
