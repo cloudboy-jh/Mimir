@@ -393,7 +393,7 @@ function detailFor(session: Session): SessionDetail {
       "worker/web/src/components/session/SessionOutcome.vue",
       "worker/web/src/components/session/RequestTimeline.vue",
       "worker/web/src/lib/api.ts",
-      "worker/src/routes/dashboard.ts",
+      "worker/src/sessions/session-dashboard-routes.ts",
       "docs/DESIGN.md",
       "README.md",
     ] : [],

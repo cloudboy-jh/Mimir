@@ -22,6 +22,7 @@ type TurnEnd = {
     model?: unknown;
     timestamp?: unknown;
     usage?: { input?: unknown; cacheRead?: unknown; output?: unknown };
+    content?: unknown;
   };
   toolResults?: unknown;
 };
@@ -39,6 +40,7 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 type Connection = { url: string; token: string };
 type Session = { id: string; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
 type RequestKind = "primary" | "summary" | "compaction";
+type NormalizedToolActivity = { name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string };
 
 function read(path: string): string | null {
   try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
@@ -73,6 +75,55 @@ function safe(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown 
     if (normalized !== undefined) result[key] = normalized;
   }
   return result;
+}
+
+function normalizeToolActivity(rawMessage: unknown, rawToolResults: unknown): NormalizedToolActivity[] {
+  const message = rawMessage && typeof rawMessage === "object" ? rawMessage as Record<string, unknown> : {};
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  const calls: Array<{ id: string | null; name: string; input: Record<string, unknown> }> = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const value = block as Record<string, unknown>;
+    if (value.type !== "toolCall" && value.type !== "tool_use") continue;
+    const name = typeof value.name === "string" ? value.name : typeof value.toolName === "string" ? value.toolName : "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)) continue;
+    let input: unknown = value.arguments ?? value.input ?? {};
+    if (typeof input === "string") {
+      try { input = JSON.parse(input); } catch { input = {}; }
+    }
+    const normalized = safe(input);
+    calls.push({
+      id: typeof value.id === "string" ? value.id : typeof value.toolCallId === "string" ? value.toolCallId : null,
+      name,
+      input: normalized && typeof normalized === "object" && !Array.isArray(normalized) ? normalized as Record<string, unknown> : {},
+    });
+  }
+  const normalizedResults = safe(rawToolResults);
+  const results = Array.isArray(normalizedResults) ? normalizedResults.filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)) : [];
+  const consumed = new Set<number>();
+  const activities = calls.map((call) => {
+    const resultIndex = results.findIndex((result, index) => !consumed.has(index) && (
+      call.id && (result.toolCallId === call.id || result.tool_call_id === call.id)
+      || result.toolName === call.name
+      || result.name === call.name
+    ));
+    const result = resultIndex >= 0 ? results[resultIndex] : null;
+    if (resultIndex >= 0) consumed.add(resultIndex);
+    const failed = result?.isError === true || result?.is_error === true || result?.status === "error" || typeof result?.exitCode === "number" && result.exitCode !== 0;
+    const content = result?.content;
+    const output = content === undefined ? undefined : (typeof content === "string" ? content : JSON.stringify(content)).slice(0, 64 * 1024);
+    return { name: call.name, input: call.input, status: failed ? "failed" as const : "succeeded" as const, ...(output ? { output } : {}) };
+  });
+  for (const [index, result] of results.entries()) {
+    if (consumed.has(index)) continue;
+    const name = typeof result.toolName === "string" ? result.toolName : typeof result.name === "string" ? result.name : "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)) continue;
+    const failed = result.isError === true || result.is_error === true || result.status === "error" || typeof result.exitCode === "number" && result.exitCode !== 0;
+    const content = result.content;
+    const output = content === undefined ? undefined : (typeof content === "string" ? content : JSON.stringify(content)).slice(0, 64 * 1024);
+    activities.push({ name, input: {}, status: failed ? "failed" : "succeeded", ...(output ? { output } : {}) });
+  }
+  return activities;
 }
 
 async function post(config: Connection, path: string, body: unknown, metadata: Record<string, string> = {}): Promise<boolean> {
@@ -219,6 +270,7 @@ export default function (pi: ExtensionAPI) {
       ts: new Date(timestamp).toISOString(), provider: turn.message.provider, model: turn.message.model, request_kind: "primary",
       request: { messages: safe(snapshot?.messages ?? []) }, response: { message: safe(turn.message), tool_results: safe(turn.toolResults ?? []) },
       usage: { input_tokens: Math.max(0, Number(turn.message.usage?.input || 0) + Number(turn.message.usage?.cacheRead || 0)), output_tokens: Math.max(0, Number(turn.message.usage?.output || 0)) },
+      tool_activity: normalizeToolActivity(turn.message, turn.toolResults),
       latency_ms: Math.max(0, Date.now() - (snapshot?.startedAt ?? timestamp)), title: sessionTitle(pi),
     };
     if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > MAX_EXCHANGE_BYTES) return;

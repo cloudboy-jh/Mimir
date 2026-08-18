@@ -1,6 +1,6 @@
 # Worker Architecture
 
-Status: architectural direction. The structural refactor described below has not yet been implemented.
+Status: implemented. This document records the authoritative Worker architecture.
 
 ## Decision
 
@@ -30,13 +30,17 @@ const app = new Hono<AppEnv>();
 installErrorHandling(app);
 installAuthentication(app);
 
-registerSystemRoutes(app);
+registerMachineRoutes(app);
 registerProxyRoutes(app);
 registerSessionRoutes(app);
 registerSearchRoutes(app);
 registerConfigRoutes(app);
 registerIntegrationRoutes(app);
-registerDashboardRoutes(app);
+registerDashboardAuthRoutes(app);
+registerDashboardSessionRoutes(app);
+registerDashboardExchangeRoutes(app);
+registerDashboardDeviceRoutes(app);
+registerDashboardFacetRoutes(app);
 
 export default app;
 ```
@@ -71,44 +75,59 @@ Machine authentication is an API audience, not a domain boundary. It should not 
 
 The Worker serves the Vue dashboard and its Access-protected APIs from the same deployment. The dashboard is a client of the canonical Worker API and may expose richer human-facing projections without creating a second session model.
 
-## Target source organization
+## Source organization
 
-The desired organization is by capability:
+The Worker source is organized by product capability:
 
 ```text
 worker/src/
 ├── index.ts                  Cloudflare deployment exports
 ├── app.ts                    middleware and route composition
-├── types.ts                  Worker bindings and Hono environment
-│
-├── routes/
-│   ├── system.ts             /whoami and service identity
-│   ├── proxy.ts              /v1/*
-│   ├── sessions.ts           /sessions/* and reconciliation
-│   ├── search.ts             /search
-│   ├── config.ts             /config
-│   ├── integrations.ts       /integrations/*
-│   └── dashboard/
-│       ├── auth.ts
-│       ├── sessions.ts
-│       ├── exchanges.ts
-│       ├── devices.ts
-│       └── facets.ts
-│
-├── capture.ts                redaction and searchable facet derivation
-├── reported-exchanges.ts     reconstructed exchange ingestion
-├── proxy.ts                  upstream request execution
-├── sessions.ts               session lifecycle and outcomes
-├── session-object.ts         live session coordination
-├── session-events.ts
-├── session-titles.ts
-├── session-summary.ts
-├── storage.ts
-├── auth.ts
-└── config.ts
+├── env.ts                    Worker bindings and Hono environment
+├── auth/
+│   └── auth-middleware.ts
+├── config/
+│   ├── config-routes.ts
+│   └── config-store.ts
+├── gateway/
+│   ├── openrouter-routes.ts
+│   └── upstream-proxy.ts
+├── exchanges/
+│   ├── capture-pipeline.ts
+│   ├── evidence.ts
+│   ├── redaction.ts
+│   ├── response-codec.ts
+│   ├── reported-exchange-routes.ts
+│   ├── reported-exchange-schema.ts
+│   └── *-dashboard-routes.ts
+├── sessions/
+│   ├── session-routes.ts
+│   ├── session-dashboard-routes.ts
+│   ├── session-object.ts
+│   ├── session-queries.ts
+│   ├── lifecycle.ts
+│   ├── outcomes.ts
+│   ├── capture-status.ts
+│   ├── events.ts
+│   ├── titles.ts
+│   └── summaries.ts
+├── machines/
+│   ├── machine-routes.ts
+│   └── device-dashboard-routes.ts
+├── integrations/
+│   └── integration-routes.ts
+├── search/
+│   └── search-routes.ts
+├── dashboard/
+│   ├── dashboard-shell-routes.ts
+│   └── cursors.ts
+└── shared/
+    └── ulid.ts
 ```
 
-This layout is directional rather than a requirement to create every file immediately. A file should exist only when it owns a coherent capability.
+HTTP adapters live with the capability they expose. Pure helpers and focused
+tests remain beside their owner. New files should be introduced only for a
+coherent responsibility, not to satisfy a layer template.
 
 ## Module rules
 
@@ -150,17 +169,22 @@ index.ts -> app.ts -> routes -> domain operations -> storage bindings
 
 Domain modules must not import route modules or dashboard code. Dashboard code must not become a second implementation of backend session behavior.
 
-## Current structural pressure
+## Implemented structure
 
-`worker/src/routes/machine.ts` currently registers service identity, machine association, sessions, reconciliation, log access, search, configuration, integrations, and model proxy routes. The name describes its authentication audience but conceals most of the backend architecture.
+`app.ts` registers machine identity, gateway, session, search, configuration,
+integration, and dashboard adapters explicitly. Each adapter lives in its
+owning feature package rather than a global `routes/` tree.
 
-`worker/src/routes/dashboard.ts` currently combines dashboard authentication, sessions, exchanges, diffs, live state, devices, and facets. It also contains queries that parallel machine API behavior.
+The broad capture and session modules are split by responsibility: capture
+orchestration, response decoding, redaction, evidence derivation, payload
+validation, session queries, lifecycle, outcomes, and capture status have
+separate owners. Tests live beside these modules; cross-capability contract
+suites remain under `worker/test/`.
 
-`worker/test/integration.test.ts` provides valuable end-to-end coverage but has grown into one large suite. Capability-owned integration suites will make ownership and fixtures clearer without reducing coverage.
+The deployment remains one Worker. Feature directories are internal ownership
+boundaries, not services.
 
-These are maintainability risks, not reasons to split the deployment.
-
-## Refactoring sequence
+## Refactoring record
 
 ### Structural commit
 

@@ -86,6 +86,38 @@ describe("Oh My Pi extension", () => {
     expect(eventKinds(harness.requests, "active-session")).toEqual(["heartbeat", "end"]);
   });
 
+  test("reports canonical tool activity for direct-provider turns", async () => {
+    const harness = createHarness();
+    await harness.invoke("session_start", {}, { cwd: "C:/repo", sessionManager: { getSessionId: () => "tool-session" } });
+    await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() - 25 }, { sessionManager: { buildSessionContext: () => ({ messages: [{ role: "user", content: "Update src/auth.ts" }] }) } });
+    await harness.invoke("turn_end", {
+      turnIndex: 0,
+      message: {
+        role: "assistant",
+        provider: "anthropic",
+        model: "claude-sonnet",
+        timestamp: Date.now(),
+        content: [
+          { type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/auth.ts" } },
+          { type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "src/auth.ts" } },
+        ],
+        usage: { input: 4, output: 2 },
+      },
+      toolResults: [
+        { toolCallId: "read-1", toolName: "read", content: "loaded" },
+        { toolCallId: "edit-1", toolName: "edit", isError: true, content: "Error: write failed" },
+      ],
+    });
+    const exchange = harness.requests.find((captured) => captured.url.endsWith("/sessions/tool-session/exchanges"));
+    expect(exchange?.body).toMatchObject({
+      request_kind: "primary",
+      tool_activity: [
+        { name: "read", input: { path: "src/auth.ts" }, status: "succeeded", output: "loaded" },
+        { name: "edit", input: { path: "src/auth.ts" }, status: "failed", output: "Error: write failed" },
+      ],
+    });
+  });
+
   test("switching unused drafts creates no session events", async () => {
     const harness = createHarness();
     await harness.invoke("session_start", {}, { cwd: "C:/repo", sessionManager: { getSessionId: () => "draft-a" } });

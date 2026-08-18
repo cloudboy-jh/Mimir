@@ -70,6 +70,7 @@ type DirectExchange = {
   request_kind: "primary";
   request: { message_id: string; created_at: string; messages: Array<{ role: "user"; content: Record<string, unknown>[] }> };
   response: { message_id: string; parent_message_id: string; role: "assistant"; created_at: string; completed_at: string; parts: Record<string, unknown>[]; stop_reason?: string; error?: unknown };
+  tool_activity: Array<{ name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string }>;
   usage: { input_tokens: number; output_tokens: number };
   latency_ms: number;
 };
@@ -302,6 +303,27 @@ function normalizeParts(parts: unknown): Record<string, unknown>[] {
   return normalized;
 }
 
+function normalizeToolActivity(parts: unknown): DirectExchange["tool_activity"] {
+  if (!Array.isArray(parts)) return [];
+  const activities: DirectExchange["tool_activity"] = [];
+  for (const raw of parts.slice(0, MAX_PARTS)) {
+    if (!raw || typeof raw !== "object") continue;
+    const part = raw as Record<string, unknown>;
+    if (part.type !== "tool") continue;
+    const name = boundedString(part.tool) ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)) continue;
+    const state = part.state && typeof part.state === "object" ? part.state as Record<string, unknown> : {};
+    const safeInput = jsonSafe(state.input);
+    const input = safeInput && typeof safeInput === "object" && !Array.isArray(safeInput) ? safeInput as Record<string, unknown> : {};
+    const failed = state.status === "error" || state.status === "failed";
+    const rawOutput = failed ? state.error ?? state.output : state.output;
+    const safeOutput = jsonSafe(rawOutput);
+    const output = safeOutput === undefined ? undefined : boundedString(typeof safeOutput === "string" ? safeOutput : JSON.stringify(safeOutput));
+    activities.push({ name, input, status: failed ? "failed" : "succeeded", ...(output ? { output } : {}) });
+  }
+  return activities;
+}
+
 function messageRecords(result: unknown): MessageRecord[] {
   const value = result && typeof result === "object" && "data" in result ? (result as { data?: unknown }).data : result;
   if (!Array.isArray(value)) return [];
@@ -347,6 +369,7 @@ function buildDirectExchange(info: unknown, result: unknown): DirectExchange | n
     request_kind: "primary",
     request: { message_id: parentID, created_at: new Date(userCreated).toISOString(), messages: [{ role: "user", content: normalizeParts(user.parts) }] },
     response: { message_id: id, parent_message_id: parentID, role: "assistant", created_at: new Date(created).toISOString(), completed_at: new Date(completed).toISOString(), parts: normalizeParts(assistant.parts) },
+    tool_activity: normalizeToolActivity(assistant.parts),
     usage: {
       input_tokens: tokenCount(tokens.input) + tokenCount(cache.read),
       output_tokens: tokenCount(tokens.output),
@@ -496,6 +519,13 @@ function outcomeGitEvidence(
   if (head) return head;
   const fallback = noteCommitRef(note);
   return fallback ? workspaceGitEvidence(worktree, directory, run, fallback) : null;
+}
+
+function landedGitEvidenceError(outcome: string, requestedCommit: string | undefined, evidence: GitEvidence | null): string | null {
+  if (outcome !== "landed") return null;
+  if (requestedCommit && !evidence) return "the requested Git commit could not be resolved; outcome was not recorded";
+  if (evidence && !evidence.patch) return "the landed Git commit has no retrievable patch; outcome was not recorded";
+  return null;
 }
 
 function createDeliveryQueue(
@@ -704,7 +734,10 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         },
         async execute(args, context) {
           context.metadata?.({ title: "Mimir receipt" });
-          const evidence = mergeOutcomeEvidence(args.evidence, outcomeGitEvidence(worktree, directory, args.evidence, args.commit));
+          const git = outcomeGitEvidence(worktree, directory, args.evidence, args.commit);
+          const gitError = landedGitEvidenceError(args.outcome, args.commit, git);
+          if (gitError) return `◆ Mimir  ${gitError}`;
+          const evidence = mergeOutcomeEvidence(args.evidence, git);
           await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
@@ -754,4 +787,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

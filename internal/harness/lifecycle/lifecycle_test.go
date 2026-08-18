@@ -176,6 +176,7 @@ func TestInstallFinishesIntegrationReconciliationAfterMechanicalCommit(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	root, hermesHome := t.TempDir(), t.TempDir()
 	service := New()
+	service.LoadReceipt = func() (install.Receipt, error) { return testReceipt(t, "", "", nil), nil }
 	service.InstallFiles = func(string, func() (string, error)) (install.InstallReport, error) {
 		cancel()
 		return install.InstallReport{Artifacts: install.ArtifactReport{Artifacts: []install.ArtifactResult{
@@ -268,6 +269,7 @@ func TestConnectedInstallRepairsHermesThroughLifecycle(t *testing.T) {
 func TestDisconnectedInstallOnlyEnablesSafeHermesPlugin(t *testing.T) {
 	hermesHome := t.TempDir()
 	service := New()
+	service.LoadReceipt = func() (install.Receipt, error) { return testReceipt(t, "", "", nil), nil }
 	service.InstallFiles = func(string, func() (string, error)) (install.InstallReport, error) {
 		return install.InstallReport{Artifacts: install.ArtifactReport{Artifacts: []install.ArtifactResult{{
 			Path: filepath.Join(hermesHome, "plugins", "mimir", "plugin.yaml"), Source: "plugins/hermes/plugin.yaml", Status: install.ArtifactInstalled,
@@ -299,6 +301,7 @@ func TestInstallDoesNotConfigureProviderUntilArtifactsAreReady(t *testing.T) {
 	root, hermesHome := t.TempDir(), t.TempDir()
 	providerCalls := 0
 	service := New()
+	service.LoadReceipt = func() (install.Receipt, error) { return testReceipt(t, "", "", nil), nil }
 	service.InstallFiles = func(string, func() (string, error)) (install.InstallReport, error) {
 		return install.InstallReport{Artifacts: install.ArtifactReport{Artifacts: []install.ArtifactResult{
 			{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactConflict},

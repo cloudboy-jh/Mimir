@@ -45,6 +45,10 @@ func TestOfficialPayloadsProduceCanonicalExchanges(t *testing.T) {
 			}
 			request := sent[0].Body["request"].(map[string]any)
 			response := sent[0].Body["response"].(map[string]any)
+			toolActivity, ok := sent[0].Body["tool_activity"].([]any)
+			if !ok || len(toolActivity) != 0 {
+				t.Fatalf("tool_activity = %#v", sent[0].Body["tool_activity"])
+			}
 			if !strings.Contains(toJSON(request), "fix it") || response["content"] != "fixed" || sent[0].Body["request_kind"] != "primary" {
 				t.Fatalf("exchange = %#v", sent[0].Body)
 			}

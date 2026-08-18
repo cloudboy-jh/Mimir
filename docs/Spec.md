@@ -223,6 +223,12 @@ dashboard outcome form accepts a single commit, URL, or note entry. Remotes are
 normalized to a credential-free `https` URL, and local-path remotes are
 omitted. Commit values are never inferred from refs.
 
+Landed outcomes carrying Git evidence require an exact 40-character commit,
+explicit `provenance`, and a non-empty patch. The Worker writes the redacted
+patch to R2 before appending the outcome event; failed validation or persistence
+leaves the prior outcome unchanged. User-authored landed outcomes without Git
+evidence remain valid.
+
 The dashboard derives changed-file counts and per-file `+`/`−` totals from the
 stored patch and links a commit only from `commit_url` or a recorded
 `repository_url`; without a stored remote it shows the bare SHA. Commit-derived
@@ -289,6 +295,12 @@ Mimir persists two exchange provenances with different guarantees:
   Worker applies the same redaction, R2 persistence, searchable metadata, and
   capture-state accounting, but only fields exposed by the harness can be
   retained.
+
+Every reported exchange carries a canonical `tool_activity` array. Each entry
+contains a bounded tool name, a JSON object input, `succeeded` or `failed`
+status, and an optional bounded output string. Integrations submit an empty
+array when their harness does not expose tool calls. The Worker validates and
+redacts this array before deriving file and error facets.
 
 OpenCode reconstructs non-OpenRouter exchanges from its session store, including
 supported message and tool parts, model/provider, usage, timing, finish reason,

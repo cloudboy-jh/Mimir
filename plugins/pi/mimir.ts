@@ -61,6 +61,7 @@ type AssistantMessage = {
   timestamp?: number;
 };
 type TurnSnapshot = { startedAt: number; request: { messages: unknown[] } };
+type NormalizedToolActivity = { name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string };
 
 function parseMimirConfig(text: string): { url?: string } {
   const match = text.match(/^\s*url\s*=\s*"?([^"\n]+?)"?\s*$/m);
@@ -180,6 +181,58 @@ function normalizeMessages(messages: unknown): unknown[] {
   });
 }
 
+function normalizeToolActivity(rawMessage: unknown, rawToolResults: unknown): NormalizedToolActivity[] {
+  const message = rawMessage && typeof rawMessage === "object" ? rawMessage as Record<string, unknown> : {};
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  const calls: Array<{ id: string | null; name: string; input: Record<string, unknown> }> = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const value = block as Record<string, unknown>;
+    if (value.type !== "toolCall" && value.type !== "tool_use") continue;
+    const name = typeof value.name === "string" ? value.name : typeof value.toolName === "string" ? value.toolName : "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)) continue;
+    let input: unknown = value.arguments ?? value.input ?? {};
+    if (typeof input === "string") {
+      try {
+        input = JSON.parse(input);
+      } catch {
+        input = {};
+      }
+    }
+    const safeInput = jsonSafe(input);
+    calls.push({
+      id: typeof value.id === "string" ? value.id : typeof value.toolCallId === "string" ? value.toolCallId : null,
+      name,
+      input: safeInput && typeof safeInput === "object" && !Array.isArray(safeInput) ? safeInput as Record<string, unknown> : {},
+    });
+  }
+  const results = normalizeMessages(rawToolResults).filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value));
+  const consumed = new Set<number>();
+  const activities = calls.map((call) => {
+    const resultIndex = results.findIndex((result, index) => !consumed.has(index) && (
+      call.id && (result.toolCallId === call.id || result.tool_call_id === call.id)
+      || result.toolName === call.name
+      || result.name === call.name
+    ));
+    const result = resultIndex >= 0 ? results[resultIndex] : null;
+    if (resultIndex >= 0) consumed.add(resultIndex);
+    const failed = result?.isError === true || result?.is_error === true || result?.status === "error" || typeof result?.exitCode === "number" && result.exitCode !== 0;
+    const content = result?.content;
+    const output = content === undefined ? undefined : boundedString(typeof content === "string" ? content : JSON.stringify(content));
+    return { name: call.name, input: call.input, status: failed ? "failed" as const : "succeeded" as const, ...(output ? { output } : {}) };
+  });
+  for (const [index, result] of results.entries()) {
+    if (consumed.has(index)) continue;
+    const name = typeof result.toolName === "string" ? result.toolName : typeof result.name === "string" ? result.name : "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)) continue;
+    const failed = result.isError === true || result.is_error === true || result.status === "error" || typeof result.exitCode === "number" && result.exitCode !== 0;
+    const content = result.content;
+    const output = content === undefined ? undefined : boundedString(typeof content === "string" ? content : JSON.stringify(content));
+    activities.push({ name, input: {}, status: failed ? "failed" : "succeeded", ...(output ? { output } : {}) });
+  }
+  return activities;
+}
+
 function byteLength(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
@@ -204,6 +257,7 @@ function buildExchange(sessionID: string, turnIndex: number, snapshot: TurnSnaps
     request_kind: "primary",
     request,
     response,
+    tool_activity: normalizeToolActivity(rawMessage, rawToolResults),
     usage: {
       input_tokens: Math.max(0, Math.floor((usage.input ?? 0) + (usage.cacheRead ?? 0))),
       output_tokens: Math.max(0, Math.floor(usage.output ?? 0)),
@@ -404,6 +458,7 @@ export const __testing = {
   boundedString,
   jsonSafe,
   normalizeMessages,
+  normalizeToolActivity,
   buildExchange,
   createDeliveryQueue,
 };

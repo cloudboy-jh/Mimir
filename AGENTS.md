@@ -4,7 +4,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 
 ## Repository
 
-- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` assembles middleware and routes; `routes/`, `auth.ts`, `proxy.ts`, `capture.ts`, `sessions.ts`, and `config.ts` own backend behavior.
+- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` is the composition root; feature packages under `auth/`, `config/`, `dashboard/`, `exchanges/`, `gateway/`, `integrations/`, `machines/`, `search/`, `sessions/`, and `shared/` own routes, domain logic, storage operations, and focused tests.
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
 - CLI: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, and `internal/doctor/`. Keep the Go CLI standard-library-only.

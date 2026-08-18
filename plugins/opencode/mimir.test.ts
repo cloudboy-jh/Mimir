@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -80,6 +80,31 @@ describe("session outcome tools", () => {
       expect(title).toBe("Mimir receipt");
       expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/outcome", method: "POST" }));
       expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/status", method: "GET" }));
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
+      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
+
+  it("does not overwrite the outcome when explicit Git evidence cannot be resolved", async () => {
+    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok";
+    const originalFetch = globalThis.fetch;
+    const requests: string[] = [];
+    globalThis.fetch = async (input) => {
+      requests.push(String(input));
+      return Response.json({ ok: true });
+    };
+    try {
+      const hooks = await plugin.server({ directory: "/repo/does-not-exist" } as never);
+      const output = await hooks.tool!.mimir_session_outcome.execute(
+        { outcome: "landed", reason: "tests passed", commit: "a329f20" },
+        { sessionID: "child/session", metadata() {} } as never,
+      );
+      expect(output).toContain("requested Git commit could not be resolved; outcome was not recorded");
+      expect(requests.some((url) => url.endsWith("/sessions/child%2Fsession/outcome"))).toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
       if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
@@ -242,8 +267,8 @@ describe("direct-provider exchanges", () => {
       parts: [
         { type: "reasoning", text: "trace it" },
         { type: "text", text: "fixed" },
-        { type: "tool", callID: "call-1", tool: "bash", state: { status: "completed", input: { command: "bun test", invalid: 1n }, output: "pass", title: "Test", metadata: { ignored: true } } },
-        { type: "tool", callID: "call-2", tool: "read", state: { status: "error", input: { path: "missing" }, error: "not found" } },
+        { type: "tool", callID: "call-1", tool: "read", state: { status: "completed", input: { path: "src/auth.ts", invalid: 1n }, output: "loaded", title: "Read", metadata: { ignored: true } } },
+        { type: "tool", callID: "call-2", tool: "edit", state: { status: "error", input: { path: "src/auth.ts" }, error: "write failed" } },
       ],
     },
   ] };
@@ -280,7 +305,11 @@ describe("direct-provider exchanges", () => {
     expect(calls[0]?.body).toMatchObject({
       exchange_id: "msg-assistant", ts: new Date(3_250).toISOString(), provider: "anthropic", model: "claude-sonnet-4-6",
       request: { message_id: "msg-user", messages: [{ role: "user", content: [{ type: "text", text: "fix the bug" }, { type: "file", mime: "text/plain", filename: "bug.txt" }] }] },
-      response: { message_id: "msg-assistant", parent_message_id: "msg-user", parts: [{ type: "reasoning", text: "trace it" }, { type: "text", text: "fixed" }, { type: "tool", input: { command: "bun test", invalid: "1" }, output: "pass" }, { type: "tool", error: "not found" }] },
+      response: { message_id: "msg-assistant", parent_message_id: "msg-user", parts: [{ type: "reasoning", text: "trace it" }, { type: "text", text: "fixed" }, { type: "tool", input: { path: "src/auth.ts", invalid: "1" }, output: "loaded" }, { type: "tool", input: { path: "src/auth.ts" }, error: "write failed" }] },
+      tool_activity: [
+        { name: "read", input: { path: "src/auth.ts", invalid: "1" }, status: "succeeded", output: "loaded" },
+        { name: "edit", input: { path: "src/auth.ts" }, status: "failed", output: "write failed" },
+      ],
       usage: { input_tokens: 14, output_tokens: 7 }, latency_ms: 1_250,
     });
   });
@@ -552,6 +581,24 @@ describe("outcomeGitEvidence", () => {
     };
     expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)?.commit).toBe(head);
     expect(calls).not.toContain("rev-parse --verify a329f20^{commit}");
+  });
+});
+
+describe("landedGitEvidenceError", () => {
+  const commit = "a".repeat(40);
+
+  it("leaves the prior outcome untouched when explicit Git inference fails", () => {
+    expect(landedGitEvidenceError("landed", "a329f20", null)).toContain("outcome was not recorded");
+  });
+
+  it("requires a retrievable patch for an inferred landed commit", () => {
+    expect(landedGitEvidenceError("landed", undefined, { commit, provenance: "opencode-plugin" })).toContain("no retrievable patch");
+    expect(landedGitEvidenceError("landed", undefined, { commit, patch: "diff --git a/a b/a", provenance: "opencode-plugin" })).toBeNull();
+  });
+
+  it("does not impose Git evidence on non-Git outcomes", () => {
+    expect(landedGitEvidenceError("landed", undefined, null)).toBeNull();
+    expect(landedGitEvidenceError("discarded", "a329f20", null)).toBeNull();
   });
 });
 

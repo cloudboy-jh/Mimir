@@ -370,9 +370,10 @@ func exchangeDelivery(harness, session, repo, key, ts, model, prompt, response, 
 	provider := map[string]string{"claude-code": "anthropic", "codex": "openai"}[harness]
 	body := map[string]any{
 		"exchange_id": id, "ts": ts, "model": model, "request_kind": "primary",
-		"request":  map[string]any{"messages": []any{map[string]any{"role": "user", "content": prompt}}},
-		"response": map[string]any{"role": "assistant", "content": response},
-		"usage":    map[string]any{"input_tokens": 0, "output_tokens": 0}, "latency_ms": 0,
+		"request":       map[string]any{"messages": []any{map[string]any{"role": "user", "content": prompt}}},
+		"response":      map[string]any{"role": "assistant", "content": response},
+		"tool_activity": []any{},
+		"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0}, "latency_ms": 0,
 	}
 	if provider != "" {
 		body["provider"] = provider
