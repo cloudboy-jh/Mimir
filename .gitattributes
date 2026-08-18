@@ -1,3 +1,4 @@
 worker/web/** text eol=lf
+worker/web/public/** -text
 worker/web/dist/** -text
 internal/demoassets/static/** -text
