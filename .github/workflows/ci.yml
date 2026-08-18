@@ -40,13 +40,6 @@ jobs:
         working-directory: worker
       - run: bun run check:production-assets
       - run: bun run check:demo-assets
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: canonical-dashboard-assets
-          path: |
-            worker/web/dist
-            internal/demoassets/static
       - run: bun run verify:dashboard-builds
       - run: go test ./...
         env:
