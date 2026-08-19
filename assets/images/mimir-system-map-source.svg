@@ -1,133 +1,138 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" role="img" aria-labelledby="title desc">
-  <title id="title">Mimir system architecture</title>
-  <desc id="desc">OpenRouter-compatible traffic and harness reports enter a private Cloudflare Worker. The Worker authenticates machine and browser traffic, proxies model requests, redacts evidence, coordinates sessions with a Durable Object, stores full exchanges in R2 and searchable metadata in D1, and serves the private dashboard and CLI.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">How Mimir captures and serves agent memory</title>
+  <desc id="desc">The installed agent harness captures work through full proxy exchanges, bounded direct-provider reconstructions, and lifecycle events. The private Mimir Worker authenticates, redacts, persists, and coordinates sessions. The separate Mimir CLI installs and configures Mimir, then searches and inspects saved sessions.</desc>
   <defs>
     <marker id="arrow-teal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#2dd4bf"/></marker>
     <marker id="arrow-ink" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#a1a19b"/></marker>
     <style>
       .sans { font-family: "IBM Plex Sans", "Segoe UI", Arial, sans-serif; }
       .mono { font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; }
-      .title { fill:#f2f2ef; font-size:28px; font-weight:600; letter-spacing:-.5px }
-      .subtitle { fill:#a1a19b; font-size:14px }
-      .section { fill:#a1a19b; font-size:11px; font-weight:600; letter-spacing:1.4px }
-      .heading { fill:#f2f2ef; font-size:17px; font-weight:600 }
-      .body { fill:#c9c9c4; font-size:13px }
-      .micro { fill:#a1a19b; font-size:11px }
-      .machine { fill:#e7e7e2; font-size:12px }
+      .title { fill:#f2f2ef; font-size:30px; font-weight:600; letter-spacing:-.6px }
+      .subtitle { fill:#a1a19b; font-size:15px }
+      .section { fill:#a1a19b; font-size:12px; font-weight:600; letter-spacing:1.4px }
+      .heading { fill:#f2f2ef; font-size:20px; font-weight:600 }
+      .subheading { fill:#e7e7e2; font-size:16px; font-weight:600 }
+      .body { fill:#c9c9c4; font-size:15px }
+      .micro { fill:#a1a19b; font-size:12px }
+      .machine { fill:#e7e7e2; font-size:13px }
       .panel { fill:#191918; stroke:#41413d; stroke-width:1 }
       .inner { fill:#20201f; stroke:#41413d; stroke-width:1 }
       .boundary { fill:#151514; stroke:#62625d; stroke-width:1; stroke-dasharray:5 5 }
       .rule { stroke:#363633; stroke-width:1 }
-      .flow-full { fill:none; stroke:#2dd4bf; stroke-width:2; marker-end:url(#arrow-teal) }
-      .flow-report { fill:none; stroke:#a1a19b; stroke-width:2; marker-end:url(#arrow-ink) }
-      .flow-event { fill:none; stroke:#a1a19b; stroke-width:2; stroke-dasharray:5 5; marker-end:url(#arrow-ink) }
+      .flow-proxy { fill:none; stroke:#2dd4bf; stroke-width:2.5; marker-end:url(#arrow-teal) }
+      .flow-exchange { fill:none; stroke:#a1a19b; stroke-width:2; marker-end:url(#arrow-ink) }
+      .flow-event { fill:none; stroke:#a1a19b; stroke-width:2; stroke-dasharray:6 6; marker-end:url(#arrow-ink) }
       .flow-api { fill:none; stroke:#a1a19b; stroke-width:2; marker-start:url(#arrow-ink); marker-end:url(#arrow-ink) }
+      .flow-upstream { fill:none; stroke:#2dd4bf; stroke-width:2.5; marker-start:url(#arrow-teal); marker-end:url(#arrow-teal) }
     </style>
   </defs>
 
-  <rect width="1400" height="780" rx="8" fill="#111110"/>
-  <rect x=".5" y=".5" width="1399" height="779" rx="7.5" fill="none" stroke="#363633"/>
-  <text x="40" y="48" class="sans title">Mimir system architecture</text>
-  <text x="40" y="75" class="sans subtitle">One private Worker coordinates transport evidence, reconstructed exchanges, and session lifecycle inside your Cloudflare account.</text>
-  <line x1="40" y1="100" x2="1360" y2="100" class="rule"/>
+  <rect width="1400" height="860" rx="8" fill="#111110"/>
+  <rect x=".5" y=".5" width="1399" height="859" rx="7.5" fill="none" stroke="#363633"/>
+  <text x="40" y="46" class="sans title">How Mimir captures agent work</text>
+  <text x="40" y="73" class="sans subtitle">The harness captures. The Worker makes it durable. The CLI sets it up and searches it.</text>
+  <line x1="40" y1="104" x2="1360" y2="104" class="rule"/>
 
-  <text x="40" y="128" class="sans section">AGENTS AND PROVIDERS</text>
-  <text x="382" y="128" class="sans section">YOUR CLOUDFLARE ACCOUNT</text>
-  <text x="1144" y="128" class="sans section">PRIVATE CLIENTS</text>
+  <rect x="1110" y="24" width="250" height="62" rx="6" class="panel"/>
+  <text x="1132" y="49" class="sans subheading">OpenRouter</text>
+  <text x="1132" y="70" class="sans micro">model upstream</text>
 
-  <rect x="370" y="142" width="720" height="520" rx="7" class="boundary"/>
-  <text x="390" y="166" class="mono micro">Cloudflare trust boundary</text>
+  <text x="40" y="132" class="sans section">YOUR MACHINE</text>
+  <text x="500" y="132" class="sans section">YOUR CLOUDFLARE ACCOUNT</text>
 
-  <rect x="40" y="168" width="286" height="166" rx="6" class="panel"/>
-  <circle cx="66" cy="196" r="6" fill="#2dd4bf"/>
-  <text x="82" y="202" class="sans heading">Proxy capture</text>
-  <text x="64" y="236" class="sans body">OpenRouter-compatible requests</text>
-  <text x="64" y="258" class="sans body">and streaming responses</text>
-  <line x1="64" y1="280" x2="302" y2="280" class="rule"/>
-  <text x="64" y="307" class="mono machine">full transport envelope</text>
+  <rect x="40" y="146" width="390" height="674" rx="7" class="boundary"/>
+  <rect x="500" y="146" width="860" height="674" rx="7" class="boundary"/>
 
-  <rect x="40" y="370" width="286" height="220" rx="6" class="panel"/>
-  <circle cx="66" cy="398" r="6" fill="#a1a19b"/>
-  <text x="82" y="404" class="sans heading">Harness reporting</text>
-  <text x="64" y="438" class="sans body">OpenCode · Hermes · Claude Code</text>
-  <text x="64" y="460" class="sans body">Codex · Cursor</text>
-  <line x1="64" y1="482" x2="302" y2="482" class="rule"/>
-  <text x="64" y="510" class="mono machine">bounded reconstructed exchange</text>
-  <text x="64" y="540" class="mono machine">lifecycle · title · outcome</text>
-  <text x="64" y="568" class="sans micro">Hermes direct providers are event-only.</text>
+  <rect x="64" y="174" width="342" height="420" rx="7" class="panel"/>
+  <circle cx="90" cy="205" r="6" fill="#2dd4bf"/>
+  <text x="107" y="212" class="sans heading">Agent harness</text>
+  <text x="88" y="241" class="sans body">Captures the work as it happens.</text>
 
-  <rect x="410" y="188" width="350" height="428" rx="7" class="panel"/>
-  <text x="438" y="222" class="sans heading">Mimir Worker</text>
-  <text x="438" y="246" class="mono machine">Hono · OpenRouter-compatible API</text>
-  <line x1="438" y1="266" x2="732" y2="266" class="rule"/>
+  <rect x="88" y="266" width="294" height="88" rx="5" class="inner"/>
+  <text x="108" y="292" class="sans subheading">1  Proxied model traffic</text>
+  <text x="108" y="317" class="sans body">Adds the exact session ID</text>
+  <text x="108" y="339" class="mono micro">complete transport exchange</text>
 
-  <rect x="438" y="288" width="294" height="72" rx="5" class="inner"/>
-  <text x="458" y="315" class="sans body">Authentication and request routing</text>
-  <text x="458" y="338" class="sans micro">Machine bearer tokens · Access JWTs</text>
+  <rect x="88" y="370" width="294" height="98" rx="5" class="inner"/>
+  <text x="108" y="396" class="sans subheading">2  Direct-provider turn</text>
+  <text x="108" y="421" class="sans body">Reconstructs the completed turn</text>
+  <text x="108" y="446" class="mono micro">prompt · response · tool activity</text>
 
-  <rect x="438" y="378" width="294" height="88" rx="5" class="inner"/>
-  <text x="458" y="405" class="sans body">Proxy, stream, redact, persist</text>
-  <text x="458" y="428" class="sans micro">Redaction runs before R2 storage</text>
-  <text x="458" y="447" class="sans micro">Persistence continues with waitUntil</text>
+  <rect x="88" y="484" width="294" height="86" rx="5" class="inner"/>
+  <text x="108" y="510" class="sans subheading">3  Session lifecycle</text>
+  <text x="108" y="536" class="sans body">Heartbeat · title · outcome · end</text>
+  <text x="108" y="558" class="mono micro">commit + patch evidence</text>
 
-  <rect x="438" y="484" width="294" height="104" rx="5" class="inner"/>
-  <text x="458" y="512" class="sans body">Session Object</text>
-  <text x="458" y="535" class="sans micro">Authoritative x-mimir-session boundary</text>
-  <text x="458" y="554" class="sans micro">Liveness · retries · generations</text>
-  <text x="458" y="573" class="sans micro">Finalization · evidenced outcome</text>
+  <rect x="64" y="622" width="342" height="170" rx="7" class="panel"/>
+  <circle cx="90" cy="653" r="6" fill="#a1a19b"/>
+  <text x="107" y="660" class="sans heading">Mimir CLI</text>
+  <text x="88" y="692" class="sans subheading">Setup</text>
+  <text x="151" y="692" class="sans body">install · deploy · configure</text>
+  <text x="88" y="721" class="sans subheading">Search</text>
+  <text x="156" y="721" class="sans body">find sessions · inspect evidence</text>
+  <line x1="88" y1="742" x2="382" y2="742" class="rule"/>
+  <text x="88" y="769" class="mono machine">does not capture model traffic</text>
 
-  <rect x="802" y="210" width="244" height="152" rx="6" class="panel"/>
-  <text x="826" y="243" class="mono heading">R2</text>
-  <text x="826" y="270" class="sans body">Redacted exchange archive</text>
-  <line x1="826" y1="290" x2="1022" y2="290" class="rule"/>
-  <text x="826" y="315" class="sans micro">Full request/response objects</text>
-  <text x="826" y="337" class="sans micro">Raw evidence stays out of D1</text>
+  <rect x="524" y="174" width="522" height="618" rx="7" class="panel"/>
+  <text x="550" y="211" class="sans heading">Mimir Worker</text>
+  <text x="550" y="238" class="sans body">Canonical API and private memory plane</text>
 
-  <rect x="802" y="414" width="244" height="174" rx="6" class="panel"/>
-  <text x="826" y="447" class="mono heading">D1</text>
-  <text x="826" y="474" class="sans body">Session index and config</text>
-  <line x1="826" y1="494" x2="1022" y2="494" class="rule"/>
-  <text x="826" y="519" class="sans micro">Searchable exchange metadata</text>
-  <text x="826" y="541" class="sans micro">Titles · capture · outcomes</text>
-  <text x="826" y="563" class="sans micro">R2 references · machine tokens</text>
+  <rect x="550" y="266" width="470" height="88" rx="5" class="inner"/>
+  <text x="574" y="294" class="sans subheading">Model gateway</text>
+  <text x="574" y="320" class="sans body">Authenticate · stream upstream · capture asynchronously</text>
+  <text x="574" y="342" class="mono micro">preserves the live response</text>
 
-  <rect x="1140" y="210" width="220" height="152" rx="6" class="panel"/>
-  <text x="1164" y="243" class="sans heading">Private dashboard</text>
-  <text x="1164" y="271" class="sans body">Sessions first</text>
-  <text x="1164" y="293" class="sans body">Requests as evidence</text>
-  <line x1="1164" y1="315" x2="1336" y2="315" class="rule"/>
-  <text x="1164" y="339" class="mono micro">Cloudflare Access</text>
+  <rect x="550" y="370" width="470" height="98" rx="5" class="inner"/>
+  <text x="574" y="398" class="sans subheading">Evidence pipeline</text>
+  <text x="574" y="424" class="sans body">Validate · normalize tools, files, errors · redact</text>
+  <text x="574" y="450" class="mono micro">persist full evidence to R2 · index facets in D1</text>
 
-  <rect x="1140" y="414" width="220" height="174" rx="6" class="panel"/>
-  <text x="1164" y="447" class="sans heading">Agent CLI</text>
-  <text x="1164" y="475" class="mono machine">list · search · inspect</text>
-  <text x="1164" y="498" class="mono machine">status · outcome · doctor</text>
-  <line x1="1164" y1="520" x2="1336" y2="520" class="rule"/>
-  <text x="1164" y="545" class="sans micro">Canonical Worker API client</text>
-  <text x="1164" y="567" class="sans micro">Per-machine bearer token</text>
+  <rect x="550" y="484" width="470" height="108" rx="5" class="inner"/>
+  <text x="574" y="512" class="sans subheading">Session coordinator</text>
+  <text x="574" y="538" class="sans body">One Durable Object per exact session ID</text>
+  <text x="574" y="564" class="sans body">Liveness · generations · retries · finalization</text>
+  <text x="574" y="582" class="mono micro">capture state and work outcome remain separate</text>
 
-  <path d="M326 246H382V420H410" class="flow-full"/>
-  <text x="342" y="232" class="mono micro">stream</text>
-  <path d="M326 476H410" class="flow-report"/>
-  <text x="334" y="463" class="mono micro">exchange</text>
-  <path d="M326 540H382V548H410" class="flow-event"/>
-  <text x="334" y="529" class="mono micro">events</text>
+  <rect x="550" y="680" width="470" height="82" rx="5" class="inner"/>
+  <text x="574" y="710" class="sans subheading">Canonical session API</text>
+  <text x="574" y="738" class="sans body">Setup · search · inspect · status · outcomes</text>
 
-  <path d="M760 422H780V286H802" class="flow-full"/>
-  <text x="776" y="273" class="mono micro" text-anchor="end">objects</text>
-  <path d="M760 536H802" class="flow-report"/>
-  <text x="770" y="523" class="mono micro">metadata</text>
-  <path d="M760 320H780V178H1104V286H1140" class="flow-api"/>
-  <text x="914" y="168" class="mono micro">Access-protected dashboard API</text>
-  <path d="M760 552H780V638H1104V501H1140" class="flow-api"/>
-  <text x="890" y="655" class="mono micro">machine-token API</text>
+  <text x="1090" y="198" class="sans section">DURABLE MEMORY</text>
+  <rect x="1080" y="218" width="252" height="142" rx="6" class="panel"/>
+  <text x="1104" y="251" class="mono heading">R2</text>
+  <text x="1104" y="278" class="sans body">Complete redacted evidence</text>
+  <line x1="1104" y1="296" x2="1308" y2="296" class="rule"/>
+  <text x="1104" y="321" class="sans micro">Exchanges · transcripts</text>
+  <text x="1104" y="342" class="sans micro">Outcome patches</text>
 
-  <line x1="40" y1="704" x2="1360" y2="704" class="rule"/>
-  <line x1="48" y1="735" x2="82" y2="735" class="flow-full"/>
-  <text x="94" y="740" class="sans micro">full proxy exchange</text>
-  <line x1="270" y1="735" x2="304" y2="735" class="flow-report"/>
-  <text x="316" y="740" class="sans micro">reconstructed exchange or API data</text>
-  <line x1="610" y1="735" x2="644" y2="735" class="flow-event"/>
-  <text x="656" y="740" class="sans micro">lifecycle-only event</text>
-  <text x="1360" y="740" text-anchor="end" class="sans micro">Raw exchanges in R2 · searchable metadata and references in D1</text>
+  <rect x="1080" y="394" width="252" height="176" rx="6" class="panel"/>
+  <text x="1104" y="427" class="mono heading">D1</text>
+  <text x="1104" y="454" class="sans body">Searchable session record</text>
+  <line x1="1104" y1="472" x2="1308" y2="472" class="rule"/>
+  <text x="1104" y="497" class="sans micro">Tools · files · errors</text>
+  <text x="1104" y="519" class="sans micro">Titles · capture · outcomes</text>
+  <text x="1104" y="541" class="sans micro">R2 references · machine config</text>
+
+  <rect x="1080" y="680" width="252" height="82" rx="6" class="panel"/>
+  <text x="1104" y="711" class="sans subheading">Private dashboard</text>
+  <text x="1104" y="738" class="sans body">Browse and investigate sessions</text>
+
+  <path d="M406 310H500V310H550" class="flow-proxy"/>
+  <text x="448" y="297" class="mono micro">full proxy</text>
+  <path d="M406 420H550" class="flow-exchange"/>
+  <text x="440" y="407" class="mono micro">reconstructed</text>
+  <path d="M406 530H550" class="flow-event"/>
+  <text x="451" y="517" class="mono micro">lifecycle</text>
+
+  <path d="M785 266V116H1235V86" class="flow-upstream"/>
+  <text x="920" y="132" class="mono micro">live model stream</text>
+
+  <path d="M1020 420H1050V289H1080" class="flow-exchange"/>
+  <text x="1067" y="278" text-anchor="end" class="mono micro">objects</text>
+  <path d="M1020 538H1050V482H1080" class="flow-exchange"/>
+  <text x="1067" y="471" text-anchor="end" class="mono micro">state + index</text>
+
+  <path d="M406 706H550" class="flow-api"/>
+  <text x="436" y="692" class="mono micro">setup + search</text>
+  <path d="M1020 721H1080" class="flow-api"/>
 </svg>

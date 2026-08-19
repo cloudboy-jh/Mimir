@@ -24,7 +24,7 @@ const result = spawnSync(browser, [
   "--disable-gpu",
   "--hide-scrollbars",
   "--force-device-scale-factor=1",
-  "--window-size=1400,780",
+  "--window-size=1400,860",
   `--screenshot=${output}`,
   pathToFileURL(source).href,
 ], { stdio: "inherit" });

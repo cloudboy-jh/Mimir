@@ -124,7 +124,7 @@ Mimir deliberately keeps two facts separate:
 
 ## How Mimir works
 
-![Three agent evidence paths enter the private Mimir Worker, which coordinates sessions and stores redacted exchanges in R2 and searchable metadata in D1 for the dashboard and CLI.](assets/images/mimir-system-map.png)
+![The agent harness captures full proxy exchanges, reconstructed direct-provider turns, and lifecycle events. The private Mimir Worker makes that evidence durable, while the separate CLI handles setup and search.](assets/images/mimir-system-map.png)
 
 There are three inputs to one session record:
 
