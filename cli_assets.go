@@ -29,7 +29,7 @@ var LogoPNG []byte
 //go:embed worker/src/integrations/integration-routes.ts
 //go:embed worker/src/machines/device-dashboard-routes.ts worker/src/machines/machine-routes.ts
 //go:embed worker/src/search/search-routes.ts
-//go:embed worker/src/sessions/capture-status.ts worker/src/sessions/events.ts worker/src/sessions/lifecycle.ts worker/src/sessions/outcomes.ts worker/src/sessions/session-dashboard-routes.ts worker/src/sessions/session-object.ts worker/src/sessions/session-queries.ts worker/src/sessions/session-routes.ts worker/src/sessions/summaries.ts worker/src/sessions/titles.ts
+//go:embed worker/src/sessions/capture-status.ts worker/src/sessions/events.ts worker/src/sessions/git-artifacts.ts worker/src/sessions/lifecycle.ts worker/src/sessions/outcomes.ts worker/src/sessions/session-dashboard-routes.ts worker/src/sessions/session-object.ts worker/src/sessions/session-queries.ts worker/src/sessions/session-routes.ts worker/src/sessions/summaries.ts worker/src/sessions/titles.ts
 //go:embed worker/src/shared/ulid.ts
 //go:embed worker/migrations
 //go:embed worker/package.json worker/package-lock.json worker/tsconfig.json worker/worker-configuration.d.ts worker/wrangler.jsonc

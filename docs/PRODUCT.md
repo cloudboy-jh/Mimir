@@ -14,7 +14,7 @@ Mimir is for an individual developer working across coding agents, repositories,
 
 ## Product Purpose
 
-The dashboard turns Mimir's captured model traffic into understandable work sessions. Its primary job is one-click session understanding: what the agent attempted, which models and tools were involved, what files and errors mattered, and whether the work landed, was discarded, was abandoned, or remains unresolved. The request log is supporting evidence, not the center of the product.
+The dashboard turns Mimir's captured model traffic and recovered local harness history into understandable work sessions. Its primary job is one-click session understanding: what the agent attempted, which models and tools were involved, what files, errors, and independent Git commits mattered, and whether the work landed, was discarded, was abandoned, or remains unresolved. The request log is supporting evidence, not the center of the product.
 
 Success means a developer can open Mimir, recognize the relevant session, and understand its shape and outcome without reading a transcript from the beginning.
 
@@ -38,6 +38,8 @@ Do not resemble a generic SaaS dashboard. Avoid pill navigation, decorative grad
 4. Let the wordmark carry the identity. Keep the surrounding interface quiet enough that Mimir feels distinctive without themed component gimmicks.
 5. Keep persistence and work result separate. Empty, Pending, Saved, Failed, or Partial capture describes durable memory; Landed, Discarded, Abandoned, or Unresolved describes the work outcome.
 6. Make persistence visible without turning it into log output. After meaningful work, the harness should show one compact receipt such as `Saved to Mimir · 14 exchanges`; when dashboard Access is configured, a `View session` action provides exact IDs, timestamps, and failure details.
+7. Preserve work evidence independently from outcome. A session can contain several commit artifacts even when it was discarded, abandoned, or remains unresolved; do not collapse Git history into a single landed-state badge.
+8. Make repair safe and unsurprising. Local import and backfill should preview bounded candidates in a terminal, require explicit confirmation for noninteractive bulk work, and merge deterministically so reruns fill gaps without duplicating evidence.
 
 ## Accessibility & Inclusion
 

@@ -3,14 +3,14 @@ import { computed, ref } from "vue";
 import { ChevronDown, TriangleAlert } from "lucide-vue-next";
 import SessionFiles from "@/components/session/SessionFiles.vue";
 import SessionModelStack from "@/components/session/SessionModelStack.vue";
-import type { OutcomeEvidence, SessionDetail } from "@/lib/api";
+import type { SessionDetail } from "@/lib/api";
 import { relativeDate } from "@/lib/format";
 import { displayTitle } from "@/lib/sessions";
 
 const ERROR_PREVIEW = 5;
 const RUN_PREVIEW = 5;
 
-const props = defineProps<{ sessionId: string; supportingSessions: SessionDetail["supporting_sessions"]; files: string[]; errors: SessionDetail["errors"]; evidence: OutcomeEvidence | null }>();
+const props = defineProps<{ sessionId: string; supportingSessions: SessionDetail["supporting_sessions"]; files: string[]; errors: SessionDetail["errors"] }>();
 
 const showAllErrors = ref(false);
 const showAllRuns = ref(false);
@@ -41,7 +41,7 @@ const visibleRuns = computed(() => showAllRuns.value ? props.supportingSessions 
       <p v-else class="text-sm text-zinc-500">No errors detected.</p>
       <button v-if="errors.length > ERROR_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllErrors = !showAllErrors">{{ showAllErrors ? "Show fewer errors" : `Show all ${errors.length} errors` }}</button>
     </div>
-    <SessionFiles :files="files" :evidence="evidence" />
+    <SessionFiles :files="files" />
     <div v-if="supportingSessions.length">
       <h2 class="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Supporting runs ({{ supportingSessions.length }})</h2>
       <ul class="divide-y divide-zinc-200 border-y border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800"><li v-for="run in visibleRuns" :key="run.id"><RouterLink :to="`/sessions/${run.id}`" class="block py-3 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 dark:hover:bg-zinc-900"><p class="line-clamp-2 text-xs font-medium text-zinc-800 dark:text-zinc-200">{{ displayTitle(run) }}</p><SessionModelStack class="mt-2" :app="run.harness" :primary="run.model_primary" :models="run.models" /><span class="mt-1.5 block truncate font-mono text-[11px] text-zinc-500">{{ run.id }}</span></RouterLink></li></ul>

@@ -98,6 +98,8 @@ Mimir reconstructs the session so you can see:
 - full redacted proxy exchanges and bounded exchanges reconstructed by
   supported harness integrations;
 - supporting runs, tool-touched files, real error signals, and model switches;
+- independent per-commit Git patches associated with the work, including for
+  discarded, abandoned, and unresolved sessions;
 - whether durable capture succeeded;
 - whether the work landed, was discarded, was abandoned, or remains unresolved.
 
@@ -138,6 +140,11 @@ There are three inputs to one session record:
 3. **Harness events** carry turn summaries, heartbeats, titles, session ends,
    and evidenced work outcomes. They keep sessions live. Hermes direct-provider
    capture is event-only and does not create searchable exchange objects.
+
+Historical import can add a fourth evidence type: independent Git artifacts.
+Mimir associates each matching commit and its redacted patch with the session
+without changing its outcome. A session may therefore retain several commits
+whether it landed, was discarded, was abandoned, or remains unresolved.
 
 `x-mimir-session` is the authoritative session boundary when available. Traffic
 without an exact session ID uses bounded inactivity grouping.
@@ -194,6 +201,41 @@ mimir dashboard
 
 The dashboard leads with sessions. Requests remain supporting evidence, one
 click away when you need the raw record.
+
+### Import local history
+
+Mimir can recover supported OpenCode and Pi history already present on the local
+machine. Run `mimir import` in a terminal to select a harness and sessions, or
+select a source directly with `mimir import opencode` or `mimir import pi`.
+Discovery and inspection do not upload data:
+
+```bash
+mimir import list [opencode|pi] [--json]
+mimir import inspect <opencode|pi> <session-id> [--json]
+```
+
+For explicit automation, name one or more source session IDs and confirm the
+mutation:
+
+```bash
+mimir import <opencode|pi> <session-id>... --yes [--json]
+```
+
+`mimir backfill [opencode|pi] [--since 7d]` repairs gaps by replaying local
+history through the same deterministic merge. In a TTY it presents a bounded
+selector. A non-TTY invocation, including JSON mode, must be explicit:
+
+```bash
+mimir backfill [opencode|pi] [--since 7d] --all --yes --json
+```
+
+OpenCode history is read through `opencode session list` and `opencode export`.
+Pi history is read from `$PI_CODING_AGENT_DIR/sessions` or, by default,
+`~/.pi/agent/sessions`. Both sources omit OpenRouter turns because the proxy
+exchange is canonical. Stable session and exchange identities make reruns
+idempotent: saved exchanges and exactly matching commit artifacts are reported as
+already present, while a different patch or metadata for the same session and
+commit is rejected rather than overwritten.
 
 ## Connect an agent
 
@@ -267,8 +309,10 @@ There is no Mimir account, hosted backend, shared memory service, or browser
 machine-token storage.
 
 - The Worker and dashboard run in your Cloudflare account.
-- Redacted proxy and reconstructed harness exchanges live in R2.
-- Searchable metadata, configuration, and lifecycle state live in D1.
+- Redacted proxy and reconstructed harness exchanges, plus imported Git patch
+  bodies, live in R2.
+- Searchable metadata, configuration, lifecycle state, and Git artifact
+  metadata live in D1.
 - A Session Durable Object coordinates liveness, retries, reopening, and
   transcript finalization.
 - Dashboard APIs and redacted-log routes require verified Cloudflare Access
@@ -315,6 +359,9 @@ mimir session get <id> [--json]       inspect one session
 mimir session status <id> [--json]    verify durable capture
 mimir session end <id> [--json]       finalize the active generation
 mimir session outcome <id> <value>    record an evidenced work outcome
+mimir import [opencode|pi]             select and import local sessions
+mimir import list [harness] [--json]   list local import candidates
+mimir backfill [harness] [--since 7d] repair gaps from local history
 mimir doctor [--json]                 validate deployment and integrations
 mimir update [--check]                update Mimir and managed integrations
 mimir uninstall [--keep-binary]       remove verified managed artifacts

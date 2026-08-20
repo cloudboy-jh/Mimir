@@ -148,7 +148,20 @@ try {
   `);
 
   cpSync(join(root, "migrations", "0017_session_summaries.sql"), join(migrations, "0017_session_summaries.sql"));
+  cpSync(join(root, "migrations", "0018_session_git_artifacts.sql"), join(migrations, "0018_session_git_artifacts.sql"));
   applyMigrations();
+  execute(`
+    INSERT INTO session_git_artifacts(
+      session_id, commit_sha, provenance, patch_r2_key, patch_sha256,
+      patch_bytes, patch_files, patch_additions, patch_deletions,
+      accepted_at, created_at
+    ) VALUES (
+      'legacy-session', '${"c".repeat(40)}', 'git',
+      'sessions/legacy-session/git/${"c".repeat(40)}/patch.patch',
+      '${"d".repeat(64)}', 5, 1, 1, 0,
+      '2026-07-15T12:10:00Z', '2026-07-15T12:10:00Z'
+    );
+  `);
 
   const output = JSON.parse(execute(`
     SELECT
@@ -194,7 +207,10 @@ try {
        (SELECT platform FROM machines WHERE installation_id = 'active-install') AS active_machine_platform,
        (SELECT revoked_at FROM access_tokens WHERE token_hash = 'revoked-active-token') AS active_machine_token_revoked_at,
        (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('summary_text', 'summary_status', 'summary_source', 'summary_updated_at')) AS session_summary_columns,
-       (SELECT summary_status FROM sessions WHERE id = 'legacy-session') AS legacy_summary_status
+       (SELECT summary_status FROM sessions WHERE id = 'legacy-session') AS legacy_summary_status,
+       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_git_artifacts') AS session_git_artifacts_table,
+       (SELECT COUNT(*) FROM pragma_table_info('session_git_artifacts') WHERE name IN ('repository_url', 'ref', 'provenance', 'capture_status', 'accepted_at', 'saved_at', 'failed_at', 'failure_code')) AS session_git_artifact_lifecycle_columns,
+       (SELECT capture_status FROM session_git_artifacts WHERE session_id = 'legacy-session') AS legacy_git_artifact_status
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -246,6 +262,9 @@ try {
     active_machine_token_revoked_at: "2026-07-15T12:07:00Z",
     session_summary_columns: 4,
     legacy_summary_status: "pending",
+    session_git_artifacts_table: 1,
+    session_git_artifact_lifecycle_columns: 8,
+    legacy_git_artifact_status: "accepted",
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

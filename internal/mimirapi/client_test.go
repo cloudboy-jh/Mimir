@@ -29,6 +29,34 @@ func TestRequestAuthenticates(t *testing.T) {
 	}
 }
 
+func TestRequestWithHeadersPreservesOwnedHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			t.Fatalf("authorization %q", got)
+		}
+		if got := r.Header.Get("content-type"); got != "application/json" {
+			t.Fatalf("content-type %q", got)
+		}
+		if got := r.Header.Values("x-mimir-repo"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+			t.Fatalf("metadata headers %#v", got)
+		}
+	}))
+	defer server.Close()
+	headers := http.Header{
+		"Authorization":  {"Bearer attacker"},
+		"Content-Type":   {"text/plain"},
+		"Content-Length": {"1"},
+		"X-Mimir-Repo":   {"one", "two"},
+	}
+	client := Client{HTTPClient: server.Client(), Pointer: Pointer{URL: server.URL, Token: "test-token"}}
+	if _, err := client.RequestWithHeaders(context.Background(), http.MethodPost, "/sessions/s/exchanges", map[string]any{"ok": true}, headers); err != nil {
+		t.Fatal(err)
+	}
+	if headers.Get("Authorization") != "Bearer attacker" {
+		t.Fatal("caller headers were mutated")
+	}
+}
+
 func TestValidateDeploymentURL(t *testing.T) {
 	for _, valid := range []string{"https://mimir.example.workers.dev", "http://127.0.0.1:8787"} {
 		if err := ValidateDeploymentURL(valid); err != nil {

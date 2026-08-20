@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { AlertTriangle, ArrowLeft, Download, RotateCw } from "lucide-vue-next";
 import RequestTimeline from "@/components/session/RequestTimeline.vue";
@@ -182,12 +182,6 @@ function applyTitleUpdate(update: SessionTitleUpdate) {
   if (detail.value?.session.id === update.id) Object.assign(detail.value.session, update);
 }
 
-const commitEvidence = computed(() => {
-  if (!detail.value) return null;
-  const evidence = currentOutcomeEvidence(detail.value.outcome_events, detail.value.session.outcome);
-  return evidence?.commit ? evidence : null;
-});
-
 const exporting = ref(false);
 const exportError = ref("");
 
@@ -250,8 +244,8 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
         <RequestTimeline :session-id="detail.session.id" :root-session-id="detail.session.id" :refresh-key="timelineRevision" />
       </div>
       <div class="grid min-w-0 gap-8 xl:sticky xl:top-6">
-        <SessionChanges :session-id="detail.session.id" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
-        <SessionEvidenceSidebar :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :files="detail.files" :errors="detail.errors" :evidence="commitEvidence" />
+        <SessionChanges :session-id="detail.session.id" :artifacts="detail.git_artifacts" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
+        <SessionEvidenceSidebar :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :files="detail.files" :errors="detail.errors" />
       </div>
     </div>
   </section>

@@ -401,6 +401,7 @@ function detailFor(session: Session): SessionDetail {
       { signature: "Cloudflare Access authentication required.", count: 2, first_seen_at: iso(68), last_seen_at: iso(63), latest_exchange_id: sessionExchanges[15].id },
       { signature: "Patch evidence exceeded the configured capture bound", count: 1, first_seen_at: iso(22), last_seen_at: iso(22), latest_exchange_id: sessionExchanges[5].id },
     ] : [],
+    git_artifacts: [],
   };
 }
 

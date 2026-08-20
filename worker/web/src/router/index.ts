@@ -15,6 +15,7 @@ export const router = createRouter({
     { path: "/login", name: "login", component: LoginPage, meta: { standalone: true } },
     { path: "/sessions", name: "sessions", component: SessionsPage },
     { path: "/sessions/:id", name: "session-detail", component: SessionDetailPage },
+    { path: "/sessions/:id/diff/:commit", name: "session-artifact-diff", component: SessionDiffPage },
     { path: "/sessions/:id/diff", name: "session-diff", component: SessionDiffPage },
     { path: "/requests", name: "requests", component: RequestsPage },
     { path: "/requests/:id", name: "request-detail", component: RequestDetailPage },

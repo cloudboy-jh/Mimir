@@ -6,6 +6,10 @@ import { SESSION_ID } from "./events";
 import { expireSessions } from "./lifecycle";
 import { canonicalOutcome, updateOutcome } from "./outcomes";
 import {
+  loadGitArtifactPatch,
+  loadSessionGitArtifacts,
+} from "./git-artifacts";
+import {
   loadSessionDiffEvidence,
   loadSessionErrorSignatures,
   loadSessionFiles,
@@ -256,6 +260,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       capture,
       outcomeEvents,
       children,
+      gitArtifacts,
     ] = await Promise.all([
       loadSessionFiles(c.env.DB, id),
       loadSessionErrorSignatures(c.env.DB, id),
@@ -277,6 +282,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       captureTreeSummary(c.env.DB, id),
       loadSessionOutcomeEvents(c.env.DB, outcomeRoot),
       loadSupportingSessions(c.env.DB, id),
+      loadSessionGitArtifacts(c.env.DB, id),
     ]);
     const aggregateBySignature = new Map(
       aggregates.results.map((row) => [row.signature, row]),
@@ -313,8 +319,37 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       supporting_sessions: modeled.slice(1),
       files,
       errors,
+      git_artifacts: gitArtifacts,
     });
   });
+
+  app.get(
+    "/dashboard/api/sessions/:id/git-artifacts/:commit/patch",
+    async (c) => {
+      const patch = await loadGitArtifactPatch(
+        c.env.DB,
+        c.env.LOGS,
+        c.req.param("id"),
+        c.req.param("commit"),
+      );
+      if (patch.kind === "invalid")
+        return c.json({ error: "invalid commit SHA" }, 400);
+      if (patch.kind === "session-not-found")
+        return c.json({ error: "session not found" }, 404);
+      if (patch.kind === "artifact-not-found")
+        return c.json({ error: "Git artifact not found" }, 404);
+      if (patch.kind === "artifact-unavailable")
+        return c.json({ error: "Git artifact patch is not saved" }, 409);
+      if (patch.kind === "patch-not-found")
+        return c.json({ error: "Git artifact patch not found" }, 404);
+      return new Response(patch.body, {
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "private, no-store",
+        },
+      });
+    },
+  );
 
   app.get("/dashboard/api/sessions/:id/diff", async (c) => {
     const diff = await loadSessionDiffEvidence(

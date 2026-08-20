@@ -13,6 +13,10 @@ mimir session get <id> --json
 mimir session status <id> --json
 mimir session outcome <id> <landed|discarded|abandoned|unresolved> --reason <text> --evidence <json> --json
 mimir session end <id> --outcome <value> --reason <text> --evidence <json> --json
+mimir import list [opencode|pi] --json
+mimir import inspect <opencode|pi> <id> --json
+mimir import <opencode|pi> <id>... --yes --json
+mimir backfill [opencode|pi] [--since 7d] --all --yes --json
 mimir config get --json
 mimir config set <key> <json-value> --json
 mimir access --json
@@ -33,6 +37,58 @@ and present readable results rather than exposing raw JSON.
 opens it in the default browser. It does not read connection state or machine
 credentials. `--no-open` leaves browser launch to the caller. The command runs
 until Ctrl+C and all in-browser changes reset on reload.
+
+## Local Import And Backfill
+
+`mimir import` merges supported local harness history into the canonical Worker
+session records. Its modes are:
+
+```text
+mimir import
+mimir import <opencode|pi>
+mimir import <opencode|pi> <id>... [--yes] [--json]
+mimir import list [opencode|pi] [--json]
+mimir import inspect <opencode|pi> <id> [--json]
+```
+
+With no harness, an interactive terminal first selects OpenCode or Pi. With a
+harness but no IDs, it selects from up to 20 local candidates. Explicit IDs are
+preselected for confirmation; `--yes` accepts them without the selector.
+`list` and `inspect` are local, read-only discovery commands and do not require
+a Worker connection. In a non-TTY or with `--json`, an importing invocation
+must include a harness, at least one ID, and `--yes`.
+
+`mimir backfill [opencode|pi] [--since 7d]` is the gap-repair form. The harness
+is optional and omission scans both supported sources. `--since` accepts a
+positive duration such as `48h`, a day shorthand such as `7d`, or an RFC3339
+timestamp. Interactive mode offers the bounded session selector. Scripts,
+pipes, redirected output, and JSON mode cannot prompt and must use
+`--all --yes`; the complete automation shape is:
+
+```bash
+mimir backfill [opencode|pi] [--since 7d] --all --yes --json
+```
+
+OpenCode candidates come from the installed `opencode` CLI's `session list`
+and `export` commands. Pi candidates are `.jsonl` sessions under
+`$PI_CODING_AGENT_DIR/sessions`, falling back to `~/.pi/agent/sessions`.
+Neither adapter imports OpenRouter turns: full redacted proxy exchanges remain
+canonical, while only non-OpenRouter turns are reconstructed from local data.
+
+Import and backfill are deterministic merges. Source session IDs map to stable
+Mimir session IDs; OpenCode message IDs and Pi turn identity map to stable
+exchange IDs. Candidates are uploaded in stable chronological order, and the
+Worker reports an existing exchange as a duplicate rather than creating a
+second record. Rerunning either command therefore fills missing exchanges and
+does not duplicate saved ones.
+
+When the source records a checkout directory, import also finds matching Git
+commits from the session interval and tool-touched paths. It can preserve
+multiple commits as independent artifacts, regardless of whether the session
+outcome is landed, discarded, abandoned, or unresolved. Git artifact upload is
+separate from outcome mutation. An identical `(session, commit)` artifact is an
+idempotent duplicate; different metadata or patch content for the same key is a
+conflict and is never silently merged or overwritten.
 
 Mimir has no separate terminal application. The dashboard is the visual browser, and
 installed agents query the machine-readable CLI directly. Setup and login may

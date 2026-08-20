@@ -113,6 +113,33 @@ mimir list --json [--limit 10] [--outcome landed|discarded|abandoned|unresolved]
 
 Format the output as a readable list with titles, outcomes, models, and recency.
 
+## Recovering local harness history
+
+When the user asks to recover a session that was missed while a plugin was
+disabled or uninstalled, inspect local candidates first:
+
+```bash
+mimir import list <opencode|pi> --json
+mimir import inspect <opencode|pi> <session-id> --json
+```
+
+Import only the exact sessions the user identified:
+
+```bash
+mimir import <opencode|pi> <session-id>... --yes --json
+```
+
+Use broad backfill only when the user explicitly requests gap repair. Always
+scope automation and acknowledge the bulk operation explicitly:
+
+```bash
+mimir backfill [opencode|pi] [--since 7d] --all --yes --json
+```
+
+Import and backfill are idempotent merges. OpenRouter proxy exchanges remain
+canonical; reconstructed local turns fill gaps. Discovered Git commits are
+preserved independently of outcome, including when a session stays unresolved.
+
 ## Local code recall
 
 ```bash

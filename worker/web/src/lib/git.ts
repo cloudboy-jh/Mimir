@@ -1,4 +1,4 @@
-import type { OutcomeEvidence } from "@/lib/api";
+import type { GitArtifact, OutcomeEvidence } from "@/lib/api";
 
 // normalizeRepositoryUrl turns any recorded remote form (SCP, ssh, git, http)
 // into a browsable https URL, dropping credentials, ports, and the .git suffix.
@@ -46,4 +46,28 @@ export function commitUrl(evidence: OutcomeEvidence | null): string | null {
 
 export function shortCommit(sha: string | undefined): string {
   return sha ? sha.slice(0, 7) : "";
+}
+
+export function gitArtifactCommitUrl(artifact: GitArtifact): string | null {
+  return commitUrl({ commit: artifact.commit_sha, repository_url: artifact.repository_url ?? undefined });
+}
+
+export function gitArtifactProvenance(provenance: string) {
+  const normalized = provenance.trim().toLowerCase();
+  if (normalized === "git" || normalized.includes("local") || normalized.includes("import")) {
+    return { label: "Local checkout, unverified", unverified: true };
+  }
+  return { label: provenance || "Unknown source", unverified: false };
+}
+
+export function outcomeCommitMatchesArtifact(commit: string | undefined, artifacts: GitArtifact[]): boolean {
+  const normalized = commit?.trim().toLowerCase();
+  if (!normalized || normalized.length < 7) return false;
+  return artifacts.some((artifact) => artifact.commit_sha.toLowerCase().startsWith(normalized));
+}
+
+export function outcomeUrlMatchesArtifact(url: string | undefined, artifacts: GitArtifact[]): boolean {
+  const normalized = url?.trim().replace(/\/+$/, "");
+  if (!normalized) return false;
+  return artifacts.some((artifact) => gitArtifactCommitUrl(artifact)?.replace(/\/+$/, "") === normalized);
 }
