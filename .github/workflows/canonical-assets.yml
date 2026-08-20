@@ -1,0 +1,22 @@
+name: canonical-assets
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: worker/web
+      - run: bun run build:demo
+      - uses: actions/upload-artifact@v6
+        with:
+          name: canonical-demo-assets
+          path: internal/demoassets/static
+          if-no-files-found: error
