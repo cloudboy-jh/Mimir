@@ -19,7 +19,7 @@ func TestReconcileExhaustsDatabaseAndR2Cursors(t *testing.T) {
 			t.Fatalf("path = %q err=%v", path, err)
 		}
 		if calls == 1 {
-			return []byte(`{"scanned":1,"database_cursor":"db-next","finalized":{"exchange_ids":["saved-1"]},"pending":{"exchange_ids":[],"stale_exchange_ids":[]},"missing_saved":{"exchange_ids":[],"session_ids":[]},"orphans":{"r2_keys":["log/orphan-1.json"],"cursor":"r2-next"}}`), nil
+			return []byte(`{"scanned":1,"database_cursor":"db-next","finalized":{"exchange_ids":["saved-1"]},"pending":{"exchange_ids":[],"stale_exchange_ids":[]},"missing_saved":{"exchange_ids":[],"session_ids":[]},"orphans":{"r2_keys":["log/orphan-1.json"],"cursor":"r2-next"},"empty_sessions_removed":{"session_ids":["empty-pi-1"]}}`), nil
 		}
 		if calls == 2 {
 			if parsed.Query().Get("database_cursor") != "db-next" || parsed.Query().Get("cursor") != "r2-next" {
@@ -40,7 +40,7 @@ func TestReconcileExhaustsDatabaseAndR2Cursors(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 || report.Pages != 3 || len(report.Pending) != 1 || report.Pending[0] != "pending-1" || len(report.Orphans) != 3 {
+	if calls != 3 || report.Pages != 3 || len(report.Pending) != 1 || report.Pending[0] != "pending-1" || len(report.Orphans) != 3 || len(report.RemovedEmptySessions) != 1 || report.RemovedEmptySessions[0] != "empty-pi-1" {
 		t.Fatalf("calls=%d report=%#v", calls, report)
 	}
 }
@@ -57,7 +57,7 @@ func TestReconcileReturnsEmptyArrays(t *testing.T) {
 	if err := json.Unmarshal(data, &output); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"finalized_exchange_ids", "pending_exchange_ids", "stale_pending_exchange_ids", "missing_saved_exchange_ids", "affected_session_ids", "orphan_r2_keys"} {
+	for _, key := range []string{"finalized_exchange_ids", "pending_exchange_ids", "stale_pending_exchange_ids", "missing_saved_exchange_ids", "affected_session_ids", "orphan_r2_keys", "removed_empty_session_ids"} {
 		if values, ok := output[key].([]any); !ok || len(values) != 0 {
 			t.Fatalf("%s = %#v", key, output[key])
 		}

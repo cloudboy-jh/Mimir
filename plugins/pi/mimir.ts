@@ -29,7 +29,7 @@ const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 type Connection = { url: string; token: string };
 type RequestKind = "primary" | "summary" | "compaction";
-type SessionState = { id: string; cwd: string; repo: string | null; gitRef: string | null };
+type SessionState = { id: string; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
 type HarnessLoad = {
   version: 1;
   harness: "pi";
@@ -347,8 +347,7 @@ export default function (pi: ExtensionAPI) {
   let session: SessionState | null = null;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let nextRequestKind: RequestKind = "primary";
-  let active = false;
-  let stopped = false;
+  let initialization = 0;
 
   const captureHeaders = (current: SessionState): Record<string, string> => ({
     "x-mimir-harness": "pi",
@@ -356,48 +355,80 @@ export default function (pi: ExtensionAPI) {
     ...(current.gitRef ? { "x-mimir-git-ref": current.gitRef } : {}),
   });
 
-  const eventBody = (kind: "heartbeat" | "end", reason?: string): SessionEvent | null => {
-    if (!session) return null;
+  const eventBody = (current: SessionState, kind: "heartbeat" | "end", reason?: string): SessionEvent => {
     const body: SessionEvent = {
       version: 1,
       kind,
-      session_id: session.id,
+      session_id: current.id,
       harness: "pi",
       ts: new Date().toISOString(),
     };
-    if (session.repo) body.repo = session.repo;
-    const title = pi.getSessionName()?.trim();
+    if (current.repo) body.repo = current.repo;
+    const title = reason === "switch" ? undefined : pi.getSessionName()?.trim();
     if (title) body.title = title.slice(0, 200);
     if (reason) body.reason = reason.slice(0, 2_000);
     return body;
   };
 
-  const startActivity = () => {
-    if (!session || stopped || active) return;
-    active = true;
-    const body = eventBody("heartbeat");
-    if (body) delivery.deliver(`heartbeat:${session.id}:${body.ts}`, `/sessions/${encodeURIComponent(session.id)}/events`, body);
+  const sendHeartbeat = () => {
+    const current = session;
+    if (!current?.active) return;
+    const body = eventBody(current, "heartbeat");
+    delivery.deliver(`heartbeat:${current.id}:${body.ts}`, `/sessions/${encodeURIComponent(current.id)}/events`, body);
+  };
+
+  const scheduleHeartbeat = () => {
     clearInterval(heartbeat);
-    heartbeat = setInterval(() => {
-      if (stopped || !active) return;
-      const current = eventBody("heartbeat");
-      if (current && session) delivery.deliver(`heartbeat:${session.id}:${current.ts}`, `/sessions/${encodeURIComponent(session.id)}/events`, current);
-    }, HEARTBEAT_MS);
+    heartbeat = setInterval(sendHeartbeat, HEARTBEAT_MS);
     (heartbeat as { unref?: () => void }).unref?.();
   };
 
-  pi.on("session_start", async (_event, ctx) => {
-    stopped = false;
-    active = false;
+  const activate = () => {
+    if (!session || session.active) return;
+    session.active = true;
+    sendHeartbeat();
+    scheduleHeartbeat();
+  };
+
+  const initialize = async (_event: unknown, ctx: { cwd?: string; sessionManager?: { getSessionId?: () => string } }) => {
+    const generation = ++initialization;
     clearInterval(heartbeat);
     heartbeat = undefined;
-    const id = canonicalSessionID(ctx.sessionManager.getSessionId());
-    session = { id, cwd: ctx.cwd, repo: basename(ctx.cwd) || null, gitRef: null };
-    Object.assign(session, await gitMetadata(pi, ctx.cwd));
+    snapshots.clear();
+    const rawID = ctx?.sessionManager?.getSessionId?.();
+    if (!rawID) return;
+    const cwd = ctx.cwd || process.cwd();
+    const previous = session;
+    const id = canonicalSessionID(String(rawID));
+    const candidate: SessionState = {
+      id,
+      cwd,
+      repo: basename(cwd) || null,
+      gitRef: null,
+      active: previous?.id === id && previous.active,
+    };
+    Object.assign(candidate, await gitMetadata(pi, cwd));
+    if (generation !== initialization) return;
+    if (previous?.active && previous.id !== candidate.id) {
+      await request(
+        connection,
+        `/sessions/${encodeURIComponent(previous.id)}/events`,
+        eventBody(previous, "end", "switch"),
+        captureHeaders(previous),
+      );
+      if (generation !== initialization) return;
+    }
+    session = candidate;
+    nextRequestKind = "primary";
     const load = loadHarnessLoad();
     if (load) delivery.deliver(`load:${load.source_sha256}`, "/integrations/harness-loads", load);
-    startActivity();
-  });
+    if (candidate.active) {
+      sendHeartbeat();
+      scheduleHeartbeat();
+    }
+  };
+
+  pi.on("session_start", initialize);
 
   pi.on("before_provider_headers", (event, ctx) => {
     if (!session || ctx.model?.provider !== "openrouter") return;
@@ -415,37 +446,44 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_tree", () => { nextRequestKind = "primary"; });
 
   pi.on("turn_start", (event, ctx) => {
-    startActivity();
+    activate();
     const context = ctx.sessionManager.buildSessionContext();
     snapshots.set(event.turnIndex, { startedAt: event.timestamp, request: { messages: normalizeMessages(context.messages) } });
   });
 
   pi.on("turn_end", (event) => {
-    if (!session || stopped) return;
+    const current = session;
+    if (!current) return;
     const snapshot = snapshots.get(event.turnIndex);
     snapshots.delete(event.turnIndex);
-    const exchange = buildExchange(session.id, event.turnIndex, snapshot, event.message, event.toolResults, pi.getSessionName());
+    const exchange = buildExchange(current.id, event.turnIndex, snapshot, event.message, event.toolResults, pi.getSessionName());
     if (!exchange) return;
     const exchangeID = String(exchange.exchange_id);
-    delivery.deliver(`exchange:${exchangeID}`, `/sessions/${encodeURIComponent(session.id)}/exchanges`, exchange, captureHeaders(session));
+    delivery.deliver(`exchange:${exchangeID}`, `/sessions/${encodeURIComponent(current.id)}/exchanges`, exchange, captureHeaders(current));
   });
 
   pi.on("session_info_changed", () => {
-    if (!active) return;
-    const body = eventBody("heartbeat");
-    if (body && session) delivery.deliver(`title:${session.id}:${body.ts}`, `/sessions/${encodeURIComponent(session.id)}/events`, body);
+    const current = session;
+    if (!current?.active) return;
+    const body = eventBody(current, "heartbeat");
+    delivery.deliver(`title:${current.id}:${body.ts}`, `/sessions/${encodeURIComponent(current.id)}/events`, body);
   });
 
   pi.on("session_shutdown", async (event) => {
-    stopped = true;
+    initialization++;
     clearInterval(heartbeat);
     heartbeat = undefined;
     snapshots.clear();
-    if (active && event.reason !== "reload") {
-      const body = eventBody("end", event.reason);
-      if (body && session) await request(connection, `/sessions/${encodeURIComponent(session.id)}/events`, body, captureHeaders(session));
+    const current = session;
+    const reason = typeof event?.reason === "string" ? event.reason : "shutdown";
+    if (current?.active && reason !== "reload") {
+      await request(
+        connection,
+        `/sessions/${encodeURIComponent(current.id)}/events`,
+        eventBody(current, "end", reason),
+        captureHeaders(current),
+      );
     }
-    active = false;
     session = null;
   });
 }

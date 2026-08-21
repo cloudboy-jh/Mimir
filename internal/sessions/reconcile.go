@@ -28,23 +28,27 @@ type reconcilePage struct {
 		R2Keys []string `json:"r2_keys"`
 		Cursor string   `json:"cursor"`
 	} `json:"orphans"`
+	EmptySessionsRemoved struct {
+		SessionIDs []string `json:"session_ids"`
+	} `json:"empty_sessions_removed"`
 }
 
 type ReconcileReport struct {
-	Pages        int      `json:"pages"`
-	Scanned      int      `json:"scanned"`
-	Finalized    []string `json:"finalized_exchange_ids"`
-	Pending      []string `json:"pending_exchange_ids"`
-	StalePending []string `json:"stale_pending_exchange_ids"`
-	Swept        []string `json:"swept_exchange_ids"`
-	MissingSaved []string `json:"missing_saved_exchange_ids"`
-	Affected     []string `json:"affected_session_ids"`
-	Orphans      []string `json:"orphan_r2_keys"`
+	Pages                int      `json:"pages"`
+	Scanned              int      `json:"scanned"`
+	Finalized            []string `json:"finalized_exchange_ids"`
+	Pending              []string `json:"pending_exchange_ids"`
+	StalePending         []string `json:"stale_pending_exchange_ids"`
+	Swept                []string `json:"swept_exchange_ids"`
+	MissingSaved         []string `json:"missing_saved_exchange_ids"`
+	Affected             []string `json:"affected_session_ids"`
+	Orphans              []string `json:"orphan_r2_keys"`
+	RemovedEmptySessions []string `json:"removed_empty_session_ids"`
 }
 
 func (s Service) Reconcile(ctx context.Context) ([]byte, error) {
 	const pageLimit = 100
-	report := ReconcileReport{Finalized: []string{}, Pending: []string{}, StalePending: []string{}, Swept: []string{}, MissingSaved: []string{}, Affected: []string{}, Orphans: []string{}}
+	report := ReconcileReport{Finalized: []string{}, Pending: []string{}, StalePending: []string{}, Swept: []string{}, MissingSaved: []string{}, Affected: []string{}, Orphans: []string{}, RemovedEmptySessions: []string{}}
 	databaseCursor, r2Cursor := "", ""
 	scanDatabase, scanR2 := true, true
 	for scanDatabase || scanR2 {
@@ -81,6 +85,7 @@ func (s Service) Reconcile(ctx context.Context) ([]byte, error) {
 		report.MissingSaved = appendUnique(report.MissingSaved, page.MissingSaved.ExchangeIDs...)
 		report.Affected = appendUnique(report.Affected, page.MissingSaved.SessionIDs...)
 		report.Orphans = appendUnique(report.Orphans, page.Orphans.R2Keys...)
+		report.RemovedEmptySessions = appendUnique(report.RemovedEmptySessions, page.EmptySessionsRemoved.SessionIDs...)
 		databaseCursor = page.DatabaseCursor
 		r2Cursor = page.Orphans.Cursor
 		scanDatabase = databaseCursor != ""

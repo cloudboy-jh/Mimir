@@ -1061,6 +1061,53 @@ describe("Sessions integration", () => {
     expect(await env.LOGS.get("log/accepted-object.json")).not.toBeNull();
   });
 
+  it("removes only strict empty finalized Pi roots and their transcripts", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi');
+      INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness, title, title_source) VALUES ('named-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi', 'Kept', 'harness');
+      INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-omp', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'oh-my-pi');
+      INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-active-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi');
+    `);
+    for (const id of ["empty-pi", "named-pi", "empty-omp", "empty-active-pi"]) {
+      await env.LOGS.put(`sessions/${id}/transcript.json`, "{}");
+    }
+
+    const response = await request("/reconcile", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token" },
+    });
+    const result = (await response.json()) as {
+      empty_sessions_removed: { count: number; session_ids: string[] };
+    };
+
+    expect(result.empty_sessions_removed).toEqual({
+      count: 1,
+      session_ids: ["empty-pi"],
+    });
+    expect(
+      await env.DB.prepare("SELECT id FROM sessions ORDER BY id").all<{
+        id: string;
+      }>(),
+    ).toMatchObject({
+      results: [
+        { id: "empty-active-pi" },
+        { id: "empty-omp" },
+        { id: "named-pi" },
+      ],
+    });
+    expect(
+      await env.LOGS.get("sessions/empty-pi/transcript.json"),
+    ).toBeNull();
+    expect(
+      await env.LOGS.get("sessions/named-pi/transcript.json"),
+    ).not.toBeNull();
+    expect(
+      await env.LOGS.get("sessions/empty-omp/transcript.json"),
+    ).not.toBeNull();
+    expect(
+      await env.LOGS.get("sessions/empty-active-pi/transcript.json"),
+    ).not.toBeNull();
+  });
   it("projects derived and generated titles only from successfully saved redacted exchanges", async () => {
     await env.DB.prepare(
       "INSERT INTO config(key, value) VALUES('redact.patterns', '[\"customer-[0-9]+\"]')",
