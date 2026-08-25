@@ -6,10 +6,11 @@ import IdentityBadge from "@/components/IdentityBadge.vue";
 import Button from "@/components/ui/Button.vue";
 import DropdownPanel from "@/components/ui/DropdownPanel.vue";
 import Select from "@/components/ui/Select.vue";
-import { errorMessage, listSessionExchanges, type SessionExchange, type SessionExchangeFilters } from "@/lib/api";
+import { errorMessage, listSessionExchanges, type SessionDetail, type SessionExchange, type SessionExchangeFilters } from "@/lib/api";
 import { facetSelectOptions, useFacets } from "@/lib/facets";
 import { shortDate } from "@/lib/format";
-import { orderOptions, pageSizeOptions } from "@/lib/options";
+import { orderOptions, pageSizeOptions, type SelectOption } from "@/lib/options";
+import { displayTitle } from "@/lib/sessions";
 
 const SEARCH_DEBOUNCE_MS = 350;
 const facets = [
@@ -19,7 +20,7 @@ const facets = [
   { key: "rfinish", label: "Finish reason", field: "finish_reasons", allLabel: "All finish reasons" },
 ] as const;
 
-const props = defineProps<{ sessionId: string; rootSessionId: string; refreshKey?: number }>();
+const props = defineProps<{ sessionId: string; supportingSessions?: SessionDetail["supporting_sessions"]; refreshKey?: number }>();
 const route = useRoute();
 const router = useRouter();
 const exchanges = ref<SessionExchange[]>([]);
@@ -30,7 +31,14 @@ const error = ref("");
 const filtersOpen = ref(false);
 const search = ref("");
 const draft = reactive<Record<string, string>>({ rmodel: "", rprovider: "", rapp: "", rfinish: "" });
-const { facets: facetValues } = useFacets(computed(() => props.sessionId));
+// Timeline scope defaults to this session's own requests; selecting a
+// supporting session restricts the timeline (and facets) to that sub-agent.
+const scope = ref<string | null>(null);
+const scopeOptions = computed<SelectOption[]>(() => [
+  { value: "", label: "This session" },
+  ...(props.supportingSessions ?? []).map((session) => ({ value: session.id, label: displayTitle(session) })),
+]);
+const { facets: facetValues } = useFacets(computed(() => scope.value ?? props.sessionId));
 let controller: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -65,6 +73,9 @@ function currentFilters(cursor?: string): SessionExchangeFilters {
     provider: queryValue("rprovider") || undefined,
     app: queryValue("rapp") || undefined,
     finishReason: queryValue("rfinish") || undefined,
+    // The timeline always shows one session's own exchanges. The scope select
+    // picks which session; the default is the page's session.
+    session: scope.value ?? props.sessionId,
     order: order.value as "asc" | "desc",
     limit: Number(limit.value),
     cursor,
@@ -150,13 +161,14 @@ watch([() => props.sessionId, () => route.fullPath], () => {
   if (queryValue("rq") !== search.value.trim()) search.value = queryValue("rq");
   void load();
 }, { immediate: true });
+watch(() => props.sessionId, () => { scope.value = null; });
 watch(() => props.refreshKey, () => { void load(true); });
 onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 </script>
 
 <template>
   <section id="session-activity" aria-labelledby="timeline-heading">
-    <div class="mb-3 flex flex-wrap items-end justify-between gap-3">
+    <div class="mb-3">
       <div>
         <h2 id="timeline-heading" class="text-base font-semibold text-zinc-900 dark:text-zinc-100">Activity</h2>
         <p class="mt-1 text-xs text-zinc-500">{{ exchanges.length }} {{ exchanges.length === 1 ? "request" : "requests" }} loaded · {{ order === "desc" ? "Newest first" : "Oldest first" }}</p>
@@ -165,13 +177,14 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 
     <div class="border-y border-zinc-200 py-3 dark:border-zinc-800">
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div class="flex min-w-0 flex-1 gap-2">
+        <div class="flex min-w-0 flex-1 flex-wrap gap-2">
+        <Select v-if="props.supportingSessions?.length" :model-value="scope ?? ''" label="Session scope" :options="scopeOptions" class="w-full sm:w-52" @update:model-value="scope = $event || null" />
         <form class="relative min-w-0 flex-1 lg:max-w-lg" role="search" @submit.prevent="commitSearch">
           <label class="sr-only" for="timeline-search">Search request evidence</label>
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
           <input id="timeline-search" v-model="search" type="search" placeholder="Search request excerpt or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900" />
         </form>
-        <DropdownPanel v-model:open="filtersOpen" title="Filter requests" description="Exact matches within this session and its supporting runs.">
+        <DropdownPanel v-model:open="filtersOpen" title="Filter requests" description="Exact matches within the selected session's requests.">
           <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button></template>
           <form id="timeline-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
             <div v-for="facet in facets" :key="facet.key" class="text-xs font-medium text-zinc-600 dark:text-zinc-400">
@@ -209,7 +222,7 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
         <RouterLink v-for="exchange in exchanges" :key="exchange.id" :to="{ path: `/requests/${exchange.id}`, query: { session: sessionId } }" class="grid gap-3 border-b border-zinc-200 py-4 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 sm:grid-cols-[136px_minmax(0,1fr)_auto] sm:px-3 dark:border-zinc-800 dark:hover:bg-stone-900">
           <div><time class="whitespace-nowrap font-mono text-xs text-zinc-500" :datetime="exchange.ts">{{ shortDate(exchange.ts) }}</time><p class="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400">{{ exchange.latency_ms.toLocaleString() }} ms</p></div>
           <div class="min-w-0">
-            <div class="flex flex-wrap items-center gap-2"><IdentityBadge :label="exchange.provider || 'Unknown provider'" /><IdentityBadge :label="exchange.model" /><span v-if="exchange.session_id !== rootSessionId" class="rounded-[4px] border border-zinc-300 px-1.5 py-0.5 text-[11px] font-medium text-zinc-600 dark:border-zinc-700 dark:text-zinc-400">Supporting run</span><span v-if="exchange.finish_reason" class="text-xs text-zinc-500">{{ exchange.finish_reason }}</span></div>
+            <div class="flex flex-wrap items-center gap-2"><IdentityBadge :label="exchange.provider || 'Unknown provider'" /><IdentityBadge :label="exchange.model" /><span v-if="exchange.finish_reason" class="text-xs text-zinc-500">{{ exchange.finish_reason }}</span></div>
             <p class="mt-2 line-clamp-2 break-words text-[13px] leading-5 text-zinc-600 dark:text-zinc-400">{{ exchange.request_excerpt || exchange.id }}</p>
             <p v-if="exchange.capture_status !== 'saved' || exchange.failure_code" class="mt-1.5 text-xs" :class="exchange.capture_status === 'failed' ? 'text-red-700 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'">Capture {{ exchange.capture_status }}<template v-if="exchange.failure_code"> · {{ exchange.failure_code }}</template><template v-else-if="exchange.capture_reason"> · {{ exchange.capture_reason }}</template></p>
           </div>

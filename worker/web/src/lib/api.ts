@@ -265,6 +265,7 @@ export type SessionExchangeFilters = {
   provider?: string;
   app?: string;
   finishReason?: string;
+  session?: string;
   order?: "asc" | "desc";
   cursor?: string;
   limit?: number;
@@ -345,7 +346,7 @@ export async function listSessions(filters: SessionFilters = {}, signal?: AbortS
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== "") query.set(key, String(value));
   }
-  return request<{ sessions: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
+  return request<{ sessions: Session[]; descendants: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
 }
 
 export async function getSession(id: string, signal?: AbortSignal) {
@@ -427,6 +428,7 @@ export async function listSessionExchanges(id: string, filters: SessionExchangeF
   if (filters.provider) query.set("provider", filters.provider);
   if (filters.app) query.set("app", filters.app);
   if (filters.finishReason) query.set("finish_reason", filters.finishReason);
+  if (filters.session) query.set("session", filters.session);
   if (filters.order) query.set("order", filters.order);
   if (filters.cursor) query.set("cursor", filters.cursor);
   query.set("limit", String(filters.limit ?? 25));

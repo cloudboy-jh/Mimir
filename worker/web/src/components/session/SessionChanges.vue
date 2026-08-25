@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { CheckCircle2, ChevronDown, CircleX, Clock3, ExternalLink, GitCommitHorizontal } from "lucide-vue-next";
+import { CheckCircle2, ChevronDown, CircleX, Clock3, ExternalLink, GitBranch, GitCommitHorizontal } from "lucide-vue-next";
 import type { GitArtifact, OutcomeEvidence } from "@/lib/api";
 import { parsePatch } from "@/lib/diff";
 import { shortDate } from "@/lib/format";
@@ -99,8 +99,8 @@ watch(() => outcomeEvidence.value?.commit, () => { showAll.value = false; });
         <GitCommitHorizontal class="size-3.5 text-zinc-500" aria-hidden="true" />
         <a v-if="outcomeCommitHref" :href="outcomeCommitHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(outcomeEvidence.commit) }}<ExternalLink class="size-3" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a>
         <span v-else class="font-mono text-zinc-800 dark:text-zinc-200">{{ shortCommit(outcomeEvidence.commit) }}</span>
-        <span v-if="outcomeEvidence.ref || sourceRef" class="font-mono">{{ outcomeEvidence.ref || sourceRef }}</span>
-        <span v-if="outcomeEvidence.base_commit">on {{ shortCommit(outcomeEvidence.base_commit) }}</span>
+        <span v-if="outcomeEvidence.ref || sourceRef" class="inline-flex min-w-0 items-center gap-1 font-mono text-zinc-600 dark:text-zinc-400"><GitBranch class="size-3.5 shrink-0 text-zinc-500" aria-hidden="true" /><span class="break-all">{{ outcomeEvidence.ref || sourceRef }}</span></span>
+        <span v-if="outcomeEvidence.base_commit" class="inline-flex items-center gap-1 font-mono text-zinc-600 dark:text-zinc-400"><GitBranch class="size-3.5 text-zinc-500" aria-hidden="true" />on {{ shortCommit(outcomeEvidence.base_commit) }}</span>
         <span v-if="outcomeEvidence.provenance">via {{ outcomeEvidence.provenance }}</span>
       </div>
       <p v-if="distinctOutcomeUrl" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="distinctOutcomeUrl" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ distinctOutcomeUrl }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a></p>

@@ -241,7 +241,7 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
     <div class="grid gap-x-10 gap-y-10 pt-8 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
       <div class="grid min-w-0 gap-8">
         <LiveSessionTurns v-if="hasSessionObject" :turns="liveTurns" :liveness="liveness" />
-        <RequestTimeline :session-id="detail.session.id" :root-session-id="detail.session.id" :refresh-key="timelineRevision" />
+        <RequestTimeline :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :refresh-key="timelineRevision" />
       </div>
       <div class="grid min-w-0 gap-8 xl:sticky xl:top-6">
         <SessionChanges :session-id="detail.session.id" :artifacts="detail.git_artifacts" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />

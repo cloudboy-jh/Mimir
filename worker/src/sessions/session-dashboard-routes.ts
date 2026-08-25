@@ -20,6 +20,7 @@ import {
   rootSessionID,
   ROOT_SESSION_ACTIVITY_AT,
   ROOT_SESSION_COLUMNS,
+  SESSION_COLUMNS,
   SESSION_SUBTREE_CTE,
   SESSION_TREE_CTE,
 } from "./session-queries";
@@ -225,13 +226,35 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       .bind(...values, limit + 1)
       .all<Record<string, unknown>>();
     const hasMore = result.results.length > limit;
+    const pageRoots = result.results.slice(0, limit);
+    const rootIDs = pageRoots.map((row) => String(row.id));
+    // Descendants of the current page ride along so the dashboard can render
+    // sub-agent tree rows without a second round trip. Rows are flat with
+    // parent_session_id intact; the client builds the hierarchy.
+    const descendantResult = rootIDs.length
+      ? await c.env.DB.prepare(
+          `WITH RECURSIVE rooted(id) AS (SELECT id FROM sessions WHERE id IN (${rootIDs.map(() => "?").join(", ")}) AND parent_session_id IS NULL UNION ALL SELECT sessions.id FROM sessions JOIN rooted ON sessions.parent_session_id = rooted.id) SELECT ${SESSION_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM rooted) AND parent_session_id IS NOT NULL ORDER BY id ASC`,
+        )
+          .bind(...rootIDs)
+          .all<Record<string, unknown>>()
+      : { results: [] as Array<Record<string, unknown>> };
     const sessions = await attachSessionLiveness(
       c.env,
       await attachSessionDevices(
         c.env.DB,
         await attachSessionModels(
           c.env.DB,
-          result.results.slice(0, limit).map(attachCaptureSummary),
+          pageRoots.map(attachCaptureSummary),
+        ),
+      ),
+    );
+    const descendants = await attachSessionLiveness(
+      c.env,
+      await attachSessionDevices(
+        c.env.DB,
+        await attachSessionModels(
+          c.env.DB,
+          descendantResult.results.map(attachCaptureSummary),
         ),
       ),
     );
@@ -239,6 +262,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       { activity_at?: string; id?: string } | undefined;
     return c.json({
       sessions,
+      descendants,
       next_cursor:
         hasMore && last?.activity_at && last.id
           ? encodeCursor(last.activity_at, last.id)

@@ -321,6 +321,35 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     summary_text: null, summary_status: "ready", summary_source: "generated", summary_updated_at: iso(30),
     device: deviceIdentity(devices[0]),
   },
+  {
+    id: "ses_fixture_supporting_tooling",
+    parent_session_id: "ses_fixture_supporting_review",
+    started_at: iso(53),
+    ended_at: iso(50),
+    state: "inactive",
+    last_active_at: iso(50),
+    inactive_at: iso(49),
+    harness: "opencode",
+    boundary: "exact",
+    outcome: "landed",
+    outcome_src: "agent",
+    outcome_updated_at: iso(49),
+    outcome_reason: "Traced the capture bound regression to the evidence pipeline.",
+    repo: "mimir",
+    source_ref: "feature/dashboard-evidence",
+    model_primary: "anthropic/claude-opus-4.1-thinking",
+    models: [{ name: "anthropic/claude-opus-4.1-thinking", request_count: 1, first_seen_at: iso(53), last_seen_at: iso(50) }],
+    request_count: 1,
+    tokens_in: 14_600,
+    tokens_out: 1_740,
+    title: null,
+    title_source: null,
+    title_updated_at: null,
+    display_title: "Trace patch capture bounds across the evidence pipeline",
+    intent: "Trace patch capture bounds across the evidence pipeline",
+    summary_text: null, summary_status: "ready", summary_source: "generated", summary_updated_at: iso(20),
+    device: deviceIdentity(devices[0]),
+  },
 ];
 
 const outcomeEvents: OutcomeEvent[] = [
@@ -362,6 +391,13 @@ const sessionExchanges: SessionExchange[] = Array.from({ length: 21 }, (_, index
     failure_code: null,
   };
 });
+// Sub-agent exchanges let the timeline scope toggle show real content when
+// viewing a supporting session from the parent's detail page.
+sessionExchanges.push(
+  { id: "req_fixture_sub_01", session_id: "ses_fixture_supporting_review", ts: iso(55), model: "anthropic/claude-opus-4.1-thinking", provider: "anthropic", finish_reason: "stop", latency_ms: 2_140, harness: "opencode", input_tokens: 11_400, output_tokens: 1_380, request_excerpt: "Locate the evidence selection fault in the session detail sidebar.", capture_status: "saved", capture_reason: null, failure_code: null },
+  { id: "req_fixture_sub_02", session_id: "ses_fixture_supporting_motion", ts: iso(41), model: "google/gemini-2.5-pro-preview-06-05", provider: "google", finish_reason: "stop", latency_ms: 3_020, harness: "opencode", input_tokens: 7_900, output_tokens: 940, request_excerpt: "Review Reka presence states and reduced-motion handling for the overlays.", capture_status: "saved", capture_reason: null, failure_code: null },
+  { id: "req_fixture_sub_03", session_id: "ses_fixture_supporting_tooling", ts: iso(52), model: "anthropic/claude-opus-4.1-thinking", provider: "anthropic", finish_reason: "stop", latency_ms: 1_880, harness: "opencode", input_tokens: 9_100, output_tokens: 1_060, request_excerpt: "Trace patch capture bounds across the evidence pipeline.", capture_status: "saved", capture_reason: null, failure_code: null },
+);
 
 const exchanges: Exchange[] = sessionExchanges.map((exchange) => ({
   id: exchange.id,
@@ -380,13 +416,33 @@ const exchanges: Exchange[] = sessionExchanges.map((exchange) => ({
   r2_key: `fixtures/${exchange.id}.json`,
 }));
 
+const allSessions = [...sessions, ...supportingSessions];
+const sessionRecord = (id: string): Session | undefined => {
+  const item = allSessions.find((entry) => entry.id === id);
+  return item ? asSession(item) : undefined;
+};
+
+// Supporting fixtures omit the list/detail-only fields; complete them so a
+// sub-agent opens as a full session row or detail page.
+function asSession(item: Session | SessionDetail["supporting_sessions"][number]): Session {
+  if ("capture" in item && "liveness" in item) return item as Session;
+  const partial = item as SessionDetail["supporting_sessions"][number];
+  return {
+    ...partial,
+    activity_at: partial.last_active_at ?? partial.started_at,
+    liveness: "finalized",
+    capture: savedCapture(partial.request_count),
+    child_session_count: supportingSessions.filter((child) => child.parent_session_id === partial.id).length,
+  };
+}
+
 function detailFor(session: Session): SessionDetail {
   const { capture, liveness: _liveness, ...detailSession } = session;
   const rich = session.id === sessions[0].id;
   return {
     session: detailSession,
     capture,
-    supporting_sessions: rich ? supportingSessions : [],
+    supporting_sessions: supportingSessions.filter((child) => child.parent_session_id === session.id),
     outcome_events: rich ? outcomeEvents : [],
     files: rich ? [
       "worker/web/src/components/session/SessionHeader.vue",
@@ -461,7 +517,15 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
         && (!url.searchParams.get("model") || session.models.some((model) => model.name === url.searchParams.get("model")));
     });
     const { page, next_cursor } = paginate(filtered, url.searchParams);
-    return clone({ sessions: page, next_cursor }) as T;
+    const pageIds = new Set(page.map((session) => session.id));
+    const descendants = supportingSessions
+      .filter((child) => {
+        let parent = child.parent_session_id;
+        while (parent && !pageIds.has(parent)) parent = sessionRecord(parent)?.parent_session_id ?? null;
+        return Boolean(parent);
+      })
+      .map(asSession);
+    return clone({ sessions: page, descendants, next_cursor }) as T;
   }
 
   if (segments[2] === "sessions" && segments[3] && segments[4] === "outcome" && init.method === "POST") {
@@ -488,7 +552,8 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
   }
 
   if (segments[2] === "sessions" && segments[3] && segments[4] === "exchanges") {
-    let filtered = segments[3] === sessions[0].id ? sessionExchanges : [];
+    const scope = url.searchParams.get("session") ?? segments[3];
+    let filtered = sessionExchanges.filter((exchange) => exchange.session_id === scope);
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
     if (q) filtered = filtered.filter((exchange) => `${exchange.id} ${exchange.request_excerpt}`.toLowerCase().includes(q));
     for (const [parameter, field] of [["model", "model"], ["provider", "provider"], ["app", "harness"], ["finish_reason", "finish_reason"]] as const) {
@@ -501,7 +566,7 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
   }
 
   if (segments[2] === "sessions" && segments[3] && segments[4] === "object-state") {
-    const session = sessions.find((item) => item.id === segments[3]);
+    const session = sessionRecord(segments[3]);
     if (!session) throw new Error("Fixture session not found.");
     return clone({
       session_id: session.id,
@@ -520,9 +585,9 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
   }
 
   if (segments[2] === "sessions" && segments[3]) {
-    const session = sessions.find((item) => item.id === segments[3]);
+    const session = sessionRecord(segments[3]);
     if (!session) throw new Error("Fixture session not found.");
-    return clone(detailFor(session)) as T;
+    return clone(detailFor(asSession(session))) as T;
   }
 
   if (url.pathname === "/dashboard/api/facets") return clone(facetsFor()) as T;
