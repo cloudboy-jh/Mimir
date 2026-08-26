@@ -122,7 +122,7 @@ export function registerDashboardExchangeRoutes(app: Hono<AppEnv>) {
       )
         return c.json({ error: "session not found" }, 404);
       where[0] = "session_id = ?";
-      values[0] = scope;
+      values.push(scope);
     }
     const q = c.req.query("q");
     if (q) {

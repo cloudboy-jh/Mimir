@@ -340,6 +340,18 @@ describe("Dashboard integration", () => {
     ]);
     expect(second.next_cursor).toBeNull();
 
+    const scoped = (await (
+      await dashboardRequest(
+        "/dashboard/api/sessions/timeline-root/exchanges?session=timeline-child",
+      )
+    ).json()) as {
+      exchanges: Array<{ id: string }>;
+    };
+    expect(scoped.exchanges.map((exchange) => exchange.id)).toEqual([
+      "exchange-2b",
+      "exchange-2a",
+    ]);
+
     const ascending = (await (
       await dashboardRequest(
         "/dashboard/api/sessions/timeline-root/exchanges?order=asc&limit=2",
