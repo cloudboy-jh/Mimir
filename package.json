@@ -1,7 +1,7 @@
 {
   "name": "mimir",
   "private": true,
-  "packageManager": "bun@1.3.1",
+  "packageManager": "bun@1.3.14",
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev-dashboard.ts",
@@ -10,6 +10,7 @@
     "dev:api": "bun --cwd=worker run dev:api",
     "build": "bun --cwd=worker/web run build",
     "build:demo": "bun --cwd=worker/web run build:demo",
+    "build:assets": "bun run build && bun run build:demo",
     "check:production-assets": "bun scripts/check-production-assets.ts",
     "check:demo-assets": "bun scripts/check-demo-assets.ts",
     "verify:dashboard-builds": "bun scripts/verify-dashboard-builds.ts",

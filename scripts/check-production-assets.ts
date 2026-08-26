@@ -10,7 +10,7 @@ const changed = await new Response(untracked.stdout).text();
 if (await untracked.exited !== 0) process.exit(untracked.exitCode ?? 1);
 if (changed.trim()) {
   console.error(changed.trimEnd());
-  console.error("production assets are stale; run bun run build and commit the result");
+  console.error("production assets are stale; run bun run build:assets and commit the result");
   process.exit(1);
 }
 
