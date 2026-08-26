@@ -21,6 +21,7 @@ CREATE TABLE session_errors (session_id TEXT NOT NULL, signature TEXT NOT NULL, 
 CREATE TABLE exchange_files (exchange_id TEXT NOT NULL, session_id TEXT NOT NULL, file TEXT NOT NULL, PRIMARY KEY(exchange_id, file));
 CREATE TABLE exchange_errors (exchange_id TEXT NOT NULL, session_id TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY(exchange_id, signature));
 CREATE TABLE session_outcome_events (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, outcome TEXT NOT NULL, source TEXT NOT NULL, reason TEXT, evidence_json TEXT, created_at TEXT NOT NULL);
+CREATE TABLE session_git_artifacts (session_id TEXT NOT NULL, commit_sha TEXT NOT NULL, parent_commit_sha TEXT, committed_at TEXT, subject TEXT, repository_url TEXT, ref TEXT, provenance TEXT NOT NULL, patch_r2_key TEXT NOT NULL, patch_sha256 TEXT NOT NULL, patch_bytes INTEGER NOT NULL, patch_files INTEGER NOT NULL, patch_additions INTEGER NOT NULL, patch_deletions INTEGER NOT NULL, capture_status TEXT NOT NULL DEFAULT 'accepted', accepted_at TEXT NOT NULL, saved_at TEXT, failed_at TEXT, failure_code TEXT, created_at TEXT NOT NULL, PRIMARY KEY(session_id, commit_sha));
 `;
 
 export async function tokenHash(token: string) {
@@ -75,7 +76,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.DB.exec(
-    "DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens; DELETE FROM machines;",
+    "DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM session_git_artifacts; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens; DELETE FROM machines;",
   );
   await env.DB.prepare(
     "INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'test', '2026-01-01T00:00:00Z')",

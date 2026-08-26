@@ -109,6 +109,10 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return remotePrint(ctx, ioctx.Out, "GET", "/sessions", nil)
 	case "session":
 		return cmdSession(ctx, args[1:], ioctx.Out)
+	case "import":
+		return cmdImport(ctx, args[1:], ioctx)
+	case "backfill":
+		return cmdBackfill(ctx, args[1:], ioctx)
 	case "search":
 		_, jsonOutput := stripJSONFlag(args[1:])
 		query, err := parseSearchArgs(args[1:])
@@ -642,6 +646,8 @@ func usage(out io.Writer) error {
 		{Usage: "mimir search <query> [--json]", Description: "Search session evidence and local code."},
 		{Usage: "mimir session status <id> [--json]", Description: "Inspect capture and outcome state."},
 		{Usage: "mimir session end <id> [options]", Description: "Finalize capture and optionally record an outcome."},
+		{Usage: "mimir import [harness] [session-id...]", Description: "Select and import sessions from a local harness."},
+		{Usage: "mimir backfill [harness] [--since 7d]", Description: "Repair missing capture from local harness history."},
 		{Usage: "mimir doctor [--json]", Description: "Check the installation and connection."},
 		{Usage: "mimir update [--check] [--force] [--json]", Description: "Check or apply CLI and harness updates."},
 		{Usage: "mimir version [--json]", Description: "Show CLI, bundle, and artifact versions."},

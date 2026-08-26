@@ -236,6 +236,16 @@ changed files stay separate from tool-touched files, and every session-detail
 list, including supporting runs, files, and errors, is bounded with explicit
 disclosure. Session detail never contacts Git hosts.
 
+Historical import additionally preserves Git work as independent, multi-commit
+session artifacts. These records do not derive or mutate the work outcome and
+are retained for `landed`, `discarded`, `abandoned`, and `unresolved` sessions.
+Each artifact carries a full commit SHA, optional first parent, commit time,
+subject, normalized repository URL, historical ref, provenance, patch digest,
+patch statistics, storage lifecycle, and R2 reference. The patch is independently
+redacted and bounded before upload. Git artifact evidence supplements the
+single-commit evidence that may accompany an outcome event; it does not replace
+outcome history.
+
 File and error facets are projected from structured exchange content, not from a
 text scan of the payload. Files come only from tool-call arguments in either the
 OpenAI `function.arguments` or Anthropic `tool_use.input` shape, read from
@@ -308,6 +318,13 @@ and error fields. Its payload is capped at 512 KiB, individual strings at 64
 KiB, and excess parts are removed. OpenRouter exchanges are not uploaded by the
 plugin because the proxy record is canonical.
 
+Historical import follows the same provenance rule. The OpenCode adapter reads
+`opencode session list --format json` and `opencode export <id>`. The Pi adapter
+reads regular `.jsonl` files below `$PI_CODING_AGENT_DIR/sessions`, defaulting
+to `~/.pi/agent/sessions`, without following symlinks. Both adapters skip turns
+whose provider is OpenRouter so a local reconstruction cannot compete with or
+replace the canonical proxy exchange.
+
 The Claude Code, Codex, and Cursor command-hook adapter pairs supported prompt
 and completion events. It caps each prompt and response at 512 KiB and reports
 zero token counts and latency when the hook payload does not expose them. These
@@ -373,7 +390,47 @@ Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 `unresolved`. Outcome is independent from capture: `landed` says the result was
 kept, while `saved` says an exchange is durably represented in both R2 and D1.
 
-### 7.1 Session Objects
+Git artifacts are independent of both projections: their presence does not make
+an outcome landed, and an unresolved session may have any number of preserved
+commit artifacts within the ingestion bounds.
+
+### 7.1 Historical Import And Gap Repair
+
+`mimir import` is a user- and agent-facing local-history merge. Interactive
+forms are `mimir import` and `mimir import <opencode|pi>`; explicit mutation is
+`mimir import <opencode|pi> <id>... [--yes] [--json]`. Read-only discovery is
+`mimir import list [opencode|pi] [--json]`, and one candidate can be examined
+with `mimir import inspect <opencode|pi> <id> [--json]`.
+
+`mimir backfill [opencode|pi] [--since 7d]` repairs gaps from local history. If
+the harness is omitted, both supported sources are scanned. `--since` accepts a
+positive Go duration, positive day shorthand, or RFC3339 timestamp. Interactive
+import and backfill use a bounded selector of at most 20 candidates. In any
+non-TTY context, including `--json`, import requires an explicit harness, one or
+more IDs, and `--yes`; backfill requires `--all --yes`. The standard fully
+noninteractive form is `mimir backfill [opencode|pi] [--since 7d] --all --yes
+--json`. These requirements prevent a pipe, CI job, or agent tool call from
+bulk-uploading local history by accident.
+
+Merge identity is deterministic. A safe source session ID is retained as the
+Mimir session ID; otherwise it is replaced by a harness-scoped SHA-256-derived
+ID. OpenCode exchanges use safe source message IDs, and Pi exchanges use a
+digest of canonical session ID, assistant timestamp, and turn index. Discovery
+deduplicates requested IDs, sorts candidates deterministically, and upload
+orders sessions chronologically. The reported-exchange API's duplicate handling
+then makes reruns idempotent and allows backfill to repair only missing records.
+Imported sessions receive historical heartbeat and end events after at least
+one exchange is saved or found as a duplicate.
+
+Git collection is a separate post-exchange step when the local session includes
+a checkout directory. It considers bounded commits in the session time window,
+filters to commits overlapping tool-touched paths when such paths exist, and emits
+up to 15 non-empty redacted patches by default. Upload never calls an outcome
+endpoint. `(root session_id, commit_sha)` is the artifact key: an exact repeat
+is a duplicate, while differing patch content or metadata returns `409` and
+leaves the stored artifact unchanged.
+
+### 7.2 Session Objects
 
 Each session is owned live by a Session Durable Object named by the session
 ID. Reporters append versioned events (`turn`, `heartbeat`, `end`); capture
@@ -503,6 +560,18 @@ before this write; repository, harness, and Git metadata are intentionally
 stored as searchable identifiers. D1 keeps the envelope version, R2 key, and
 byte count beside searchable metadata.
 
+Saved Git patches are separate text objects under:
+
+```text
+sessions/<root-session-id>/git/<commit-sha>/<patch-sha256>.patch
+```
+
+The Worker applies configured redaction before hashing and writing the UTF-8
+patch. The deterministic key makes an exact retry idempotent. R2 custom metadata
+records the root session ID, commit SHA, and patch SHA-256; patch content is not
+stored in D1. The dashboard patch endpoint streams only an artifact whose D1
+capture state is `saved`, with private no-store caching.
+
 D1 first records an accepted exchange, then R2 receives the envelope, then D1
 finalizes it as saved and updates session aggregates. A bounded reconcile pass
 checks accepted and saved rows with R2 `HEAD` requests. Accepted rows with an
@@ -535,6 +604,8 @@ The migration sequence defines:
 - `exchange_files`: schema-v1 file facets with exchange-level provenance
 - `exchange_errors`: schema-v1 error signatures with exchange-level provenance
 - `session_outcome_events`: immutable outcome, source, reason, and timestamp history
+- `session_git_artifacts`: independent per-commit metadata, patch digest and
+  statistics, R2 key, and `accepted`/`saved`/`failed` storage lifecycle
 - `session_files`: normalized file facets
 - `session_errors`: normalized error facets
 - `config`: persisted deployment configuration
@@ -545,6 +616,30 @@ The migration sequence defines:
 
 D1 remains the searchable source of truth. R2 remains the complete redacted
 archive.
+
+Git artifact ingestion accepts version 1 bodies containing 1-50 commits and no
+unknown fields. It resolves supporting-session IDs to the root session before
+storage. D1 first inserts the metadata row as `accepted`, R2 then receives the
+redacted patch, and D1 finalizes the row as `saved`. An R2 failure marks the row
+`failed` with `r2_put_failed` and remains retryable; an interrupted D1 finalize
+leaves an accepted row and returns a partial failure. The primary key is
+`(session_id, commit_sha)`. A retry is a duplicate only when the patch digest,
+deterministic R2 key, parent, timestamp, subject, repository URL, ref, and
+provenance all match; otherwise ingestion returns a conflict without replacing
+the existing artifact.
+
+The machine API accepts `POST /sessions/:id/git-artifacts` with the exact body
+`{ "version": 1, "commits": [...] }`. Each commit requires `commit_sha` and
+`patch`; it may also contain `parent_commit_sha`, `committed_at`, `subject`,
+`repository_url`, `ref`, and `provenance`. Omitted nullable metadata becomes
+`null`, and omitted provenance defaults to `git`. The endpoint is
+installation-owned, accepts a
+maximum 5 MiB body, returns `201` when any artifact is newly saved, `200` when
+all are duplicates, `409` for a conflicting commit, and `503` with per-commit
+failures for a partial persistence result. Canonical session detail includes
+the ordered `git_artifacts` metadata array. The Access-protected dashboard reads
+patch content from `GET /dashboard/api/sessions/:id/git-artifacts/:commit/patch`;
+machine session detail never embeds patch bodies.
 
 ### 9.3 Device Identity And Association
 
@@ -593,7 +688,8 @@ The local index is optional and independent from remote session storage.
 ## 10. Client And Harness Access
 
 The CLI is the primary agent-facing memory client. It delegates search,
-session inspection, outcome updates, explicit ending, configuration, and
+session inspection, local-history import and backfill, outcome updates,
+explicit ending, configuration, and
 diagnostics to the canonical Worker HTTP API. `mimir session status` performs a
 bounded settle/poll while capture is pending and returns the authoritative
 receipt without upgrading a still-pending final read optimistically.

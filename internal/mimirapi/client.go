@@ -91,6 +91,13 @@ func New(pointer Pointer) Client {
 }
 
 func (c Client) Request(ctx context.Context, method, path string, body any) ([]byte, error) {
+	return c.RequestWithHeaders(ctx, method, path, body, nil)
+}
+
+// RequestWithHeaders sends a JSON API request with caller-supplied metadata.
+// Authentication and content framing remain owned by the client and cannot be
+// replaced by the supplied headers.
+func (c Client) RequestWithHeaders(ctx context.Context, method, path string, body any, headers http.Header) ([]byte, error) {
 	if err := ValidateDeploymentURL(c.Pointer.URL); err != nil {
 		return nil, err
 	}
@@ -105,6 +112,14 @@ func (c Client) Request(ctx context.Context, method, path string, body any) ([]b
 	req, err := http.NewRequestWithContext(ctx, method, c.Pointer.URL+path, input)
 	if err != nil {
 		return nil, err
+	}
+	for key, values := range headers {
+		if strings.EqualFold(key, "authorization") || strings.EqualFold(key, "content-type") || strings.EqualFold(key, "content-length") {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
 	}
 	req.Header.Set("authorization", "Bearer "+c.Pointer.Token)
 	if body != nil {

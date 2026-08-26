@@ -111,6 +111,19 @@ export function registerDashboardExchangeRoutes(app: Hono<AppEnv>) {
       return c.json({ error: "session not found" }, 404);
     const where = ["session_id IN (SELECT id FROM subtree)"];
     const values: Array<string | number> = [c.req.param("id")];
+    // A session scope restricts the timeline to one session's own exchanges.
+    // When omitted, the historical merged subtree view is preserved.
+    const scope = c.req.query("session");
+    if (scope) {
+      if (
+        !(await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?")
+          .bind(scope)
+          .first())
+      )
+        return c.json({ error: "session not found" }, 404);
+      where[0] = "session_id = ?";
+      values[0] = scope;
+    }
     const q = c.req.query("q");
     if (q) {
       where.push(

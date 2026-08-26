@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ArrowLeft, RotateCw } from "lucide-vue-next";
-import { errorMessage, getSession, getSessionDiff, type SessionDetail } from "@/lib/api";
+import { errorMessage, getSession, getSessionDiff, getSessionGitArtifactPatch, type SessionDetail } from "@/lib/api";
 import { parsePatch } from "@/lib/diff";
 import { displayTitle } from "@/lib/sessions";
 
@@ -16,6 +16,8 @@ let controller: AbortController | null = null;
 
 const files = computed(() => parsePatch(patch.value));
 const totals = computed(() => ({ added: files.value.reduce((sum, file) => sum + file.added, 0), removed: files.value.reduce((sum, file) => sum + file.removed, 0) }));
+const commit = computed(() => typeof route.params.commit === "string" ? route.params.commit : "");
+const artifact = computed(() => detail.value?.git_artifacts.find((item) => item.commit_sha === commit.value) ?? null);
 const anchor = (index: number) => `file-${index}`;
 
 function jumpToFile(event: Event) {
@@ -26,30 +28,35 @@ function jumpToFile(event: Event) {
 
 async function load() {
   controller?.abort();
-  controller = new AbortController();
+  const requestController = new AbortController();
+  controller = requestController;
   loading.value = true;
   error.value = "";
+  detail.value = null;
+  patch.value = "";
   try {
     const id = String(route.params.id);
-    const [session, diff] = await Promise.all([getSession(id, controller.signal), getSessionDiff(id, controller.signal)]);
+    const diffRequest = commit.value ? getSessionGitArtifactPatch(id, commit.value, requestController.signal) : getSessionDiff(id, requestController.signal);
+    const [session, diff] = await Promise.all([getSession(id, requestController.signal), diffRequest]);
     detail.value = session;
     patch.value = diff;
+    activeIndex.value = 0;
   } catch (cause) {
-    if (!controller.signal.aborted) error.value = errorMessage(cause, "The complete diff could not be loaded.");
+    if (!requestController.signal.aborted) error.value = errorMessage(cause, "The complete diff could not be loaded.");
   } finally {
-    if (!controller.signal.aborted) loading.value = false;
+    if (!requestController.signal.aborted) loading.value = false;
   }
 }
 
-watch(() => String(route.params.id), load, { immediate: true });
+watch(() => [String(route.params.id), commit.value], load, { immediate: true });
 </script>
 
 <template>
   <section v-if="detail && files.length" class="mx-auto max-w-[1360px] pb-12">
     <RouterLink :to="`/sessions/${detail.session.id}`" class="mb-6 inline-flex items-center gap-1.5 text-[13px] font-medium text-zinc-500 hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100"><ArrowLeft class="size-4" />Session</RouterLink>
     <header class="border-b border-zinc-200 pb-5 dark:border-zinc-800">
-      <div class="flex flex-wrap items-end justify-between gap-4"><div><h1 class="text-[28px] font-semibold tracking-[-0.025em]">Full diff</h1><p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ displayTitle(detail.session) }}</p></div><p class="font-mono text-xs text-zinc-500">{{ files.length }} {{ files.length === 1 ? "file" : "files" }} <span class="ml-2 text-emerald-700 dark:text-emerald-400">+{{ totals.added }}</span> <span class="text-red-700 dark:text-red-400">−{{ totals.removed }}</span></p></div>
-      <p class="mt-3 break-all font-mono text-xs text-zinc-500">{{ detail.session.id }}</p>
+      <div class="flex flex-wrap items-end justify-between gap-4"><div><h1 class="text-[28px] font-semibold tracking-[-0.025em]">{{ commit ? "Commit patch" : "Full diff" }}</h1><p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{{ artifact?.subject || displayTitle(detail.session) }}</p></div><p class="font-mono text-xs text-zinc-500">{{ files.length }} {{ files.length === 1 ? "file" : "files" }} <span class="ml-2 text-emerald-700 dark:text-emerald-400">+{{ totals.added }}</span> <span class="text-red-700 dark:text-red-400">−{{ totals.removed }}</span></p></div>
+      <p class="mt-3 break-all font-mono text-xs text-zinc-500">{{ commit || detail.session.id }}<template v-if="artifact?.ref"> · {{ artifact.ref }}</template></p>
     </header>
     <div class="pt-6 lg:hidden">
       <label for="diff-file" class="mb-1.5 block text-xs font-medium text-zinc-500">Changed file</label>

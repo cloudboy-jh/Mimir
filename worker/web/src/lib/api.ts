@@ -161,6 +161,28 @@ export type OutcomeEvent = {
   created_at: string;
 };
 
+export type GitArtifact = {
+  commit_sha: string;
+  parent_commit_sha: string | null;
+  committed_at: string | null;
+  subject: string | null;
+  repository_url: string | null;
+  ref: string | null;
+  provenance: string;
+  patch_r2_key: string;
+  patch_sha256: string;
+  patch_bytes: number;
+  patch_files: number;
+  patch_additions: number;
+  patch_deletions: number;
+  capture_status: "accepted" | "saved" | "failed";
+  accepted_at: string;
+  saved_at: string | null;
+  failed_at: string | null;
+  failure_code: string | null;
+  created_at: string;
+};
+
 export type OutcomeEvidence = {
   commit?: string;
   base_commit?: string;
@@ -222,6 +244,7 @@ export type SessionDetail = {
   outcome_events: OutcomeEvent[];
   files: string[];
   errors: SessionError[];
+  git_artifacts: GitArtifact[];
 };
 
 export type SessionFilters = {
@@ -242,6 +265,7 @@ export type SessionExchangeFilters = {
   provider?: string;
   app?: string;
   finishReason?: string;
+  session?: string;
   order?: "asc" | "desc";
   cursor?: string;
   limit?: number;
@@ -326,7 +350,7 @@ export async function listSessions(filters: SessionFilters = {}, signal?: AbortS
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== "") query.set(key, String(value));
   }
-  return request<{ sessions: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
+  return request<{ sessions: Session[]; descendants: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
 }
 
 export async function getSession(id: string, signal?: AbortSignal) {
@@ -341,6 +365,19 @@ export async function getSessionDiff(id: string, signal?: AbortSignal) {
     return patch;
   }
   const response = await fetch(`/dashboard/api/sessions/${encodeURIComponent(id)}/diff`, { signal, cache: "no-store", credentials: "same-origin", redirect: "manual" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new ApiError(body?.error ?? `Request failed (${response.status}).`, response.status);
+  }
+  return response.text();
+}
+
+export async function getSessionGitArtifactPatch(id: string, commit: string, signal?: AbortSignal) {
+  if (fixtureDataEnabled) throw new ApiError("Git artifact patch unavailable.", 404);
+  const response = await fetch(
+    `/dashboard/api/sessions/${encodeURIComponent(id)}/git-artifacts/${encodeURIComponent(commit)}/patch`,
+    { signal, cache: "no-store", credentials: "same-origin", redirect: "manual" },
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: string } | null;
     throw new ApiError(body?.error ?? `Request failed (${response.status}).`, response.status);
@@ -395,6 +432,7 @@ export async function listSessionExchanges(id: string, filters: SessionExchangeF
   if (filters.provider) query.set("provider", filters.provider);
   if (filters.app) query.set("app", filters.app);
   if (filters.finishReason) query.set("finish_reason", filters.finishReason);
+  if (filters.session) query.set("session", filters.session);
   if (filters.order) query.set("order", filters.order);
   if (filters.cursor) query.set("cursor", filters.cursor);
   query.set("limit", String(filters.limit ?? 25));

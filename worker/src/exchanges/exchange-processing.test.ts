@@ -42,6 +42,7 @@ describe("capture", () => {
         "customer-[0-9]+",
       ]),
     ).toEqual({ token: "[REDACTED]", value: "[REDACTED]" });
+    expect(redact("Bearer machine-secret", [])).toBe("Bearer [REDACTED]");
   });
 
   it("rejects streams above the capture limit", async () => {

@@ -39,6 +39,7 @@ export type ReconcileResponse = {
     session_ids: string[];
   };
   orphans: { count: number; r2_keys: string[]; cursor: string | null };
+  empty_sessions_removed: { count: number; session_ids: string[] };
   limit: number;
 };
 
@@ -218,6 +219,54 @@ function exchangeDetail(count: number) {
   return `${count} ${count === 1 ? "exchange" : "exchanges"}`;
 }
 
+const EMPTY_FINALIZED_PI_SESSION = `
+  harness = 'pi'
+  AND parent_session_id IS NULL
+  AND boundary = 'header'
+  AND state = 'inactive'
+  AND ended_at IS NOT NULL
+  AND inactive_at IS NOT NULL
+  AND request_count = 0
+  AND tokens_in = 0
+  AND tokens_out = 0
+  AND model_primary IS NULL
+  AND intent IS NULL
+  AND title IS NULL
+  AND title_source IS NULL
+  AND work_outcome = 'unresolved'
+  AND outcome_src IS NULL
+  AND outcome_updated_at IS NULL
+  AND outcome_reason IS NULL
+  AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_session_id = sessions.id)
+  AND NOT EXISTS (SELECT 1 FROM exchanges WHERE exchanges.session_id = sessions.id)
+  AND NOT EXISTS (SELECT 1 FROM session_files WHERE session_files.session_id = sessions.id)
+  AND NOT EXISTS (SELECT 1 FROM session_errors WHERE session_errors.session_id = sessions.id)
+  AND NOT EXISTS (SELECT 1 FROM session_outcome_events WHERE session_outcome_events.session_id = sessions.id)
+  AND NOT EXISTS (SELECT 1 FROM session_git_artifacts WHERE session_git_artifacts.session_id = sessions.id)
+`;
+
+async function removeEmptyFinalizedPiSessions(
+  env: Bindings,
+  limit: number,
+): Promise<string[]> {
+  const candidates = await env.DB.prepare(
+    `SELECT id FROM sessions WHERE ${EMPTY_FINALIZED_PI_SESSION} ORDER BY ended_at, id LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{ id: string }>();
+  const removed: string[] = [];
+  for (const candidate of candidates.results) {
+    await env.LOGS.delete(`sessions/${candidate.id}/transcript.json`);
+    const result = await env.DB.prepare(
+      `DELETE FROM sessions WHERE id = ? AND ${EMPTY_FINALIZED_PI_SESSION}`,
+    )
+      .bind(candidate.id)
+      .run();
+    if (result.meta.changes > 0) removed.push(candidate.id);
+  }
+  return removed;
+}
+
 export async function reconcile(
   env: Bindings,
   requestedLimit: number,
@@ -233,6 +282,9 @@ export async function reconcile(
       100,
     ),
   );
+  const emptySessionsRemoved = scanDatabase
+    ? await removeEmptyFinalizedPiSessions(env, limit)
+    : [];
   const decodedCursor = decodeDatabaseCursor(databaseCursor);
   const queried = scanDatabase
     ? await env.DB.prepare(
@@ -384,6 +436,10 @@ export async function reconcile(
       count: orphans.length,
       r2_keys: orphans,
       cursor: listed.truncated ? (listed.cursor ?? null) : null,
+    },
+    empty_sessions_removed: {
+      count: emptySessionsRemoved.length,
+      session_ids: emptySessionsRemoved,
     },
     limit,
   };

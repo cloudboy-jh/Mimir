@@ -3,6 +3,11 @@ import type { AppEnv } from "../env";
 import { ingestReportedExchange } from "../exchanges/reported-exchange-routes";
 import { parseSessionEvent, SESSION_ID } from "./events";
 import { canMutateSession, expireSessions } from "./lifecycle";
+import {
+  ingestGitArtifacts,
+  loadSessionGitArtifacts,
+  readGitArtifactBody,
+} from "./git-artifacts";
 import { canonicalOutcome, endSession, updateOutcome } from "./outcomes";
 import {
   loadSessionErrorSignatures,
@@ -72,8 +77,15 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
     const session = await loadSessionRecord(c.env.DB, id);
     if (!session) return c.json({ error: "session not found" }, 404);
     const outcomeRoot = await rootSessionID(c.env.DB, id);
-    const [exchanges, files, errors, capture, outcomeEvents, children] =
-      await Promise.all([
+    const [
+      exchanges,
+      files,
+      errors,
+      capture,
+      outcomeEvents,
+      children,
+      gitArtifacts,
+    ] = await Promise.all([
         c.env.DB.prepare(
           `${SESSION_SUBTREE_CTE} SELECT * FROM exchanges WHERE session_id IN (SELECT id FROM subtree) ORDER BY ts`,
         )
@@ -84,6 +96,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
         captureTreeSummary(c.env.DB, id),
         loadSessionOutcomeEvents(c.env.DB, outcomeRoot),
         loadSupportingSessions(c.env.DB, id),
+        loadSessionGitArtifacts(c.env.DB, id),
       ]);
     return c.json({
       session,
@@ -93,6 +106,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
       files,
       errors,
       exchanges: exchanges.results,
+      git_artifacts: gitArtifacts,
     });
   });
 
@@ -135,6 +149,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
   app.use("/sessions/:id/mark", requireSessionOwnership);
   app.use("/sessions/:id/outcome", requireSessionOwnership);
   app.use("/sessions/:id/end", requireSessionOwnership);
+  app.use("/sessions/:id/git-artifacts", requireSessionOwnership);
 
   app.post("/sessions/:id/mark", async (c) => {
     const body = await c.req.json<{
@@ -158,6 +173,37 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
 
   app.post("/sessions/:id/end", (c) => endSession(c, "agent"));
   app.post("/sessions/:id/exchanges", ingestReportedExchange);
+
+  app.post("/sessions/:id/git-artifacts", async (c) => {
+    const parsed = await readGitArtifactBody(c.req.raw);
+    if ("error" in parsed)
+      return c.json(
+        { error: parsed.error },
+        parsed.error.endsWith("too large") ? 413 : 400,
+      );
+    const result = await ingestGitArtifacts(
+      c.env.DB,
+      c.env.LOGS,
+      c.req.param("id"),
+      parsed.body,
+    );
+    if (result.kind === "invalid") return c.json({ error: result.error }, 400);
+    if (result.kind === "not-found")
+      return c.json({ error: "session not found" }, 404);
+    if (result.kind === "conflict")
+      return c.json(
+        {
+          error: "Git artifact conflicts with stored commit",
+          commit_sha: result.commit_sha,
+        },
+        409,
+      );
+    if (result.kind === "partial") return c.json(result, 503);
+    return c.json(
+      result,
+      result.duplicates === result.artifacts.length ? 200 : 201,
+    );
+  });
 
   app.post("/sessions/:id/events", async (c) => {
     const id = c.req.param("id");

@@ -8,6 +8,7 @@ const MACHINE_CAPABILITIES = [
   "hermes_authorization",
   "machine_identity_association",
   "session_events",
+  "session_git_artifacts",
   "session_lifecycle",
   "session_outcomes",
   "session_search",
