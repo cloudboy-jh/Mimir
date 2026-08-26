@@ -288,7 +288,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "same-origin",
     redirect: "manual",
     ...init,
-    headers: { accept: "application/json", ...init.headers },
+    headers: {
+      accept: "application/json",
+      "X-Requested-With": "XMLHttpRequest",
+      ...init.headers,
+    },
   });
   if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400) || (response.ok && !response.headers.get("content-type")?.includes("application/json"))) {
     notifyAuthRequired();

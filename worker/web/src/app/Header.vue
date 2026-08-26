@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
+import { LogOut } from "lucide-vue-next";
 import logo from "../../../../assets/images/mimir-readme.png";
 import { getIdentity, type DashboardIdentity } from "@/lib/api";
 import ThemeToggle from "./ThemeToggle.vue";
@@ -44,6 +45,10 @@ onBeforeUnmount(() => controller?.abort());
           <span class="flex h-5 min-w-5 items-center justify-center rounded-[3px] bg-zinc-900 px-1 font-mono text-[9px] font-medium text-zinc-50 dark:bg-zinc-100 dark:text-zinc-900">{{ initials }}</span>
           <span class="hidden max-w-40 truncate text-xs font-medium text-zinc-700 md:block dark:text-zinc-300">{{ identityLabel }}</span>
         </div>
+        <a href="/cdn-cgi/access/logout" aria-label="Sign out" title="Sign out" class="inline-flex h-8.5 items-center justify-center gap-2 rounded-[5px] border border-transparent px-2.5 text-[13px] font-medium text-zinc-600 transition-colors duration-150 ease-out hover:border-zinc-200 hover:bg-zinc-100 hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:border-zinc-800 dark:hover:bg-zinc-900 dark:hover:text-zinc-100">
+          <LogOut class="size-4" />
+          <span class="hidden sm:inline">Sign out</span>
+        </a>
         <ThemeToggle />
       </div>
     </div>
