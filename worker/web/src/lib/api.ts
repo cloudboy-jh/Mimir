@@ -1,4 +1,5 @@
 import { fixtureDataEnabled } from "./data-source";
+import { fixtureRequest } from "@/lib/fixture-provider";
 
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
@@ -303,10 +304,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  if (fixtureDataEnabled) {
-    const { fixtureRequest } = await import("@/lib/dev-fixtures");
-    return fixtureRequest<T>(path, init);
-  }
+  if (fixtureDataEnabled) return fixtureRequest<T>(path, init);
   const response = await fetch(path, {
     cache: "no-store",
     credentials: "same-origin",

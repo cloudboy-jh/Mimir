@@ -5,12 +5,23 @@ import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig(({ mode }) => {
   const demo = mode === "demo";
+  const fixtures = demo || (mode === "development" && process.env.VITE_MIMIR_DATA_SOURCE === "fixtures");
   return {
     root: fileURLToPath(new URL(".", import.meta.url)),
     plugins: [vue(), tailwindcss()],
-    resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+    resolve: {
+      alias: [
+        {
+          find: "@/lib/fixture-provider",
+          replacement: fileURLToPath(
+            new URL(fixtures ? "./src/lib/dev-fixtures.ts" : "./src/lib/fixture-provider.ts", import.meta.url),
+          ),
+        },
+        { find: "@", replacement: fileURLToPath(new URL("./src", import.meta.url)) },
+      ],
+    },
     base: "/",
-    define: demo ? { "import.meta.env.VITE_MIMIR_DATA_SOURCE": JSON.stringify("fixtures") } : undefined,
+    define: { __MIMIR_FIXTURES__: JSON.stringify(fixtures) },
     server: {
       port: 5173,
       strictPort: true,

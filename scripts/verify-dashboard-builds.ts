@@ -9,15 +9,22 @@ async function files(root: string) {
 
 const production = await files(productionRoot);
 const demo = await files(demoRoot);
-if (production.some((path) => path.includes("dev-fixtures-"))) {
-  throw new Error("production dashboard contains the fixture transport chunk");
+const fixtureMarker = "dev_fixture_macbook";
+const productionScripts = await Promise.all(
+  production.filter((path) => path.endsWith(".js")).map((path) => Bun.file(`${productionRoot}/${path}`).text()),
+);
+const demoScripts = await Promise.all(
+  demo.filter((path) => path.endsWith(".js")).map((path) => Bun.file(`${demoRoot}/${path}`).text()),
+);
+if (productionScripts.some((content) => content.includes(fixtureMarker))) {
+  throw new Error("production dashboard contains fixture data");
 }
-if (!demo.some((path) => path.includes("dev-fixtures-"))) {
-  throw new Error("demo dashboard is missing the fixture transport chunk");
+if (!demoScripts.some((content) => content.includes(fixtureMarker))) {
+  throw new Error("demo dashboard is missing fixture data");
 }
-const demoScripts = demo.filter((path) => path.endsWith(".js") && !path.includes("dev-fixtures-"));
-const noticePresent = await Promise.all(demoScripts.map((path) => Bun.file(`${demoRoot}/${path}`).text())).then((contents) => contents.some((content) => content.includes("Sample data.")));
-if (!noticePresent) throw new Error("demo dashboard is missing the sample-data notice");
+if (!demoScripts.some((content) => content.includes("Sample data."))) {
+  throw new Error("demo dashboard is missing the sample-data notice");
+}
 const productionIndex = await Bun.file(`${productionRoot}/index.html`).text();
 if (!productionIndex.includes('src="/assets/') || !productionIndex.includes('href="/assets/')) {
   throw new Error("production dashboard index does not reference compiled assets");

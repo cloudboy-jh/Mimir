@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 
 const webSource = fileURLToPath(new URL("./web/src", import.meta.url));
 export default defineConfig({
+  define: { __MIMIR_FIXTURES__: "false" },
   resolve: { alias: { "@": webSource } },
   plugins: [
     cloudflareTest({
