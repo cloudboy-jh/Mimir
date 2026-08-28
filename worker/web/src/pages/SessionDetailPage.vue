@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { useRoute } from "vue-router";
-import { AlertTriangle, ArrowLeft, Download, RotateCw } from "lucide-vue-next";
+import { useRoute, useRouter } from "vue-router";
+import { ChevronDown, Download, ExternalLink, FileText, AlertTriangle, ArrowLeft, RotateCw } from "lucide-vue-next";
+import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuSeparator, DropdownMenuTrigger } from "reka-ui";
 import RequestTimeline from "@/components/session/RequestTimeline.vue";
 import SessionEvidenceSidebar from "@/components/session/SessionEvidenceSidebar.vue";
 import SessionHeader from "@/components/session/SessionHeader.vue";
@@ -12,8 +13,10 @@ import LiveSessionTurns from "@/components/session/LiveSessionTurns.vue";
 import { ApiError, connectSessionLive, currentOutcomeEvidence, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
 import { markdownExportLimit, sessionMarkdown } from "@/lib/markdown";
+import { loadSessionNoteSettings, prepareObsidianVault, writeAndOpenSessionNote } from "@/lib/session-notes";
 
 const route = useRoute();
+const router = useRouter();
 const detail = ref<SessionDetail | null>(null);
 const loading = ref(true);
 const error = ref("");
@@ -184,33 +187,77 @@ function applyTitleUpdate(update: SessionTitleUpdate) {
 
 const exporting = ref(false);
 const exportError = ref("");
+const noteMessage = ref("");
+const obsidianConfigured = ref(false);
+
+async function refreshObsidianState() {
+  try {
+    obsidianConfigured.value = Boolean(await loadSessionNoteSettings());
+  } catch {
+    obsidianConfigured.value = false;
+  }
+}
+
+async function renderSessionMarkdown(): Promise<string> {
+  if (!detail.value) throw new Error("The session is not available.");
+  const id = detail.value.session.id;
+  const exchanges: SessionExchange[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { exchanges: SessionExchange[]; next_cursor: string | null } = await listSessionExchanges(id, { order: "asc", limit: 100, cursor: cursor ?? undefined });
+    exchanges.push(...page.exchanges);
+    cursor = page.next_cursor;
+  } while (cursor && exchanges.length < markdownExportLimit());
+  const sourceURL = new URL(window.location.href);
+  sourceURL.hash = "";
+  sourceURL.search = "";
+  return sessionMarkdown(detail.value, exchanges.slice(0, markdownExportLimit()), sourceURL.toString());
+}
 
 async function exportMarkdown() {
   if (!detail.value || exporting.value) return;
   exporting.value = true;
   exportError.value = "";
+  noteMessage.value = "";
   try {
-    const id = detail.value.session.id;
-    const exchanges: SessionExchange[] = [];
-    let cursor: string | null = null;
-    do {
-      const page: { exchanges: SessionExchange[]; next_cursor: string | null } = await listSessionExchanges(id, { order: "asc", limit: 100, cursor: cursor ?? undefined });
-      exchanges.push(...page.exchanges);
-      cursor = page.next_cursor;
-    } while (cursor && exchanges.length < markdownExportLimit());
-    const markdown = sessionMarkdown(detail.value, exchanges.slice(0, markdownExportLimit()));
+    const markdown = await renderSessionMarkdown();
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `mimir-session-${id}.md`;
+    anchor.download = `mimir-session-${detail.value.session.id}.md`;
     anchor.click();
     URL.revokeObjectURL(url);
+    noteMessage.value = "Markdown download created.";
   } catch (cause) {
     exportError.value = errorMessage(cause, "The export could not be created.");
   } finally {
     exporting.value = false;
   }
 }
+
+async function openSessionNote() {
+  if (!detail.value || exporting.value) return;
+  exporting.value = true;
+  exportError.value = "";
+  noteMessage.value = "";
+  try {
+    const settings = await prepareObsidianVault();
+    const markdown = await renderSessionMarkdown();
+    const result = await writeAndOpenSessionNote(detail.value.session, markdown, settings);
+    noteMessage.value = result.created ? `Created ${result.relativePath} and asked Obsidian to open it.` : `Opened existing note ${result.relativePath}.`;
+  } catch (cause) {
+    exportError.value = errorMessage(cause, "The session note could not be opened.");
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function openOrConfigureObsidian() {
+  if (obsidianConfigured.value) await openSessionNote();
+  else await router.push({ path: "/settings", hash: "#session-notes" });
+}
+
+void refreshObsidianState();
 
 watch(() => String(route.params.id), load, { immediate: true });
 useAutoRefresh(refreshLiveness);
@@ -223,7 +270,19 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
       <RouterLink to="/sessions" class="inline-flex items-center gap-1.5 text-[13px] font-medium text-zinc-500 hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100"><ArrowLeft class="size-4" />Sessions</RouterLink>
       <div class="flex min-w-0 flex-wrap items-center justify-end gap-3">
         <span v-if="exportError" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ exportError }}</span>
-        <button type="button" :disabled="exporting" class="inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium text-zinc-700 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900" @click="exportMarkdown"><Download class="size-3.5" />{{ exporting ? "Exporting…" : "Download as Markdown" }}</button>
+        <span v-else-if="noteMessage" class="max-w-md text-right text-xs text-zinc-500 dark:text-zinc-400" role="status">{{ noteMessage }}</span>
+        <DropdownMenuRoot @update:open="refreshObsidianState">
+          <DropdownMenuTrigger as-child>
+            <button type="button" :disabled="exporting" class="inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium text-zinc-700 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"><FileText class="size-3.5" />{{ exporting ? "Preparing…" : "Session note" }}<ChevronDown class="size-3.5 text-zinc-500" aria-hidden="true" /></button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <DropdownMenuContent align="end" :side-offset="6" class="z-50 min-w-52 rounded-[5px] border border-zinc-200 bg-white p-1 shadow-[0_18px_50px_rgba(0,0,0,0.18)] focus:outline-none dark:border-zinc-700 dark:bg-zinc-900">
+              <DropdownMenuItem class="flex cursor-pointer items-center gap-2 rounded-[4px] px-2.5 py-2 text-[13px] text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="openOrConfigureObsidian"><ExternalLink class="size-3.5 text-zinc-500" aria-hidden="true" />{{ obsidianConfigured ? "Open in Obsidian" : "Set up Obsidian…" }}</DropdownMenuItem>
+              <DropdownMenuSeparator class="my-1 h-px bg-zinc-200 dark:bg-zinc-700" />
+              <DropdownMenuItem class="flex cursor-pointer items-center gap-2 rounded-[4px] px-2.5 py-2 text-[13px] text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="exportMarkdown"><Download class="size-3.5 text-zinc-500" aria-hidden="true" />Download Markdown</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
       </div>
     </div>
     <div v-if="error || liveError" class="mb-5 flex items-start gap-2.5 border-y border-amber-300 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200" role="alert">

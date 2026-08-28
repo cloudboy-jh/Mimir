@@ -257,9 +257,14 @@ messages of a request so a failure is not re-counted against every later
 exchange that replays the transcript. Prose that merely mentions a path or the
 word "error" is not a facet.
 
-`Download as Markdown` is a transient client-side export generated from the
-session detail and timeline responses (capped at 500 exchanges). Nothing is
-persisted, and exports contain excerpts and metadata, not raw R2 payloads.
+The session-note menu renders readable Markdown client-side from the session
+detail and timeline responses, capped at 500 exchanges. Download remains a
+transient browser export. In supported Chromium browsers, a user may instead
+connect an Obsidian vault and write the same Markdown to
+`<notes-folder>/<repository>/<session-date>-<session-hash>.md` before opening it
+through Obsidian's desktop URI. The directory handle stays in browser-local
+IndexedDB, existing notes are never overwritten, and exports contain excerpts
+and metadata rather than raw R2 payloads.
 
 ## 5. Capture Lifecycle
 

@@ -1,0 +1,128 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { obsidianOpenURL, sanitizePathSegment, sessionNoteDestination, sessionNotesFolderError, writeSessionNote, type SessionNoteDestination } from "../src/lib/session-notes";
+
+describe("session note destinations", () => {
+  it("uses the session date and a stable hash", async () => {
+    const session = { id: "ses_example", repo: "mimir", started_at: "2026-08-27T23:45:12Z" };
+    const first = await sessionNoteDestination(session);
+    const second = await sessionNoteDestination(session);
+
+    expect(first).toEqual(second);
+    expect(first.directories).toEqual(["Mimir", "mimir"]);
+    expect(first.fileName).toMatch(/^2026-08-27-[0-9a-f]{8}\.md$/);
+    expect(first.relativePath).toBe(`Mimir/mimir/${first.fileName}`);
+  });
+
+  it("sanitizes project names without allowing path traversal", () => {
+    expect(sanitizePathSegment("../../team\\repo:*?")).toBe("-..-team-repo---");
+    expect(sanitizePathSegment("CON")).toBe("CON-project");
+    expect(sanitizePathSegment("  ")).toBe("Unassigned");
+  });
+
+  it("rejects invalid configured folder names", () => {
+    expect(sessionNotesFolderError("")).toBe("Enter a notes folder.");
+    expect(sessionNotesFolderError("../Notes")).toBe("Use one folder name without slashes or filesystem special characters.");
+    expect(sessionNotesFolderError("Session Notes")).toBeNull();
+  });
+
+  it("encodes Obsidian vault and file parameters", () => {
+    expect(obsidianOpenURL("Dev Notes", "Mimir/my project/note.md")).toBe("obsidian://open?vault=Dev%20Notes&file=Mimir%2Fmy%20project%2Fnote.md");
+  });
+});
+
+describe("writeSessionNote", () => {
+  const destination: SessionNoteDestination = {
+    directories: ["Mimir", "mimir"],
+    fileName: "2026-08-27-a1b2c3d4.md",
+    relativePath: "Mimir/mimir/2026-08-27-a1b2c3d4.md",
+  };
+
+  it("creates directories before writing a missing note", async () => {
+    const calls: string[] = [];
+    const write = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const abort = vi.fn(async () => undefined);
+    const file = { kind: "file", name: destination.fileName, createWritable: async () => ({ write, close, abort }) };
+    const project = {
+      kind: "directory",
+      name: "mimir",
+      getFileHandle: async (name: string, options?: { create?: boolean }) => {
+        calls.push(options?.create ? `create-file:${name}` : `find-file:${name}`);
+        if (!options?.create) throw new DOMException("Missing", "NotFoundError");
+        return file;
+      },
+    };
+    const root = {
+      kind: "directory",
+      name: "Mimir",
+      getDirectoryHandle: async (name: string, options?: { create?: boolean }) => {
+        calls.push(`directory:${name}:${String(options?.create)}`);
+        return project;
+      },
+    };
+    const vault = {
+      kind: "directory",
+      name: "Vault",
+      getDirectoryHandle: async (name: string, options?: { create?: boolean }) => {
+        calls.push(`directory:${name}:${String(options?.create)}`);
+        return root;
+      },
+    };
+
+    const result = await writeSessionNote(vault as unknown as FileSystemDirectoryHandle, destination, "# Session");
+
+    expect(calls).toEqual([
+      "directory:Mimir:true",
+      "directory:mimir:true",
+      `find-file:${destination.fileName}`,
+      `create-file:${destination.fileName}`,
+    ]);
+    expect(write).toHaveBeenCalledWith("# Session");
+    expect(close).toHaveBeenCalledOnce();
+    expect(result.created).toBe(true);
+  });
+
+  it("opens an existing note without overwriting it", async () => {
+    const createWritable = vi.fn();
+    const file = { kind: "file", name: destination.fileName, createWritable };
+    const project = { kind: "directory", name: "mimir", getFileHandle: vi.fn(async () => file) };
+    const root = { kind: "directory", name: "Mimir", getDirectoryHandle: vi.fn(async () => project) };
+    const vault = { kind: "directory", name: "Vault", getDirectoryHandle: vi.fn(async () => root) };
+
+    const result = await writeSessionNote(vault as unknown as FileSystemDirectoryHandle, destination, "replacement");
+
+    expect(createWritable).not.toHaveBeenCalled();
+    expect(result.created).toBe(false);
+  });
+
+  it("removes a newly created file when writing fails", async () => {
+    const failure = new Error("Disk full");
+    const abort = vi.fn(async () => undefined);
+    const removeEntry = vi.fn(async () => undefined);
+    const file = {
+      kind: "file",
+      name: destination.fileName,
+      createWritable: async () => ({
+        write: async () => { throw failure; },
+        close: vi.fn(),
+        abort,
+      }),
+    };
+    const project = {
+      kind: "directory",
+      name: "mimir",
+      getFileHandle: async (_name: string, options?: { create?: boolean }) => {
+        if (!options?.create) throw new DOMException("Missing", "NotFoundError");
+        return file;
+      },
+      removeEntry,
+    };
+    const root = { kind: "directory", name: "Mimir", getDirectoryHandle: vi.fn(async () => project) };
+    const vault = { kind: "directory", name: "Vault", getDirectoryHandle: vi.fn(async () => root) };
+
+    await expect(writeSessionNote(vault as unknown as FileSystemDirectoryHandle, destination, "content")).rejects.toThrow("Disk full");
+    expect(abort).toHaveBeenCalledOnce();
+    expect(removeEntry).toHaveBeenCalledWith(destination.fileName);
+  });
+});
