@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { obsidianOpenURL, sanitizePathSegment, sessionNoteDestination, sessionNotesFolderError, writeSessionNote, type SessionNoteDestination } from "../src/lib/session-notes";
+import { boundedObsidianNewURL, obsidianClipboardURL, obsidianOpenURL, obsidianVaultNameError, sanitizePathSegment, sessionNoteDestination, sessionNotesFolderError, writeSessionNote, type SessionNoteDestination } from "../src/lib/session-notes";
 
 describe("session note destinations", () => {
   it("uses the session date and a stable hash", async () => {
@@ -26,8 +26,34 @@ describe("session note destinations", () => {
     expect(sessionNotesFolderError("Session Notes")).toBeNull();
   });
 
+  it("requires a vault name for URI handoff", () => {
+    expect(obsidianVaultNameError("")).toBe("Enter the Obsidian vault name or ID.");
+    expect(obsidianVaultNameError("Developer Notes")).toBeNull();
+  });
+
   it("encodes Obsidian vault and file parameters", () => {
     expect(obsidianOpenURL("Dev Notes", "Mimir/my project/note.md")).toBe("obsidian://open?vault=Dev%20Notes&file=Mimir%2Fmy%20project%2Fnote.md");
+  });
+
+  it("keeps clipboard handoffs short", () => {
+    expect(obsidianClipboardURL("Dev Notes", "Mimir/my project/note.md")).toBe("obsidian://new?vault=Dev%20Notes&file=Mimir%2Fmy%20project%2Fnote.md&clipboard");
+  });
+
+  it("keeps small Brave handoffs complete", () => {
+    const handoff = boundedObsidianNewURL("Dev Notes", "Mimir/mimir/note.md", "# Session\n\nReadable evidence.");
+
+    expect(handoff.truncated).toBe(false);
+    expect(handoff.url).toContain("obsidian://new?vault=Dev%20Notes");
+    expect(decodeURIComponent(handoff.url)).toContain("# Session\n\nReadable evidence.");
+  });
+
+  it("bounds large Brave handoffs while preserving the readable beginning", () => {
+    const handoff = boundedObsidianNewURL("Dev Notes", "Mimir/mimir/note.md", `# Session\n\nSummary first.\n${"request evidence\n".repeat(10_000)}`);
+
+    expect(handoff.truncated).toBe(true);
+    expect(handoff.url.length).toBeLessThanOrEqual(1_900);
+    expect(decodeURIComponent(handoff.url)).toContain("# Session\n\nSummary first.");
+    expect(decodeURIComponent(handoff.url)).toContain("Note truncated for this browser's Obsidian handoff.");
   });
 });
 
@@ -81,6 +107,7 @@ describe("writeSessionNote", () => {
     expect(write).toHaveBeenCalledWith("# Session");
     expect(close).toHaveBeenCalledOnce();
     expect(result.created).toBe(true);
+    expect(result.truncated).toBe(false);
   });
 
   it("opens an existing note without overwriting it", async () => {

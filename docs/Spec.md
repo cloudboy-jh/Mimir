@@ -259,12 +259,16 @@ word "error" is not a facet.
 
 The session-note menu renders readable Markdown client-side from the session
 detail and timeline responses, capped at 500 exchanges. Download remains a
-transient browser export. In supported Chromium browsers, a user may instead
-connect an Obsidian vault and write the same Markdown to
+transient browser export. Chrome and Edge can connect an Obsidian vault through
+the File System Access API and write
 `<notes-folder>/<repository>/<session-date>-<session-hash>.md` before opening it
-through Obsidian's desktop URI. The directory handle stays in browser-local
-IndexedDB, existing notes are never overwritten, and exports contain excerpts
-and metadata rather than raw R2 payloads.
+through Obsidian's desktop URI. Brave uses a browser-local vault name or ID, copies a
+bounded note to the clipboard, and opens a short `obsidian://new` handoff because
+Brave does not expose direct directory access. If clipboard permission is
+unavailable, Mimir sends a URI-contained excerpt capped below 1,900 characters.
+Directory handles and URI preferences stay in browser-local IndexedDB,
+existing notes are never overwritten, and exports contain excerpts and metadata
+rather than raw R2 payloads.
 
 ## 5. Capture Lifecycle
 

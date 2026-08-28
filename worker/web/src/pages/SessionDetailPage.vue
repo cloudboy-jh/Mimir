@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ChevronDown, Download, ExternalLink, FileText, AlertTriangle, ArrowLeft, RotateCw } from "lucide-vue-next";
+import { AlertTriangle, ArrowLeft, BookOpen, ChevronDown, Download, FileText, RotateCw } from "lucide-vue-next";
 import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuSeparator, DropdownMenuTrigger } from "reka-ui";
 import RequestTimeline from "@/components/session/RequestTimeline.vue";
 import SessionEvidenceSidebar from "@/components/session/SessionEvidenceSidebar.vue";
@@ -13,7 +13,7 @@ import LiveSessionTurns from "@/components/session/LiveSessionTurns.vue";
 import { ApiError, connectSessionLive, currentOutcomeEvidence, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
 import { markdownExportLimit, sessionMarkdown } from "@/lib/markdown";
-import { loadSessionNoteSettings, prepareObsidianVault, writeAndOpenSessionNote } from "@/lib/session-notes";
+import { loadSessionNoteSettings, OBSIDIAN_URI_EXCHANGE_LIMIT, prepareObsidianVault, writeAndOpenSessionNote } from "@/lib/session-notes";
 
 const route = useRoute();
 const router = useRouter();
@@ -198,20 +198,20 @@ async function refreshObsidianState() {
   }
 }
 
-async function renderSessionMarkdown(): Promise<string> {
+async function renderSessionMarkdown(limit = markdownExportLimit()): Promise<string> {
   if (!detail.value) throw new Error("The session is not available.");
   const id = detail.value.session.id;
   const exchanges: SessionExchange[] = [];
   let cursor: string | null = null;
   do {
-    const page: { exchanges: SessionExchange[]; next_cursor: string | null } = await listSessionExchanges(id, { order: "asc", limit: 100, cursor: cursor ?? undefined });
+    const page: { exchanges: SessionExchange[]; next_cursor: string | null } = await listSessionExchanges(id, { order: "asc", limit: Math.min(100, limit), cursor: cursor ?? undefined });
     exchanges.push(...page.exchanges);
     cursor = page.next_cursor;
-  } while (cursor && exchanges.length < markdownExportLimit());
+  } while (cursor && exchanges.length < limit);
   const sourceURL = new URL(window.location.href);
   sourceURL.hash = "";
   sourceURL.search = "";
-  return sessionMarkdown(detail.value, exchanges.slice(0, markdownExportLimit()), sourceURL.toString());
+  return sessionMarkdown(detail.value, exchanges.slice(0, limit), sourceURL.toString());
 }
 
 async function exportMarkdown() {
@@ -242,9 +242,10 @@ async function openSessionNote() {
   noteMessage.value = "";
   try {
     const settings = await prepareObsidianVault();
-    const markdown = await renderSessionMarkdown();
+    const markdown = await renderSessionMarkdown(settings.vault ? markdownExportLimit() : OBSIDIAN_URI_EXCHANGE_LIMIT);
     const result = await writeAndOpenSessionNote(detail.value.session, markdown, settings);
-    noteMessage.value = result.created ? `Created ${result.relativePath} and asked Obsidian to open it.` : `Opened existing note ${result.relativePath}.`;
+    if (result.created === null) noteMessage.value = `Sent ${result.relativePath} to Obsidian${result.truncated ? " with bounded request evidence." : "."}`;
+    else noteMessage.value = result.created ? `Created ${result.relativePath} and asked Obsidian to open it.` : `Opened existing note ${result.relativePath}.`;
   } catch (cause) {
     exportError.value = errorMessage(cause, "The session note could not be opened.");
   } finally {
@@ -273,13 +274,13 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
         <span v-else-if="noteMessage" class="max-w-md text-right text-xs text-zinc-500 dark:text-zinc-400" role="status">{{ noteMessage }}</span>
         <DropdownMenuRoot @update:open="refreshObsidianState">
           <DropdownMenuTrigger as-child>
-            <button type="button" :disabled="exporting" class="inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium text-zinc-700 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"><FileText class="size-3.5" />{{ exporting ? "Preparing…" : "Session note" }}<ChevronDown class="size-3.5 text-zinc-500" aria-hidden="true" /></button>
+            <button type="button" :disabled="exporting" class="group inline-flex h-8.5 items-stretch overflow-hidden rounded-[5px] border border-zinc-300 bg-white text-[13px] font-medium text-zinc-700 transition-colors duration-150 ease-out hover:border-zinc-400 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"><span class="inline-flex items-center gap-2 px-3"><FileText class="size-3.5 text-zinc-500" aria-hidden="true" />{{ exporting ? "Preparing…" : "Session note" }}</span><span class="grid w-7 place-items-center border-l border-zinc-200 text-zinc-500 transition-colors group-hover:bg-zinc-100 dark:border-zinc-800 dark:group-hover:bg-zinc-800"><ChevronDown class="size-3.5" aria-hidden="true" /></span></button>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuContent align="end" :side-offset="6" class="z-50 min-w-52 rounded-[5px] border border-zinc-200 bg-white p-1 shadow-[0_18px_50px_rgba(0,0,0,0.18)] focus:outline-none dark:border-zinc-700 dark:bg-zinc-900">
-              <DropdownMenuItem class="flex cursor-pointer items-center gap-2 rounded-[4px] px-2.5 py-2 text-[13px] text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="openOrConfigureObsidian"><ExternalLink class="size-3.5 text-zinc-500" aria-hidden="true" />{{ obsidianConfigured ? "Open in Obsidian" : "Set up Obsidian…" }}</DropdownMenuItem>
+            <DropdownMenuContent align="end" :side-offset="6" class="z-50 min-w-64 rounded-[7px] border border-zinc-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.18)] focus:outline-none dark:border-zinc-700 dark:bg-zinc-900">
+              <DropdownMenuItem class="flex cursor-pointer items-start gap-3 rounded-[4px] px-2.5 py-2.5 text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="openOrConfigureObsidian"><BookOpen class="mt-0.5 size-4 shrink-0 text-zinc-500" aria-hidden="true" /><span><span class="block text-[13px] font-medium">{{ obsidianConfigured ? "Open in Obsidian" : "Set up Obsidian" }}</span><span class="mt-0.5 block text-[11px] font-normal text-zinc-500">{{ obsidianConfigured ? "Create or reopen this project note" : "Choose how Mimir sends session notes" }}</span></span></DropdownMenuItem>
               <DropdownMenuSeparator class="my-1 h-px bg-zinc-200 dark:bg-zinc-700" />
-              <DropdownMenuItem class="flex cursor-pointer items-center gap-2 rounded-[4px] px-2.5 py-2 text-[13px] text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="exportMarkdown"><Download class="size-3.5 text-zinc-500" aria-hidden="true" />Download Markdown</DropdownMenuItem>
+              <DropdownMenuItem class="flex cursor-pointer items-start gap-3 rounded-[4px] px-2.5 py-2.5 text-zinc-700 outline-none select-none data-[highlighted]:bg-stone-100 data-[highlighted]:text-zinc-950 dark:text-zinc-300 dark:data-[highlighted]:bg-zinc-800 dark:data-[highlighted]:text-zinc-50" @select="exportMarkdown"><Download class="mt-0.5 size-4 shrink-0 text-zinc-500" aria-hidden="true" /><span><span class="block text-[13px] font-medium">Download Markdown</span><span class="mt-0.5 block text-[11px] font-normal text-zinc-500">Save the complete session note locally</span></span></DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenuPortal>
         </DropdownMenuRoot>

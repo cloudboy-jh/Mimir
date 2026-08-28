@@ -4,7 +4,7 @@ import { Check, FolderOpen, Pencil, RotateCw, ShieldOff, Unplug, X } from "lucid
 import DeviceIdentity from "@/components/DeviceIdentity.vue";
 import Button from "@/components/ui/Button.vue";
 import { errorMessage, listDevices, renameDevice, revokeDevice, type Device } from "@/lib/api";
-import { connectObsidianVault, DEFAULT_SESSION_NOTES_FOLDER, disconnectObsidianVault, loadSessionNoteSettings, saveSessionNotesFolder, sessionNotesFolderError, supportsObsidianVaults, type SessionNoteSettings } from "@/lib/session-notes";
+import { connectObsidianVault, DEFAULT_SESSION_NOTES_FOLDER, disconnectObsidianVault, loadSessionNoteSettings, obsidianVaultNameError, saveObsidianURISettings, saveSessionNotesFolder, sessionNotesFolderError, supportsObsidianVaults, type SessionNoteSettings } from "@/lib/session-notes";
 import { relativeDate, shortDate } from "@/lib/format";
 
 const devices = ref<Device[]>([]);
@@ -18,12 +18,13 @@ const draftName = ref("");
 const nameInput = useTemplateRef<HTMLInputElement>("nameInput");
 let controller: AbortController | null = null;
 
-const sessionNotesSupported = supportsObsidianVaults();
+const directVaultAccess = supportsObsidianVaults();
 const noteSettings = ref<SessionNoteSettings | null>(null);
-const noteSettingsLoading = ref(sessionNotesSupported);
+const noteSettingsLoading = ref(true);
 const notePending = ref(false);
 const noteError = ref("");
 const noteMessage = ref("");
+const vaultNameDraft = ref("");
 const folderDraft = ref(DEFAULT_SESSION_NOTES_FOLDER);
 
 async function load() {
@@ -85,11 +86,11 @@ async function revoke(device: Device) {
 }
 
 async function loadSessionNotes() {
-  if (!sessionNotesSupported) return;
   noteSettingsLoading.value = true;
   noteError.value = "";
   try {
     noteSettings.value = await loadSessionNoteSettings();
+    vaultNameDraft.value = noteSettings.value?.vaultName ?? "";
     folderDraft.value = noteSettings.value?.folder ?? DEFAULT_SESSION_NOTES_FOLDER;
   } catch (cause) {
     noteError.value = errorMessage(cause, "The Obsidian vault connection could not be loaded.");
@@ -104,8 +105,9 @@ async function connectVault() {
   noteMessage.value = "";
   try {
     noteSettings.value = await connectObsidianVault(folderDraft.value);
+    vaultNameDraft.value = noteSettings.value.vaultName;
     folderDraft.value = noteSettings.value.folder;
-    noteMessage.value = `Connected ${noteSettings.value.vault.name}.`;
+    noteMessage.value = `Connected ${noteSettings.value.vaultName}.`;
   } catch (cause) {
     if (!(cause instanceof DOMException && cause.name === "AbortError")) noteError.value = errorMessage(cause, "The Obsidian vault could not be connected.");
   } finally {
@@ -113,21 +115,25 @@ async function connectVault() {
   }
 }
 
-async function saveNotesFolder() {
-  const validationError = sessionNotesFolderError(folderDraft.value);
-  if (validationError) {
-    noteError.value = validationError;
+async function saveNoteSettings() {
+  const folderError = sessionNotesFolderError(folderDraft.value);
+  const vaultError = directVaultAccess ? null : obsidianVaultNameError(vaultNameDraft.value);
+  if (vaultError || folderError) {
+    noteError.value = vaultError || folderError || "";
     return;
   }
   notePending.value = true;
   noteError.value = "";
   noteMessage.value = "";
   try {
-    noteSettings.value = await saveSessionNotesFolder(folderDraft.value);
+    noteSettings.value = directVaultAccess
+      ? await saveSessionNotesFolder(folderDraft.value)
+      : await saveObsidianURISettings(vaultNameDraft.value, folderDraft.value);
+    vaultNameDraft.value = noteSettings.value.vaultName;
     folderDraft.value = noteSettings.value.folder;
-    noteMessage.value = "Notes folder saved.";
+    noteMessage.value = "Session note settings saved.";
   } catch (cause) {
-    noteError.value = errorMessage(cause, "The notes folder could not be saved.");
+    noteError.value = errorMessage(cause, "The session note settings could not be saved.");
   } finally {
     notePending.value = false;
   }
@@ -140,6 +146,7 @@ async function disconnectVault() {
   try {
     await disconnectObsidianVault();
     noteSettings.value = null;
+    vaultNameDraft.value = "";
     noteMessage.value = "Obsidian vault disconnected.";
   } catch (cause) {
     noteError.value = errorMessage(cause, "The Obsidian vault could not be disconnected.");
@@ -163,38 +170,45 @@ onBeforeUnmount(() => controller?.abort());
         <h2 id="session-notes-heading" class="text-base font-semibold text-zinc-950 dark:text-zinc-50">Session notes</h2>
         <p class="mt-1 text-xs text-zinc-500">Write readable session notes directly into Obsidian. The vault connection is stored only in this browser.</p>
       </div>
-      <div class="border-y border-zinc-200 py-5 dark:border-zinc-800">
-        <div v-if="!sessionNotesSupported" class="max-w-2xl">
-          <p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Direct vault access is unavailable</p>
-          <p class="mt-1 text-sm leading-6 text-zinc-500">Use a Chromium browser over HTTPS to connect an Obsidian vault. Markdown downloads remain available from every session.</p>
-        </div>
-        <div v-else-if="noteSettingsLoading" class="grid gap-3" aria-busy="true" aria-label="Loading session note settings">
+      <form class="border-y border-zinc-200 py-5 dark:border-zinc-800" @submit.prevent="saveNoteSettings">
+        <div v-if="noteSettingsLoading" class="grid gap-3" aria-busy="true" aria-label="Loading session note settings">
           <div class="h-4 w-44 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" />
           <div class="h-8.5 w-full max-w-md animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" />
         </div>
-        <div v-else class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)] lg:gap-10">
-          <div>
-            <p class="text-xs font-medium text-zinc-500">Obsidian vault</p>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
-              <span v-if="noteSettings" class="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-zinc-900 dark:text-zinc-100"><FolderOpen class="size-4 shrink-0 text-zinc-500" aria-hidden="true" /><span class="truncate">{{ noteSettings.vault.name }}</span></span>
-              <span v-else class="text-sm text-zinc-500">No vault connected</span>
-              <Button variant="outline" :disabled="notePending" @click="connectVault"><FolderOpen class="size-3.5" />{{ noteSettings ? "Change vault" : "Connect vault" }}</Button>
-              <Button v-if="noteSettings" variant="ghost" :disabled="notePending" @click="disconnectVault"><Unplug class="size-3.5" />Disconnect</Button>
+        <template v-else>
+          <div class="grid gap-7 lg:grid-cols-[minmax(0,1fr)_minmax(280px,420px)] lg:gap-12">
+            <div class="min-w-0">
+              <div class="flex items-center justify-between gap-3">
+                <label :for="directVaultAccess ? undefined : 'obsidian-vault-name'" class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Obsidian vault name or ID</label>
+                <span class="text-[11px] text-zinc-500">{{ directVaultAccess ? "Direct folder access" : "Brave-compatible URI handoff" }}</span>
+              </div>
+              <div v-if="directVaultAccess" class="mt-2 flex flex-wrap items-center gap-2">
+                <span v-if="noteSettings?.vault" class="inline-flex min-w-0 items-center gap-2 text-sm font-medium text-zinc-900 dark:text-zinc-100"><FolderOpen class="size-4 shrink-0 text-zinc-500" aria-hidden="true" /><span class="truncate">{{ noteSettings.vaultName }}</span></span>
+                <span v-else class="text-sm text-zinc-500">No vault connected</span>
+                <Button type="button" variant="outline" :disabled="notePending" @click="connectVault"><FolderOpen class="size-3.5" />{{ noteSettings?.vault ? "Change vault" : "Connect vault" }}</Button>
+              </div>
+              <input v-else id="obsidian-vault-name" v-model="vaultNameDraft" maxlength="120" :disabled="notePending" placeholder="Vault name or 16-character vault ID" class="mt-2 h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] text-zinc-900 placeholder:text-zinc-400 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-600" />
+              <p class="mt-2 max-w-xl text-xs leading-5 text-zinc-500">{{ directVaultAccess ? "Mimir writes only inside the directory you select. Each browser and machine connects its own local vault." : "Brave does not expose direct folder access. Mimir copies a bounded note to your clipboard, then hands it to Obsidian through a desktop link." }}</p>
             </div>
-            <p class="mt-2 max-w-xl text-xs leading-5 text-zinc-500">Mimir can write only inside the directory you select. Each browser and machine must connect its own local vault.</p>
+            <div class="min-w-0">
+              <label for="session-notes-folder" class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Notes folder</label>
+              <input id="session-notes-folder" v-model="folderDraft" maxlength="80" :disabled="notePending || (directVaultAccess && !noteSettings?.vault)" class="mt-2 h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+              <p class="mt-2 break-all font-mono text-[11px] text-zinc-500">{{ folderDraft.trim() || DEFAULT_SESSION_NOTES_FOLDER }}/example-project/YYYY-MM-DD-a1b2c3d4.md</p>
+            </div>
           </div>
-          <form class="min-w-0" @submit.prevent="saveNotesFolder">
-            <label for="session-notes-folder" class="text-xs font-medium text-zinc-700 dark:text-zinc-300">Notes folder</label>
-            <div class="mt-2 flex items-center gap-2">
-              <input id="session-notes-folder" v-model="folderDraft" maxlength="80" :disabled="!noteSettings || notePending" class="h-8.5 min-w-0 flex-1 rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
-              <Button type="submit" :disabled="!noteSettings || notePending || folderDraft.trim() === noteSettings.folder">Save</Button>
+          <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+            <div>
+              <p v-if="noteError" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ noteError }}</p>
+              <p v-else-if="noteMessage" class="text-xs text-zinc-600 dark:text-zinc-400" role="status">{{ noteMessage }}</p>
+              <p v-else class="text-xs text-zinc-500">Stored only in this browser.</p>
             </div>
-            <p class="mt-2 break-all font-mono text-[11px] text-zinc-500">{{ folderDraft.trim() || DEFAULT_SESSION_NOTES_FOLDER }}/example-project/YYYY-MM-DD-a1b2c3d4.md</p>
-          </form>
-        </div>
-        <p v-if="noteError" class="mt-4 text-xs text-red-700 dark:text-red-400" role="alert">{{ noteError }}</p>
-        <p v-else-if="noteMessage" class="mt-4 text-xs text-zinc-600 dark:text-zinc-400" role="status">{{ noteMessage }}</p>
-      </div>
+            <div class="flex items-center gap-2">
+              <Button v-if="noteSettings" type="button" variant="ghost" :disabled="notePending" @click="disconnectVault"><Unplug class="size-3.5" />Disconnect</Button>
+              <Button type="submit" :disabled="notePending || (directVaultAccess && !noteSettings?.vault)">Save settings</Button>
+            </div>
+          </div>
+        </template>
+      </form>
     </section>
     <section aria-labelledby="devices-heading">
       <div class="mb-3 flex items-end justify-between gap-4"><div><h2 id="devices-heading" class="text-base font-semibold text-zinc-950 dark:text-zinc-50">Devices</h2><p class="mt-1 text-xs text-zinc-500">Names help distinguish where sessions originated. Revocation cannot be undone here.</p></div><span v-if="!loading" class="font-mono text-xs text-zinc-500">{{ devices.length }} total</span></div>

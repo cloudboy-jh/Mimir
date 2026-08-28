@@ -1,6 +1,10 @@
 import type { Session } from "@/lib/api";
 
 export const DEFAULT_SESSION_NOTES_FOLDER = "Mimir";
+export const OBSIDIAN_URI_EXCHANGE_LIMIT = 25;
+
+const MAX_OBSIDIAN_URI_LENGTH = 1_900;
+const URI_TRUNCATION_NOTICE = "\n\n_Note truncated for this browser's Obsidian handoff. Use Download Markdown in Mimir for complete request evidence._";
 
 const DATABASE_NAME = "mimir-session-notes";
 const DATABASE_VERSION = 1;
@@ -19,7 +23,8 @@ type DirectoryPickerWindow = Window & {
 };
 
 export type SessionNoteSettings = {
-  vault: FileSystemDirectoryHandle;
+  vault: FileSystemDirectoryHandle | null;
+  vaultName: string;
   folder: string;
 };
 
@@ -30,7 +35,8 @@ export type SessionNoteDestination = {
 };
 
 export type SessionNoteWriteResult = SessionNoteDestination & {
-  created: boolean;
+  created: boolean | null;
+  truncated: boolean;
 };
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -77,7 +83,7 @@ export function supportsObsidianVaults(): boolean {
   return typeof window !== "undefined"
     && typeof indexedDB !== "undefined"
     && window.isSecureContext
-    && "showDirectoryPicker" in window;
+    && typeof (window as unknown as Partial<DirectoryPickerWindow>).showDirectoryPicker === "function";
 }
 
 export function sanitizePathSegment(value: string, fallback = "Unassigned"): string {
@@ -97,6 +103,12 @@ export function sessionNotesFolderError(value: string): string | null {
   const folder = value.trim();
   if (!folder) return "Enter a notes folder.";
   if (folder !== sanitizePathSegment(folder, "")) return "Use one folder name without slashes or filesystem special characters.";
+  return null;
+}
+
+export function obsidianVaultNameError(value: string): string | null {
+  if (!value.trim()) return "Enter the Obsidian vault name or ID.";
+  if (value.trim().length > 120) return "Keep the Obsidian vault identifier under 120 characters.";
   return null;
 }
 
@@ -123,16 +135,29 @@ export async function sessionNoteDestination(
 }
 
 export async function loadSessionNoteSettings(): Promise<SessionNoteSettings | null> {
-  if (!supportsObsidianVaults()) return null;
-  const settings = await readPreference<SessionNoteSettings>(SETTINGS_KEY);
-  if (!settings?.vault || settings.vault.kind !== "directory") return null;
-  return { vault: settings.vault, folder: sanitizePathSegment(settings.folder, DEFAULT_SESSION_NOTES_FOLDER) };
+  if (typeof indexedDB === "undefined") return null;
+  const settings = await readPreference<Partial<SessionNoteSettings>>(SETTINGS_KEY);
+  if (!settings) return null;
+  const vault = settings.vault?.kind === "directory" ? settings.vault : null;
+  const vaultName = settings.vaultName?.trim() || vault?.name || "";
+  if (!vaultName) return null;
+  return { vault, vaultName, folder: sanitizePathSegment(settings.folder ?? "", DEFAULT_SESSION_NOTES_FOLDER) };
 }
 
 export async function connectObsidianVault(folder = DEFAULT_SESSION_NOTES_FOLDER): Promise<SessionNoteSettings> {
-  if (!supportsObsidianVaults()) throw new Error("Direct Obsidian vault access requires a Chromium browser over HTTPS.");
+  if (!supportsObsidianVaults()) throw new Error("Direct Obsidian vault access requires Chrome or Edge over HTTPS.");
   const vault = await (window as unknown as DirectoryPickerWindow).showDirectoryPicker({ mode: "readwrite" });
-  const settings = { vault, folder: sanitizePathSegment(folder, DEFAULT_SESSION_NOTES_FOLDER) };
+  const settings = { vault, vaultName: vault.name, folder: sanitizePathSegment(folder, DEFAULT_SESSION_NOTES_FOLDER) };
+  await writePreference(SETTINGS_KEY, settings);
+  return settings;
+}
+
+export async function saveObsidianURISettings(vaultName: string, folder: string): Promise<SessionNoteSettings> {
+  const vaultError = obsidianVaultNameError(vaultName);
+  if (vaultError) throw new Error(vaultError);
+  const folderError = sessionNotesFolderError(folder);
+  if (folderError) throw new Error(folderError);
+  const settings = { vault: null, vaultName: vaultName.trim(), folder: folder.trim() };
   await writePreference(SETTINGS_KEY, settings);
   return settings;
 }
@@ -141,7 +166,7 @@ export async function saveSessionNotesFolder(folder: string): Promise<SessionNot
   const error = sessionNotesFolderError(folder);
   if (error) throw new Error(error);
   const settings = await loadSessionNoteSettings();
-  if (!settings) throw new Error("Connect an Obsidian vault before saving the notes folder.");
+  if (!settings) throw new Error("Configure an Obsidian vault before saving the notes folder.");
   const next = { ...settings, folder: folder.trim() };
   await writePreference(SETTINGS_KEY, next);
   return next;
@@ -192,17 +217,42 @@ export async function writeSessionNote(
     }
   }
 
-  return { ...destination, created };
+  return { ...destination, created, truncated: false };
 }
 
 export function obsidianOpenURL(vault: string, relativePath: string): string {
   return `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(relativePath)}`;
 }
 
+function obsidianNewURL(vault: string, relativePath: string, content: string): string {
+  return `obsidian://new?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(relativePath)}&content=${encodeURIComponent(content)}`;
+}
+
+export function obsidianClipboardURL(vault: string, relativePath: string): string {
+  return `obsidian://new?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(relativePath)}&clipboard`;
+}
+
+export function boundedObsidianNewURL(vault: string, relativePath: string, markdown: string): { url: string; truncated: boolean } {
+  const complete = obsidianNewURL(vault, relativePath, markdown);
+  if (complete.length <= MAX_OBSIDIAN_URI_LENGTH) return { url: complete, truncated: false };
+
+  let low = 0;
+  let high = markdown.length;
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2);
+    if (obsidianNewURL(vault, relativePath, markdown.slice(0, midpoint) + URI_TRUNCATION_NOTICE).length <= MAX_OBSIDIAN_URI_LENGTH) low = midpoint;
+    else high = midpoint - 1;
+  }
+  let prefix = markdown.slice(0, low);
+  const lineBoundary = prefix.lastIndexOf("\n");
+  if (lineBoundary > 0) prefix = prefix.slice(0, lineBoundary);
+  return { url: obsidianNewURL(vault, relativePath, prefix + URI_TRUNCATION_NOTICE), truncated: true };
+}
+
 export async function prepareObsidianVault(): Promise<SessionNoteSettings> {
   const settings = await loadSessionNoteSettings();
-  if (!settings) throw new Error("Connect an Obsidian vault in Settings before opening session notes.");
-  await ensureVaultWritePermission(settings.vault);
+  if (!settings) throw new Error("Configure an Obsidian vault in Settings before opening session notes.");
+  if (settings.vault) await ensureVaultWritePermission(settings.vault);
   return settings;
 }
 
@@ -213,7 +263,21 @@ export async function writeAndOpenSessionNote(
 ): Promise<SessionNoteWriteResult> {
   const activeSettings = settings ?? await prepareObsidianVault();
   const destination = await sessionNoteDestination(session, activeSettings.folder);
-  const result = await writeSessionNote(activeSettings.vault, destination, markdown);
-  window.location.assign(obsidianOpenURL(activeSettings.vault.name, result.relativePath));
-  return result;
+  if (activeSettings.vault) {
+    const result = await writeSessionNote(activeSettings.vault, destination, markdown);
+    window.location.assign(obsidianOpenURL(activeSettings.vaultName, result.relativePath));
+    return result;
+  }
+  if (typeof navigator.clipboard?.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      window.location.assign(obsidianClipboardURL(activeSettings.vaultName, destination.relativePath));
+      return { ...destination, created: null, truncated: false };
+    } catch {
+      // Fall through to a URI-contained excerpt when clipboard permission is unavailable.
+    }
+  }
+  const handoff = boundedObsidianNewURL(activeSettings.vaultName, destination.relativePath, markdown);
+  window.location.assign(handoff.url);
+  return { ...destination, created: null, truncated: handoff.truncated };
 }
