@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { CheckCircle2, ChevronDown, CircleX, Clock3, ExternalLink, GitBranch, GitCommitHorizontal } from "lucide-vue-next";
-import type { GitArtifact, OutcomeEvidence } from "@/lib/api";
+import { outcomeCommitEvidence, type GitArtifact, type OutcomeEvent, type OutcomeEvidence } from "@/lib/api";
 import { parsePatch } from "@/lib/diff";
 import { shortDate } from "@/lib/format";
 import { commitUrl, gitArtifactCommitUrl, gitArtifactProvenance, outcomeCommitMatchesArtifact, outcomeUrlMatchesArtifact, shortCommit } from "@/lib/git";
 
 const PREVIEW_LIMIT = 5;
-const props = defineProps<{ sessionId: string; artifacts: GitArtifact[]; evidence: OutcomeEvidence | null; sourceRef?: string | null }>();
+const props = defineProps<{ sessionId: string; artifacts: GitArtifact[]; events: OutcomeEvent[]; evidence: OutcomeEvidence | null; sourceRef?: string | null }>();
 const showAll = ref(false);
 const outcomeEvidence = computed(() => props.evidence);
 const diffs = computed(() => outcomeEvidence.value?.patch ? parsePatch(outcomeEvidence.value.patch) : []);
@@ -18,8 +18,7 @@ const totals = computed(() => ({
 const fileCount = computed(() => outcomeEvidence.value?.patch_files ?? diffs.value.length);
 const hasLegacyDiff = computed(() => Boolean(outcomeEvidence.value?.patch || outcomeEvidence.value?.patch_r2_key));
 const visibleDiffs = computed(() => showAll.value ? diffs.value : diffs.value.slice(0, PREVIEW_LIMIT));
-const duplicateOutcomeCommit = computed(() => outcomeCommitMatchesArtifact(outcomeEvidence.value?.commit, props.artifacts));
-const outcomeCommitHref = computed(() => commitUrl(outcomeEvidence.value));
+const commitHistory = computed(() => outcomeCommitEvidence(props.events));
 const outcomeUrl = computed(() => outcomeEvidence.value?.url ?? (!outcomeEvidence.value?.commit ? outcomeEvidence.value?.commit_url : undefined));
 const duplicateOutcomeUrl = computed(() => outcomeUrlMatchesArtifact(outcomeUrl.value, props.artifacts));
 const distinctOutcomeUrl = computed(() => duplicateOutcomeUrl.value ? null : outcomeUrl.value ?? null);
@@ -93,16 +92,24 @@ watch(() => outcomeEvidence.value?.commit, () => { showAll.value = false; });
         <p class="mt-1 text-[11px] leading-4 text-zinc-500">Recorded with the work outcome, separately from independent Git artifacts.</p>
       </div>
 
-      <p v-if="duplicateOutcomeCommit" class="border-b border-zinc-200 py-2.5 text-xs leading-5 text-zinc-500 dark:border-zinc-800">The matching commit reference is shown once in Git artifacts above.</p>
-      <p v-if="duplicateOutcomeUrl && !duplicateOutcomeCommit" class="border-b border-zinc-200 py-2.5 text-xs leading-5 text-zinc-500 dark:border-zinc-800">The matching commit link is shown once in Git artifacts above.</p>
-      <div v-if="outcomeEvidence?.commit && !duplicateOutcomeCommit" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-200 py-2.5 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-        <GitCommitHorizontal class="size-3.5 text-zinc-500" aria-hidden="true" />
-        <a v-if="outcomeCommitHref" :href="outcomeCommitHref" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(outcomeEvidence.commit) }}<ExternalLink class="size-3" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a>
-        <span v-else class="font-mono text-zinc-800 dark:text-zinc-200">{{ shortCommit(outcomeEvidence.commit) }}</span>
-        <span v-if="outcomeEvidence.ref || sourceRef" class="inline-flex min-w-0 items-center gap-1 font-mono text-zinc-600 dark:text-zinc-400"><GitBranch class="size-3.5 shrink-0 text-zinc-500" aria-hidden="true" /><span class="break-all">{{ outcomeEvidence.ref || sourceRef }}</span></span>
-        <span v-if="outcomeEvidence.base_commit" class="inline-flex items-center gap-1 font-mono text-zinc-600 dark:text-zinc-400"><GitBranch class="size-3.5 text-zinc-500" aria-hidden="true" />on {{ shortCommit(outcomeEvidence.base_commit) }}</span>
-        <span v-if="outcomeEvidence.provenance">via {{ outcomeEvidence.provenance }}</span>
-      </div>
+      <ol v-if="commitHistory.length" class="divide-y divide-zinc-200 border-b border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+        <li v-for="entry in commitHistory" :key="entry.event.id" class="py-3 text-xs">
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <GitCommitHorizontal class="size-3.5 text-zinc-500" aria-hidden="true" />
+            <a v-if="commitUrl(entry.evidence)" :href="commitUrl(entry.evidence)!" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 font-mono text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ shortCommit(entry.evidence.commit!) }}<ExternalLink class="size-3" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a>
+            <span v-else class="font-mono text-zinc-800 dark:text-zinc-200">{{ shortCommit(entry.evidence.commit!) }}</span>
+            <span class="capitalize text-zinc-600 dark:text-zinc-400">{{ entry.event.outcome }}</span>
+            <span class="text-zinc-500">{{ shortDate(entry.event.created_at) }} · {{ entry.event.source }}</span>
+          </div>
+          <p v-if="outcomeCommitMatchesArtifact(entry.evidence.commit, artifacts)" class="mt-1.5 text-zinc-500">The captured patch for this commit is shown in Git artifacts above.</p>
+          <p v-if="entry.event.reason" class="mt-1.5 leading-5 text-zinc-600 dark:text-zinc-400">{{ entry.event.reason }}</p>
+          <div v-if="entry.evidence.ref || sourceRef || entry.evidence.base_commit || entry.evidence.provenance" class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-zinc-500">
+            <span v-if="entry.evidence.ref || sourceRef" class="inline-flex min-w-0 items-center gap-1"><GitBranch class="size-3 shrink-0" aria-hidden="true" /><span class="break-all">{{ entry.evidence.ref || sourceRef }}</span></span>
+            <span v-if="entry.evidence.base_commit">on {{ shortCommit(entry.evidence.base_commit) }}</span>
+            <span v-if="entry.evidence.provenance">via {{ entry.evidence.provenance }}</span>
+          </div>
+        </li>
+      </ol>
       <p v-if="distinctOutcomeUrl" class="border-b border-zinc-200 py-2.5 text-xs dark:border-zinc-800"><a :href="distinctOutcomeUrl" target="_blank" rel="noreferrer noopener" class="inline-flex items-center gap-1 break-all text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ distinctOutcomeUrl }}<ExternalLink class="size-3 shrink-0" aria-hidden="true" /><span class="sr-only">(opens in a new tab)</span></a></p>
       <p v-if="outcomeEvidence?.note" class="border-b border-zinc-200 py-2.5 text-xs leading-5 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">{{ outcomeEvidence.note }}</p>
       <p v-if="hasLegacyDiff && !diffs.length" class="pt-3 text-xs leading-5 text-zinc-500">The legacy outcome patch is stored separately. Open it to inspect changed files.</p>
@@ -127,7 +134,7 @@ watch(() => outcomeEvidence.value?.commit, () => { showAll.value = false; });
         <button v-if="diffs.length > PREVIEW_LIMIT" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAll = !showAll">{{ showAll ? "Show fewer files" : `Show all ${diffs.length} files` }}</button>
         <RouterLink :to="{ name: 'session-diff', params: { id: sessionId } }" class="mt-3 inline-flex text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">View legacy outcome patch</RouterLink>
       </template>
-      <p v-if="!outcomeEvidence" class="pt-3 text-sm text-zinc-500">No separate outcome evidence recorded.</p>
+      <p v-if="!outcomeEvidence && !commitHistory.length" class="pt-3 text-sm text-zinc-500">No separate outcome evidence recorded.</p>
     </section>
   </div>
 </template>

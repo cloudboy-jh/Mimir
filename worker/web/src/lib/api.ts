@@ -48,7 +48,7 @@ export type Session = {
   harness: string | null;
   boundary: string;
   outcome: Outcome;
-  outcome_src: "agent" | "user" | "git" | null;
+  outcome_src: "agent" | "user" | "git" | "auto" | null;
   outcome_updated_at: string | null;
   outcome_reason: string | null;
   repo: string | null;
@@ -58,6 +58,8 @@ export type Session = {
   request_count: number;
   tokens_in: number;
   tokens_out: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   title: string | null;
   title_source: string | null;
   title_updated_at: string | null;
@@ -93,10 +95,12 @@ export type Exchange = {
   access_token_label: string;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   r2_key: string;
 };
 
-export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens"> & {
+export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"> & {
   request_excerpt: string;
   capture_status: string;
   capture_reason: string | null;
@@ -109,7 +113,12 @@ export type LiveSessionTurn = {
   model?: string;
   provider?: string | null;
   request_kind?: "primary" | "title" | "summary" | "compaction";
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+  };
   latency_ms?: number;
   excerpt?: string;
 };
@@ -127,6 +136,8 @@ export type SessionObjectState = {
   turn_count: number;
   tokens_in: number;
   tokens_out: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
 };
 
 type LiveSessionEvent = {
@@ -236,6 +247,26 @@ export function currentOutcomeEvidence(events: OutcomeEvent[], outcome: Outcome)
   const git = prior ? parseOutcomeEvidence(prior.evidence_json) : null;
   if (!git) return current;
   return current?.note ? { ...git, note: current.note } : git;
+}
+
+export type OutcomeCommitEvidence = {
+  event: OutcomeEvent;
+  evidence: OutcomeEvidence;
+};
+
+export function outcomeCommitEvidence(
+  events: OutcomeEvent[],
+): OutcomeCommitEvidence[] {
+  const commits = new Set<string>();
+  const history: OutcomeCommitEvidence[] = [];
+  for (const event of events) {
+    const evidence = parseOutcomeEvidence(event.evidence_json);
+    const commit = evidence?.commit?.trim().toLowerCase();
+    if (!evidence || !commit || commits.has(commit)) continue;
+    commits.add(commit);
+    history.push({ event, evidence });
+  }
+  return history;
 }
 
 export type SessionDetail = {
@@ -421,6 +452,27 @@ export async function setSessionOutcome(id: string, outcome: Outcome, reason: st
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ outcome, reason: reason.trim() || undefined, ...(evidence ? { evidence } : {}) }),
   });
+}
+
+export async function setSessionsOutcome(
+  sessionIds: string[],
+  outcome: Outcome,
+  reason: string,
+  signal?: AbortSignal,
+) {
+  return request<{ updated: Array<{ id: string; outcome: Outcome }> }>(
+    "/dashboard/api/sessions/outcomes",
+    {
+      method: "POST",
+      signal,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_ids: sessionIds,
+        outcome,
+        reason: reason.trim() || undefined,
+      }),
+    },
+  );
 }
 
 export async function listSessionExchanges(id: string, filters: SessionExchangeFilters = {}, signal?: AbortSignal) {

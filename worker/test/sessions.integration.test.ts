@@ -1,5 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import { resolveSession } from "../src/sessions/lifecycle";
 import {
   addMachineToken,
   createExecutionContext,
@@ -76,6 +77,36 @@ describe("Sessions integration", () => {
         "SELECT work_outcome FROM sessions WHERE id = 'child-session'",
       ).first(),
     ).toMatchObject({ work_outcome: "unresolved" });
+  });
+
+  it("adopts a freshly registered exact Hermes session before heuristic fallback", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, last_active_at, state, harness, boundary, repo) VALUES ('hermes-exact', '2026-09-04T10:00:00Z', '2026-09-04T10:00:00Z', 'active', 'hermes', 'header', 'mimir');
+      INSERT INTO sessions(id, started_at, last_active_at, state, harness, boundary, repo) VALUES ('hermes-heuristic', '2026-09-04T09:59:00Z', '2026-09-04T09:59:50Z', 'active', 'hermes', 'heuristic', 'mimir');
+    `);
+
+    await expect(
+      resolveSession(
+        env.DB,
+        null,
+        "mimir",
+        "hermes",
+        null,
+        "openai/test",
+        "2026-09-04T10:00:05Z",
+      ),
+    ).resolves.toEqual({ id: "hermes-exact" });
+    await expect(
+      resolveSession(
+        env.DB,
+        null,
+        "mimir",
+        "hermes",
+        null,
+        "openai/test",
+        "2026-09-04T10:00:31Z",
+      ),
+    ).resolves.toEqual({ id: "hermes-heuristic" });
   });
 
   it("orders root sessions by the latest activity in their session tree", async () => {
@@ -880,6 +911,8 @@ describe("Sessions integration", () => {
       "openai/test",
       2,
       1,
+      0,
+      0,
       50,
       true,
     );
@@ -931,6 +964,8 @@ describe("Sessions integration", () => {
       "openai/test",
       2,
       1,
+      0,
+      0,
       50,
       true,
     );

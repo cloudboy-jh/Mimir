@@ -71,7 +71,12 @@ type DirectExchange = {
   request: { message_id: string; created_at: string; messages: Array<{ role: "user"; content: Record<string, unknown>[] }> };
   response: { message_id: string; parent_message_id: string; role: "assistant"; created_at: string; completed_at: string; parts: Record<string, unknown>[]; stop_reason?: string; error?: unknown };
   tool_activity: Array<{ name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string }>;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
   latency_ms: number;
 };
 
@@ -197,6 +202,7 @@ function buildTurnEvent(info: unknown, repo: string | null): SessionEvent | null
   const input = typeof tokens.input === "number" ? tokens.input : 0;
   const cache = (tokens.cache ?? {}) as Record<string, unknown>;
   const cacheRead = typeof cache.read === "number" ? cache.read : 0;
+  const cacheWrite = typeof cache.write === "number" ? cache.write : 0;
   const output = typeof tokens.output === "number" ? tokens.output : 0;
   return {
     version: 1,
@@ -210,7 +216,12 @@ function buildTurnEvent(info: unknown, repo: string | null): SessionEvent | null
       model: typeof message.modelID === "string" ? message.modelID : undefined,
       provider: typeof message.providerID === "string" ? message.providerID : undefined,
       request_kind: "primary",
-      usage: { input_tokens: input + cacheRead, output_tokens: output },
+      usage: {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_tokens: cacheRead,
+        cache_write_tokens: cacheWrite,
+      },
       latency_ms: created ? Math.max(0, completed - created) : undefined,
     },
   };
@@ -371,8 +382,10 @@ function buildDirectExchange(info: unknown, result: unknown): DirectExchange | n
     response: { message_id: id, parent_message_id: parentID, role: "assistant", created_at: new Date(created).toISOString(), completed_at: new Date(completed).toISOString(), parts: normalizeParts(assistant.parts) },
     tool_activity: normalizeToolActivity(assistant.parts),
     usage: {
-      input_tokens: tokenCount(tokens.input) + tokenCount(cache.read),
+      input_tokens: tokenCount(tokens.input),
       output_tokens: tokenCount(tokens.output),
+      cache_read_tokens: tokenCount(cache.read),
+      cache_write_tokens: tokenCount(cache.write),
     },
     latency_ms: Math.max(0, Math.floor(completed - created)),
   };

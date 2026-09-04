@@ -79,7 +79,8 @@ connectivity.
 ## Dashboard and agents
 
 The private dashboard keeps sessions, outcomes, capture state, harnesses, models,
-and token usage visible in one place.
+provider-reported cache reads and writes, and token usage visible in one place.
+Select several loaded root sessions to apply one outcome and reason atomically.
 
 ![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
 
@@ -94,14 +95,18 @@ and reports bounded reconstructed turns for providers that bypass the proxy.
 A session is one episode of agent work, not a bag of disconnected requests.
 Mimir reconstructs the session so you can see:
 
-- the task, repository, app, models, duration, and token use;
+- the task, repository, app, models, duration, token use, and provider-reported
+  cache reads and writes;
 - full redacted proxy exchanges and bounded exchanges reconstructed by
   supported harness integrations;
 - supporting runs, tool-touched files, real error signals, and model switches;
-- independent per-commit Git patches associated with the work, including for
-  discarded, abandoned, and unresolved sessions;
+- independent per-commit Git patches associated with the work, including every
+  distinct commit retained across revisits and for discarded, abandoned, and
+  unresolved sessions;
 - whether durable capture succeeded;
 - whether the work landed, was discarded, was abandoned, or remains unresolved.
+  Unresolved sessions inactive for 48 hours are marked landed only when a saved,
+  complete Git patch artifact supplies the evidence.
 
 That makes prior work useful before the next attempt:
 

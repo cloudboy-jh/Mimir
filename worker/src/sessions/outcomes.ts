@@ -1,10 +1,10 @@
 import type { Context } from "hono";
-import type { AppEnv } from "../env";
+import type { AppEnv, Bindings } from "../env";
 import { ulid } from "../shared/ulid";
-import { reportSessionEvent } from "./events";
+import { reportSessionEvent, SESSION_ID } from "./events";
 import { rootSessionID } from "./session-queries";
 export type WorkOutcome = "landed" | "discarded" | "abandoned" | "unresolved";
-export type OutcomeSource = "agent" | "user" | "git";
+export type OutcomeSource = "agent" | "user" | "git" | "auto";
 
 type OutcomeInput = {
   outcome?: string;
@@ -54,6 +54,175 @@ export async function updateOutcome(
     outcomeStatements(c.env.DB, outcomeSessionID, normalized, now),
   );
   return c.json(outcomeResult(outcomeSessionID, normalized, now));
+}
+
+export async function bulkUpdateOutcomes(
+  c: Context<AppEnv>,
+  input: { session_ids?: unknown; outcome?: string; reason?: unknown },
+) {
+  if (
+    !Array.isArray(input.session_ids) ||
+    input.session_ids.length === 0 ||
+    input.session_ids.length > 100 ||
+    input.session_ids.some((id) => typeof id !== "string" || !SESSION_ID.test(id))
+  )
+    return c.json(
+      { error: "session_ids must contain between 1 and 100 valid session ids" },
+      400,
+    );
+  const sessionIDs = [...new Set(input.session_ids as string[])];
+  const normalized = normalizeOutcome(
+    {
+      outcome: input.outcome,
+      reason: input.reason,
+      source: "user",
+    },
+    "user",
+  );
+  if ("error" in normalized) return c.json({ error: normalized.error }, 400);
+  const placeholders = sessionIDs.map(() => "?").join(", ");
+  const rows = await c.env.DB.prepare(
+    `SELECT id, parent_session_id FROM sessions WHERE id IN (${placeholders})`,
+  )
+    .bind(...sessionIDs)
+    .all<{ id: string; parent_session_id: string | null }>();
+  if (
+    rows.results.length !== sessionIDs.length ||
+    rows.results.some((row) => row.parent_session_id !== null)
+  )
+    return c.json(
+      { error: "all session_ids must identify root sessions" },
+      400,
+    );
+  const now = new Date().toISOString();
+  await c.env.DB.batch(
+    sessionIDs.flatMap((id) =>
+      outcomeStatements(c.env.DB, id, normalized, now),
+    ),
+  );
+  return c.json({
+    updated: sessionIDs.map((id) => outcomeResult(id, normalized, now)),
+  });
+}
+
+const AUTO_OUTCOME_STALE_MS = 48 * 60 * 60 * 1_000;
+const AUTO_OUTCOME_CANDIDATE_LIMIT = 100;
+
+type AutoOutcomeCandidate = {
+  session_id: string;
+  commit_sha: string;
+  parent_commit_sha: string | null;
+  committed_at: string | null;
+  subject: string | null;
+  repository_url: string | null;
+  ref: string | null;
+  provenance: string;
+  patch_r2_key: string;
+  patch_sha256: string;
+  patch_bytes: number;
+  patch_files: number;
+  patch_additions: number;
+  patch_deletions: number;
+};
+
+export async function autoResolveStaleOutcomes(
+  env: Pick<Bindings, "DB" | "LOGS">,
+  now = new Date().toISOString(),
+) {
+  const cutoff = new Date(
+    Date.parse(now) - AUTO_OUTCOME_STALE_MS,
+  ).toISOString();
+  const result = await env.DB.prepare(
+    `WITH RECURSIVE session_tree(root_id, id) AS (
+      SELECT id, id FROM sessions WHERE parent_session_id IS NULL
+      UNION ALL
+      SELECT session_tree.root_id, sessions.id
+      FROM sessions JOIN session_tree ON sessions.parent_session_id = session_tree.id
+    ),
+    root_activity(root_id, activity_at) AS (
+      SELECT session_tree.root_id, MAX(COALESCE(activity.last_active_at, activity.started_at))
+      FROM session_tree JOIN sessions activity ON activity.id = session_tree.id
+      GROUP BY session_tree.root_id
+    )
+    SELECT root.id AS session_id, artifact.commit_sha, artifact.parent_commit_sha,
+      artifact.committed_at, artifact.subject, artifact.repository_url, artifact.ref,
+      artifact.provenance, artifact.patch_r2_key, artifact.patch_sha256,
+      artifact.patch_bytes, artifact.patch_files, artifact.patch_additions,
+      artifact.patch_deletions
+    FROM sessions root
+    JOIN root_activity ON root_activity.root_id = root.id
+    JOIN session_tree ON session_tree.root_id = root.id
+    JOIN session_git_artifacts artifact ON artifact.session_id = session_tree.id
+    WHERE root.parent_session_id IS NULL
+      AND root.work_outcome = 'unresolved'
+      AND (root.outcome_src IS NULL OR root.outcome_src <> 'user')
+      AND root_activity.activity_at <= ?
+      AND artifact.capture_status = 'saved'
+      AND length(artifact.commit_sha) = 40
+      AND artifact.commit_sha NOT GLOB '*[^0-9a-f]*'
+    ORDER BY root.id, COALESCE(artifact.committed_at, artifact.created_at) DESC
+    LIMIT ?`,
+  )
+    .bind(cutoff, AUTO_OUTCOME_CANDIDATE_LIMIT)
+    .all<AutoOutcomeCandidate>();
+  const availability = await Promise.all(
+    result.results.map(async (candidate) => ({
+      candidate,
+      available: (await env.LOGS.head(candidate.patch_r2_key)) !== null,
+    })),
+  );
+  const selected = new Map<string, AutoOutcomeCandidate>();
+  for (const item of availability) {
+    if (item.available && !selected.has(item.candidate.session_id))
+      selected.set(item.candidate.session_id, item.candidate);
+  }
+  if (selected.size === 0) return { count: 0, session_ids: [] as string[] };
+  const statements: D1PreparedStatement[] = [];
+  const sessionIDs: string[] = [];
+  for (const candidate of selected.values()) {
+    const reason =
+      "Automatically marked landed after 48 hours of inactivity with saved commit and patch evidence";
+    const evidenceJson = JSON.stringify({
+      commit: candidate.commit_sha,
+      parent_commit: candidate.parent_commit_sha,
+      committed_at: candidate.committed_at,
+      subject: candidate.subject,
+      repository_url: candidate.repository_url,
+      ref: candidate.ref,
+      provenance: candidate.provenance,
+      patch_r2_key: candidate.patch_r2_key,
+      patch_bytes: candidate.patch_bytes,
+      patch_files: candidate.patch_files,
+      patch_additions: candidate.patch_additions,
+      patch_deletions: candidate.patch_deletions,
+      automation: {
+        stale_hours: 48,
+        evidence_threshold: 2,
+        signals: ["saved_git_artifact", "retrievable_patch"],
+      },
+    });
+    const eventID = `auto_${ulid()}`;
+    statements.push(
+      env.DB.prepare(
+        "INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) SELECT ?, id, 'landed', 'auto', ?, ?, ? FROM sessions WHERE id = ? AND work_outcome = 'unresolved' AND (outcome_src IS NULL OR outcome_src <> 'user')",
+      ).bind(
+        eventID,
+        reason,
+        evidenceJson,
+        now,
+        candidate.session_id,
+      ),
+      env.DB.prepare(
+        "UPDATE sessions SET work_outcome = 'landed', outcome = 'promoted', outcome_src = 'auto', outcome_updated_at = ?, outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ? AND work_outcome = 'unresolved' AND (outcome_src IS NULL OR outcome_src <> 'user') AND EXISTS (SELECT 1 FROM session_outcome_events WHERE id = ?)",
+      ).bind(now, reason, candidate.session_id, eventID),
+    );
+    sessionIDs.push(candidate.session_id);
+  }
+  const writes = await env.DB.batch(statements);
+  const updated = sessionIDs.filter(
+    (_id, index) => (writes[index * 2 + 1]?.meta.changes ?? 0) > 0,
+  );
+  return { count: updated.length, session_ids: updated };
 }
 
 export async function endSession(
@@ -465,7 +634,10 @@ function canonicalSource(
 ): OutcomeSource | null {
   if (source === undefined) return fallback;
   if (source === "explicit") return "user";
-  return source === "agent" || source === "user" || source === "git"
+  return source === "agent" ||
+    source === "user" ||
+    source === "git" ||
+    source === "auto"
     ? source
     : null;
 }

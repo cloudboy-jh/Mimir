@@ -54,6 +54,8 @@ type ReconcileRow = {
   model: string | null;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
   request_excerpt: string;
   response_excerpt: string;
   title_candidate: string | null;
@@ -288,7 +290,7 @@ export async function reconcile(
   const decodedCursor = decodeDatabaseCursor(databaseCursor);
   const queried = scanDatabase
     ? await env.DB.prepare(
-        `SELECT id, session_id, ts, accepted_at, capture_status, r2_key, harness, model, input_tokens, output_tokens, request_excerpt, response_excerpt, title_candidate FROM exchanges WHERE capture_status IN ('accepted', 'saved') ${decodedCursor ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`,
+        `SELECT id, session_id, ts, accepted_at, capture_status, r2_key, harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, request_excerpt, response_excerpt, title_candidate FROM exchanges WHERE capture_status IN ('accepted', 'saved') ${decodedCursor ? "AND id < ?" : ""} ORDER BY id DESC LIMIT ?`,
       )
         .bind(...(decodedCursor ? [decodedCursor, limit + 1] : [limit + 1]))
         .all<ReconcileRow>()
@@ -341,6 +343,8 @@ export async function reconcile(
         row.model ?? "",
         row.input_tokens,
         row.output_tokens,
+        row.cache_read_tokens,
+        row.cache_write_tokens,
         object.size,
         recent,
         row.title_candidate,
@@ -368,8 +372,8 @@ export async function reconcile(
         .first();
       const statements = [
         env.DB.prepare(
-          "UPDATE sessions SET request_count = (SELECT COUNT(*) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), tokens_in = COALESCE((SELECT SUM(input_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0), tokens_out = COALESCE((SELECT SUM(output_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0) WHERE id = ?",
-        ).bind(sessionId, sessionId, sessionId, sessionId),
+          "UPDATE sessions SET request_count = (SELECT COUNT(*) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), tokens_in = COALESCE((SELECT SUM(input_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0), tokens_out = COALESCE((SELECT SUM(output_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0), cache_read_tokens = COALESCE((SELECT SUM(cache_read_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0), cache_write_tokens = COALESCE((SELECT SUM(cache_write_tokens) FROM exchanges WHERE session_id = ? AND capture_status = 'saved'), 0) WHERE id = ?",
+        ).bind(sessionId, sessionId, sessionId, sessionId, sessionId, sessionId),
         reconcileSessionTitleStatement(env.DB, sessionId, now),
       ];
       if (!hasLegacy) {

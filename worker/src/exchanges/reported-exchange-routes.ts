@@ -126,7 +126,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
   const r2Key = `log/${acceptedAt.slice(0, 10).replaceAll("-", "/")}/${parsed.exchange_id}.json`;
 
   const inserted = await c.env.DB.prepare(
-    "INSERT OR IGNORE INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, capture_status, capture_reason, accepted_at, schema_version, request_kind, intent_candidate, title_candidate) VALUES (?, ?, ?, 'harness', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'reported', ?, 1, ?, ?, ?)",
+    "INSERT OR IGNORE INTO exchanges(id, session_id, ts, endpoint, model, request_excerpt, response_excerpt, usage_json, latency_ms, repo, harness, r2_key, provider, finish_reason, access_token_label, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, capture_status, capture_reason, accepted_at, schema_version, request_kind, intent_candidate, title_candidate) VALUES (?, ?, ?, 'harness', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', 'reported', ?, 1, ?, ?, ?)",
   )
     .bind(
       parsed.exchange_id,
@@ -145,6 +145,8 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       c.get("tokenLabel"),
       parsed.usage.input_tokens,
       parsed.usage.output_tokens,
+      parsed.usage.cache_read_tokens,
+      parsed.usage.cache_write_tokens,
       acceptedAt,
       requestKind,
       intent,
@@ -213,6 +215,8 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       parsed.model,
       parsed.usage.input_tokens,
       parsed.usage.output_tokens,
+      parsed.usage.cache_read_tokens,
+      parsed.usage.cache_write_tokens,
       r2Bytes,
       true,
       titleCandidate,

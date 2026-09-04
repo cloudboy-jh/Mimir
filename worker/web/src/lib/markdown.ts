@@ -1,4 +1,4 @@
-import { currentOutcomeEvidence, type SessionDetail, type SessionExchange } from "@/lib/api";
+import { currentOutcomeEvidence, outcomeCommitEvidence, type SessionDetail, type SessionExchange } from "@/lib/api";
 import { compactNumber, duration, shortDate } from "@/lib/format";
 import { displayTitle } from "@/lib/sessions";
 
@@ -53,7 +53,7 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
     bullet("Started", shortDate(session.started_at)),
     bullet("Duration", duration(session.started_at, session.ended_at)),
     bullet("Requests", String(session.request_count)),
-    bullet("Tokens", `${compactNumber(session.tokens_in)} in · ${compactNumber(session.tokens_out)} out`),
+    bullet("Tokens", `${compactNumber(session.tokens_in)} in · ${compactNumber(session.tokens_out)} out${(session.cache_read_tokens ?? 0) > 0 ? ` · ${compactNumber(session.cache_read_tokens ?? 0)} cache read` : ""}${(session.cache_write_tokens ?? 0) > 0 ? ` · ${compactNumber(session.cache_write_tokens ?? 0)} cache write` : ""}`),
     "",
   );
   lines.push(heading("Capture"));
@@ -68,16 +68,20 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
   for (const artifact of detail.git_artifacts) {
     const subject = artifact.subject ? ` ${oneLine(artifact.subject)}` : "";
     lines.push(`- ${inlineCode(artifact.commit_sha.slice(0, 12))}${subject} (${changeSummary(artifact.patch_files, artifact.patch_additions, artifact.patch_deletions)})`);
-    recordedCommits.add(artifact.commit_sha);
+    recordedCommits.add(artifact.commit_sha.toLowerCase());
+  }
+  for (const entry of outcomeCommitEvidence(detail.outcome_events)) {
+    const commit = entry.evidence.commit!;
+    if (recordedCommits.has(commit.toLowerCase())) continue;
+    const stats = changeSummary(entry.evidence.patch_files ?? 0, entry.evidence.patch_additions ?? 0, entry.evidence.patch_deletions ?? 0);
+    lines.push(`- ${inlineCode(commit.slice(0, 12))}${entry.evidence.note ? ` ${oneLine(entry.evidence.note)}` : entry.event.reason ? ` ${oneLine(entry.event.reason)}` : ""} (${stats})`);
+    recordedCommits.add(commit.toLowerCase());
   }
   const outcomeEvidence = currentOutcomeEvidence(detail.outcome_events, session.outcome);
-  if (outcomeEvidence?.commit && !recordedCommits.has(outcomeEvidence.commit)) {
-    const stats = changeSummary(outcomeEvidence.patch_files ?? 0, outcomeEvidence.patch_additions ?? 0, outcomeEvidence.patch_deletions ?? 0);
-    lines.push(`- ${inlineCode(outcomeEvidence.commit.slice(0, 12))}${outcomeEvidence.note ? ` ${oneLine(outcomeEvidence.note)}` : ""} (${stats})`);
-  } else if (outcomeEvidence?.patch && !detail.git_artifacts.length) {
+  if (outcomeEvidence?.patch && !detail.git_artifacts.length) {
     lines.push(`- ${oneLine(outcomeEvidence.patch)}`);
   }
-  if (!detail.git_artifacts.length && !outcomeEvidence?.commit && !outcomeEvidence?.patch) lines.push("No Git changes were captured.");
+  if (!recordedCommits.size && !outcomeEvidence?.patch) lines.push("No Git changes were captured.");
   lines.push("");
   lines.push(heading("Files"));
   if (detail.files.length) for (const file of detail.files) lines.push(`- ${inlineCode(file)}`);
@@ -94,7 +98,7 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
     lines.push(`### ${shortDate(exchange.ts)} · ${oneLine(exchange.model)}`);
     lines.push(`- **Provider:** ${oneLine(exchange.provider || "Unknown")}`);
     if (exchange.finish_reason) lines.push(`- **Finish:** ${oneLine(exchange.finish_reason)}`);
-    lines.push(`- **Tokens:** ${exchange.input_tokens} in · ${exchange.output_tokens} out`);
+    lines.push(`- **Tokens:** ${exchange.input_tokens} in · ${exchange.output_tokens} out${(exchange.cache_read_tokens ?? 0) > 0 ? ` · ${exchange.cache_read_tokens} cache read` : ""}${(exchange.cache_write_tokens ?? 0) > 0 ? ` · ${exchange.cache_write_tokens} cache write` : ""}`);
     if (exchange.request_excerpt) lines.push("", `> ${oneLine(exchange.request_excerpt)}`);
     lines.push("");
   }

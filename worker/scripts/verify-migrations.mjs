@@ -149,6 +149,7 @@ try {
 
   cpSync(join(root, "migrations", "0017_session_summaries.sql"), join(migrations, "0017_session_summaries.sql"));
   cpSync(join(root, "migrations", "0018_session_git_artifacts.sql"), join(migrations, "0018_session_git_artifacts.sql"));
+  cpSync(join(root, "migrations", "0019_cache_and_outcome_automation.sql"), join(migrations, "0019_cache_and_outcome_automation.sql"));
   applyMigrations();
   execute(`
     INSERT INTO session_git_artifacts(
@@ -210,7 +211,10 @@ try {
        (SELECT summary_status FROM sessions WHERE id = 'legacy-session') AS legacy_summary_status,
        (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_git_artifacts') AS session_git_artifacts_table,
        (SELECT COUNT(*) FROM pragma_table_info('session_git_artifacts') WHERE name IN ('repository_url', 'ref', 'provenance', 'capture_status', 'accepted_at', 'saved_at', 'failed_at', 'failure_code')) AS session_git_artifact_lifecycle_columns,
-       (SELECT capture_status FROM session_git_artifacts WHERE session_id = 'legacy-session') AS legacy_git_artifact_status
+       (SELECT capture_status FROM session_git_artifacts WHERE session_id = 'legacy-session') AS legacy_git_artifact_status,
+       (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('cache_read_tokens', 'cache_write_tokens')) AS session_cache_columns,
+       (SELECT COUNT(*) FROM pragma_table_info('exchanges') WHERE name IN ('cache_read_tokens', 'cache_write_tokens')) AS exchange_cache_columns,
+       (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_outcome_events' AND sql LIKE '%''auto''%') AS auto_outcome_source
     FROM sessions s
     JOIN exchanges e ON e.session_id = s.id
     JOIN session_outcome_events o ON o.session_id = s.id
@@ -265,6 +269,9 @@ try {
     session_git_artifacts_table: 1,
     session_git_artifact_lifecycle_columns: 8,
     legacy_git_artifact_status: "accepted",
+    session_cache_columns: 2,
+    exchange_cache_columns: 2,
+    auto_outcome_source: 1,
   });
 
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");

@@ -58,7 +58,7 @@ export function registerDashboardExchangeRoutes(app: Hono<AppEnv>) {
       where.push("(ts < ? OR (ts = ? AND id < ?))");
       values.push(cursor.ts, cursor.ts, cursor.id);
     }
-    const sql = `SELECT id, session_id, ts, model, provider, finish_reason, endpoint, latency_ms, repo, harness, access_token_label, input_tokens, output_tokens, r2_key FROM exchanges ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ts DESC, id DESC LIMIT ?`;
+    const sql = `SELECT id, session_id, ts, model, provider, finish_reason, endpoint, latency_ms, repo, harness, access_token_label, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, r2_key FROM exchanges ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY ts DESC, id DESC LIMIT ?`;
     const rows = await c.env.DB.prepare(sql)
       .bind(...values, limit + 1)
       .all<Record<string, unknown>>();
@@ -156,7 +156,7 @@ export function registerDashboardExchangeRoutes(app: Hono<AppEnv>) {
     }
     const direction = order === "desc" ? "DESC" : "ASC";
     const limit = boundedLimit(c.req.query("limit"));
-    const sql = `${SESSION_SUBTREE_CTE} SELECT id, session_id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, request_excerpt, capture_status, capture_reason, failure_code FROM exchanges WHERE ${where.join(" AND ")} ORDER BY ts ${direction}, id ${direction} LIMIT ?`;
+    const sql = `${SESSION_SUBTREE_CTE} SELECT id, session_id, ts, model, provider, finish_reason, latency_ms, harness, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, request_excerpt, capture_status, capture_reason, failure_code FROM exchanges WHERE ${where.join(" AND ")} ORDER BY ts ${direction}, id ${direction} LIMIT ?`;
     const result = await c.env.DB.prepare(sql)
       .bind(...values, limit + 1)
       .all<Record<string, unknown>>();

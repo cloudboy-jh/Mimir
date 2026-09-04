@@ -192,6 +192,8 @@ export async function capture(
     usage: {
       input_tokens: prepared.usage.prompt_tokens,
       output_tokens: prepared.usage.completion_tokens,
+      cache_read_tokens: prepared.usage.cache_read_tokens,
+      cache_write_tokens: prepared.usage.cache_write_tokens,
     },
     latency_ms: latency,
     redaction: { version: 1 },
@@ -225,6 +227,8 @@ export async function capture(
       input.model,
       prepared.usage.prompt_tokens,
       prepared.usage.completion_tokens,
+      prepared.usage.cache_read_tokens,
+      prepared.usage.cache_write_tokens,
       r2Bytes,
       true,
       titleCandidate,
@@ -260,6 +264,8 @@ export async function capture(
       usage: {
         input_tokens: prepared.usage.prompt_tokens,
         output_tokens: prepared.usage.completion_tokens,
+        cache_read_tokens: prepared.usage.cache_read_tokens,
+        cache_write_tokens: prepared.usage.cache_write_tokens,
       },
       latency_ms: latency,
       excerpt: requestExcerpt.slice(0, 500),
@@ -325,7 +331,7 @@ async function prepareAcceptedExchange(
     await db.batch([
       db
         .prepare(
-          "UPDATE exchanges SET response_excerpt = ?, usage_json = ?, latency_ms = ?, provider = ?, finish_reason = ?, input_tokens = ?, output_tokens = ?, title_candidate = ? WHERE id = ? AND capture_status = 'accepted'",
+          "UPDATE exchanges SET response_excerpt = ?, usage_json = ?, latency_ms = ?, provider = ?, finish_reason = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, title_candidate = ? WHERE id = ? AND capture_status = 'accepted'",
         )
         .bind(
           prepared.responseExcerpt,
@@ -335,6 +341,8 @@ async function prepareAcceptedExchange(
           prepared.finishReason,
           prepared.usage.prompt_tokens,
           prepared.usage.completion_tokens,
+          prepared.usage.cache_read_tokens,
+          prepared.usage.cache_write_tokens,
           titleCandidate,
           exchangeId,
         ),
@@ -377,6 +385,8 @@ export async function finalizeAcceptedExchange(
   model: string,
   inputTokens: number,
   outputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
   r2Bytes: number | null,
   reactivate: boolean,
   generatedTitle: string | null = null,
@@ -384,7 +394,7 @@ export async function finalizeAcceptedExchange(
   await db.batch([
     db
       .prepare(
-        "UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')",
+        "UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cache_read_tokens = cache_read_tokens + ?, cache_write_tokens = cache_write_tokens + ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')",
       )
       .bind(
         activityAt,
@@ -399,6 +409,8 @@ export async function finalizeAcceptedExchange(
         model,
         inputTokens,
         outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
         sessionId,
         exchangeId,
       ),

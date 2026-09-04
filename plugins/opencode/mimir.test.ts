@@ -235,7 +235,7 @@ describe("buildTurnEvent", () => {
       harness: "opencode",
       repo: "mimir",
       ts: new Date(2_500).toISOString(),
-      turn: { exchange_id: "msg-1", model: "openai/gpt-5", provider: "openrouter", request_kind: "primary", usage: { input_tokens: 15, output_tokens: 4 }, latency_ms: 1_500 },
+      turn: { exchange_id: "msg-1", model: "openai/gpt-5", provider: "openrouter", request_kind: "primary", usage: { input_tokens: 10, output_tokens: 4, cache_read_tokens: 5, cache_write_tokens: 0 }, latency_ms: 1_500 },
     });
   });
 
@@ -310,7 +310,7 @@ describe("direct-provider exchanges", () => {
         { name: "read", input: { path: "src/auth.ts", invalid: "1" }, status: "succeeded", output: "loaded" },
         { name: "edit", input: { path: "src/auth.ts" }, status: "failed", output: "write failed" },
       ],
-      usage: { input_tokens: 14, output_tokens: 7 }, latency_ms: 1_250,
+      usage: { input_tokens: 10, output_tokens: 7, cache_read_tokens: 4, cache_write_tokens: 3 }, latency_ms: 1_250,
     });
   });
 

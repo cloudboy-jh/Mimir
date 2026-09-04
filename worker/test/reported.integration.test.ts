@@ -74,7 +74,7 @@ describe("Reported exchange integration", () => {
             output: "compile_failed: compile error",
           },
         ],
-        usage: { input_tokens: 12, output_tokens: 4 },
+        usage: { input_tokens: 12, output_tokens: 4, cache_read_tokens: 5, cache_write_tokens: 2 },
         latency_ms: 321,
         request_kind: "primary",
       }),
@@ -88,7 +88,7 @@ describe("Reported exchange integration", () => {
     });
 
     const exchange = await env.DB.prepare(
-      "SELECT session_id, model, provider, finish_reason, input_tokens, output_tokens, latency_ms, request_kind, capture_status, capture_reason, r2_key, r2_bytes FROM exchanges WHERE id = 'reported-exchange-1'",
+      "SELECT session_id, model, provider, finish_reason, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, request_kind, capture_status, capture_reason, r2_key, r2_bytes FROM exchanges WHERE id = 'reported-exchange-1'",
     ).first<{ r2_key: string; r2_bytes: number } & Record<string, unknown>>();
     expect(exchange).toMatchObject({
       session_id: "reported-session",
@@ -97,6 +97,8 @@ describe("Reported exchange integration", () => {
       finish_reason: "stop",
       input_tokens: 12,
       output_tokens: 4,
+      cache_read_tokens: 5,
+      cache_write_tokens: 2,
       latency_ms: 321,
       request_kind: "primary",
       capture_status: "saved",
@@ -104,12 +106,14 @@ describe("Reported exchange integration", () => {
     });
     expect(
       await env.DB.prepare(
-        "SELECT request_count, tokens_in, tokens_out, model_primary, intent FROM sessions WHERE id = 'reported-session'",
+        "SELECT request_count, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens, model_primary, intent FROM sessions WHERE id = 'reported-session'",
       ).first(),
     ).toEqual({
       request_count: 1,
       tokens_in: 12,
       tokens_out: 4,
+      cache_read_tokens: 5,
+      cache_write_tokens: 2,
       model_primary: "openai/gpt-5",
       intent: "Fix src/reported.ts with token: [REDACTED] for [REDACTED]",
     });
@@ -161,7 +165,7 @@ describe("Reported exchange integration", () => {
           output: "compile_failed: compile error",
         },
       ],
-      usage: { input_tokens: 12, output_tokens: 4 },
+      usage: { input_tokens: 12, output_tokens: 4, cache_read_tokens: 5, cache_write_tokens: 2 },
       redaction: { version: 1 },
     });
     const state = (await (
@@ -173,6 +177,8 @@ describe("Reported exchange integration", () => {
       turn_count: 1,
       tokens_in: 12,
       tokens_out: 4,
+      cache_read_tokens: 5,
+      cache_write_tokens: 2,
     });
   });
 

@@ -1,5 +1,6 @@
 import { readSaveConfig } from "../config/config-store";
 import { ulid } from "../shared/ulid";
+const HERMES_EXACT_ADOPTION_MS = 30_000;
 export async function resolveSession(
   db: D1Database,
   declared: string | null,
@@ -39,6 +40,18 @@ export async function resolveSession(
   const cutoff = new Date(
     Date.parse(now) - config.gapMinutes * 60_000,
   ).toISOString();
+  if (harness === "hermes") {
+    const exactCutoff = new Date(
+      Date.parse(now) - HERMES_EXACT_ADOPTION_MS,
+    ).toISOString();
+    const exact = await db
+      .prepare(
+        "SELECT id FROM sessions WHERE boundary = 'header' AND state = 'active' AND repo IS ? AND harness = 'hermes' AND installation_id IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1",
+      )
+      .bind(repo, installationID, exactCutoff)
+      .first<{ id: string }>();
+    if (exact) return exact;
+  }
   const prior = await db
     .prepare(
       "SELECT id FROM sessions WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND installation_id IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1",

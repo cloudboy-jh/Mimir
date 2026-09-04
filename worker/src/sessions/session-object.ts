@@ -31,6 +31,8 @@ type SessionMeta = {
   turnCount: number;
   tokensIn: number;
   tokensOut: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 };
 
 export type SessionLiveness = "active" | "disconnected" | "finalized";
@@ -220,6 +222,12 @@ export class SessionObject implements DurableObject {
       meta.turnCount += 1;
       meta.tokensIn += event.turn.usage?.input_tokens ?? 0;
       meta.tokensOut += event.turn.usage?.output_tokens ?? 0;
+      meta.cacheReadTokens =
+        (meta.cacheReadTokens ?? 0) +
+        (event.turn.usage?.cache_read_tokens ?? 0);
+      meta.cacheWriteTokens =
+        (meta.cacheWriteTokens ?? 0) +
+        (event.turn.usage?.cache_write_tokens ?? 0);
       this.turns!.push({ ...event.turn, ts: event.ts });
       if (this.turns!.length > MAX_STORED_TURNS)
         this.turns = this.turns!.slice(-MAX_STORED_TURNS);
@@ -278,7 +286,7 @@ export class SessionObject implements DurableObject {
     if (meta.finalizedAt) return;
     const now = new Date().toISOString();
     const exchanges = await this.env.DB.prepare(
-      "SELECT id, ts, endpoint, model, provider, request_kind, input_tokens, output_tokens, latency_ms, r2_key, r2_bytes, capture_status FROM exchanges WHERE session_id = ? ORDER BY ts, id",
+      "SELECT id, ts, endpoint, model, provider, request_kind, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, latency_ms, r2_key, r2_bytes, capture_status FROM exchanges WHERE session_id = ? ORDER BY ts, id",
     )
       .bind(meta.sessionId)
       .all();
@@ -293,7 +301,12 @@ export class SessionObject implements DurableObject {
       repo: meta.repo,
       end_reason: reason,
       turn_count: meta.turnCount,
-      usage: { input_tokens: meta.tokensIn, output_tokens: meta.tokensOut },
+      usage: {
+        input_tokens: meta.tokensIn,
+        output_tokens: meta.tokensOut,
+        cache_read_tokens: meta.cacheReadTokens ?? 0,
+        cache_write_tokens: meta.cacheWriteTokens ?? 0,
+      },
       exchanges: exchanges.results,
     };
     await this.env.LOGS.put(
@@ -371,6 +384,8 @@ export class SessionObject implements DurableObject {
       turn_count: meta.turnCount,
       tokens_in: meta.tokensIn,
       tokens_out: meta.tokensOut,
+      cache_read_tokens: meta.cacheReadTokens ?? 0,
+      cache_write_tokens: meta.cacheWriteTokens ?? 0,
     };
   }
 
@@ -445,6 +460,8 @@ export class SessionObject implements DurableObject {
       turnCount: 0,
       tokensIn: 0,
       tokensOut: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     };
     this.turns = turns ?? [];
   }

@@ -86,14 +86,14 @@ describe("Pi Mimir extension", () => {
         { type: "toolCall", id: "read-1", name: "read", arguments: { path: "src/auth.ts" } },
         { type: "toolCall", id: "edit-1", name: "edit", arguments: { path: "src/auth.ts" } },
       ],
-      usage: { input: 10, cacheRead: 4, output: 3 },
+      usage: { input: 10, cacheRead: 4, cacheWrite: 2, output: 3 },
       stopReason: "stop",
     }, [
       { role: "toolResult", toolCallId: "read-1", toolName: "read", content: "loaded" },
       { role: "toolResult", toolCallId: "edit-1", toolName: "edit", isError: true, content: "Error: write failed" },
     ], "Auth fix");
     expect(direct).not.toBeNull();
-    expect(direct?.usage).toEqual({ input_tokens: 14, output_tokens: 3 });
+    expect(direct?.usage).toEqual({ input_tokens: 10, output_tokens: 3, cache_read_tokens: 4, cache_write_tokens: 2 });
     expect(direct?.request_kind).toBe("primary");
     expect(direct?.title).toBe("Auth fix");
     expect(direct?.tool_activity).toEqual([

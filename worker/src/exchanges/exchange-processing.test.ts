@@ -14,25 +14,29 @@ import { redact } from "./redaction";
 describe("capture", () => {
   it("reassembles OpenAI SSE text and usage", () => {
     const response = parseCapturedResponse(
-      'data: {"choices":[{"delta":{"content":"hello "}}]}\n\ndata: {"choices":[{"delta":{"content":"world"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\ndata: [DONE]\n',
+      'data: {"choices":[{"delta":{"content":"hello "}}]}\n\ndata: {"choices":[{"delta":{"content":"world"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":2}}}\n\ndata: [DONE]\n',
       "text/event-stream",
     ) as Record<string, unknown>;
     expect(response.content).toBe("hello world");
     expect(extractUsage(response)).toEqual({
-      prompt_tokens: 3,
+      prompt_tokens: 1,
       completion_tokens: 2,
+      cache_read_tokens: 2,
+      cache_write_tokens: 0,
     });
   });
 
   it("reassembles Anthropic SSE text and usage", () => {
     const response = parseCapturedResponse(
-      'event: message_start\ndata: {"message":{"usage":{"input_tokens":4}}}\n\nevent: content_block_delta\ndata: {"delta":{"text":"hi"}}\n\nevent: message_delta\ndata: {"usage":{"output_tokens":1}}\n',
+      'event: message_start\ndata: {"message":{"usage":{"input_tokens":4,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}}\n\nevent: content_block_delta\ndata: {"delta":{"text":"hi"}}\n\nevent: message_delta\ndata: {"usage":{"output_tokens":1}}\n',
       "text/event-stream",
     ) as Record<string, unknown>;
     expect(response.content).toBe("hi");
     expect(extractUsage(response)).toEqual({
       prompt_tokens: 4,
       completion_tokens: 1,
+      cache_read_tokens: 3,
+      cache_write_tokens: 2,
     });
   });
 

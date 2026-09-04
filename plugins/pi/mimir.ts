@@ -259,8 +259,10 @@ function buildExchange(sessionID: string, turnIndex: number, snapshot: TurnSnaps
     response,
     tool_activity: normalizeToolActivity(rawMessage, rawToolResults),
     usage: {
-      input_tokens: Math.max(0, Math.floor((usage.input ?? 0) + (usage.cacheRead ?? 0))),
+      input_tokens: Math.max(0, Math.floor(usage.input ?? 0)),
       output_tokens: Math.max(0, Math.floor(usage.output ?? 0)),
+      cache_read_tokens: Math.max(0, Math.floor(usage.cacheRead ?? 0)),
+      cache_write_tokens: Math.max(0, Math.floor(usage.cacheWrite ?? 0)),
     },
     latency_ms: Math.max(0, Math.floor(Date.now() - (snapshot?.startedAt ?? timestamp))),
   };

@@ -304,7 +304,7 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
         <RequestTimeline :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :refresh-key="timelineRevision" />
       </div>
       <div class="grid min-w-0 gap-8 xl:sticky xl:top-6">
-        <SessionChanges :session-id="detail.session.id" :artifacts="detail.git_artifacts" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
+        <SessionChanges :session-id="detail.session.id" :artifacts="detail.git_artifacts" :events="detail.outcome_events" :evidence="currentOutcomeEvidence(detail.outcome_events, detail.session.outcome)" :source-ref="detail.session.source_ref" />
         <SessionEvidenceSidebar :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :files="detail.files" :errors="detail.errors" />
       </div>
     </div>

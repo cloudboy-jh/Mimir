@@ -177,6 +177,7 @@ Session-list filters include repository, model, outcome, and date range.
 | `GET` | `/dashboard/api/sessions/:id/exchanges` | Filter, sort, and cursor-paginate the session subtree timeline. |
 | `GET` | `/dashboard/api/sessions/:id/status` | Return the derived capture summary. |
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
+| `POST` | `/dashboard/api/sessions/outcomes` | Atomically append one user-sourced outcome to up to 100 root sessions. |
 | `POST` | `/dashboard/api/sessions/:id/mark` | Deprecated legacy alias for setting an outcome. |
 | `PATCH` | `/dashboard/api/sessions/:id/title` | Set a normalized manual title of at most 200 characters. |
 | `GET` | `/dashboard/api/devices` | List devices with status, activity, harnesses, and root-session counts. |
@@ -237,14 +238,14 @@ list, including supporting runs, files, and errors, is bounded with explicit
 disclosure. Session detail never contacts Git hosts.
 
 Historical import additionally preserves Git work as independent, multi-commit
-session artifacts. These records do not derive or mutate the work outcome and
-are retained for `landed`, `discarded`, `abandoned`, and `unresolved` sessions.
-Each artifact carries a full commit SHA, optional first parent, commit time,
-subject, normalized repository URL, historical ref, provenance, patch digest,
-patch statistics, storage lifecycle, and R2 reference. The patch is independently
-redacted and bounded before upload. Git artifact evidence supplements the
-single-commit evidence that may accompany an outcome event; it does not replace
-outcome history.
+session artifacts. They are retained for `landed`, `discarded`, `abandoned`,
+and `unresolved` sessions. Each artifact carries a full commit SHA, optional
+first parent, commit time, subject, normalized repository URL, historical ref,
+provenance, patch digest, patch statistics, storage lifecycle, and R2 reference.
+The patch is independently redacted and bounded before upload. Git artifact
+evidence supplements commit evidence attached to outcome events and does not
+replace outcome history. Revisited sessions expose every distinct commit from
+both stores, deduplicated by full SHA.
 
 File and error facets are projected from structured exchange content, not from a
 text scan of the payload. Files come only from tool-call arguments in either the
@@ -466,20 +467,23 @@ New events on a finalized session reopen it: the same object wakes, D1 flips
 back to `active`, and history continues. Finalized is a state, not a
 tombstone.
 
-Session responses expose the latest outcome projection:| Field | Contract |
+Session responses expose the latest outcome projection:
+
+| Field | Contract |
 | --- | --- |
 | `state` | Session activity: `active` or `inactive`. |
 | `outcome` | Canonical work outcome from `work_outcome`; defaults to `unresolved`. |
-| `outcome_src` | Source of the latest event: `agent`, `user`, `git`, or migration backfill. |
+| `outcome_src` | Source of the latest event: `agent`, `user`, `git`, `auto`, or migration backfill. |
 | `outcome_reason` | Evidence supplied with the latest event, or `null`. |
 | `outcome_updated_at` | Timestamp of the latest event, or `null`. |
 
 Each exchange has `capture_status` `accepted`, `saved`, or `failed`, plus
 `capture_reason`, `accepted_at`, `saved_at`, `failed_at`, `failure_code`,
-`schema_version`, and `r2_bytes`. Session detail and status APIs derive a
-separate capture object with `saved_exchanges`, `failed_exchanges`,
-`pending_exchanges`, `last_saved_at`, and status `empty`, `pending`, `saved`,
-`failed`, or `partial`.
+`schema_version`, and `r2_bytes`. Saved exchanges also project provider-reported
+`cache_read_tokens` and `cache_write_tokens`; sessions aggregate both separately
+from input and output tokens. Session detail and status APIs derive a separate
+capture object with `saved_exchanges`, `failed_exchanges`, `pending_exchanges`,
+`last_saved_at`, and status `empty`, `pending`, `saved`, `failed`, or `partial`.
 `pending` means at least one accepted exchange remains; `partial` means both
 saved and failed exchanges exist; `empty` means none of those states exists.
 The Worker does not infer work outcomes from capture success.
@@ -500,8 +504,12 @@ Outcome changes append immutable events containing `id`, `session_id`,
 filtering; a later event supersedes the projection without deleting history.
 Machine-token outcome routes assign source `agent`, and Access-protected
 dashboard routes assign source `user`; caller-supplied source values cannot
-override that attribution. `git` is reserved for trusted automated evidence,
-and `migration` identifies the legacy backfill.
+override that attribution. `git` is reserved for trusted harness evidence,
+`auto` identifies deterministic stale-session resolution, and `migration`
+identifies the legacy backfill. Lazy session maintenance marks an unresolved
+root session landed after 48 hours without activity only when it has a saved Git
+artifact with a retrievable, non-empty patch and positive changed-file count.
+The event ID is deterministic, so repeated maintenance is idempotent.
 
 ## 8. Search And Configuration
 
@@ -608,8 +616,10 @@ reconciliation.
 
 The migration sequence defines:
 
-- `sessions`: identity, title provenance, timing, boundary, lifecycle, context, usage, and latest outcome projection
-- `exchanges`: searchable metadata, request kind, title candidates, capture lifecycle, usage, latency, and R2 reference
+- `sessions`: identity, title provenance, timing, boundary, lifecycle, context,
+  usage including cache reads/writes, and latest outcome projection
+- `exchanges`: searchable metadata, request kind, title candidates, capture
+  lifecycle, usage including cache reads/writes, latency, and R2 reference
 - `exchange_files`: schema-v1 file facets with exchange-level provenance
 - `exchange_errors`: schema-v1 error signatures with exchange-level provenance
 - `session_outcome_events`: immutable outcome, source, reason, and timestamp history
@@ -874,7 +884,7 @@ developer's Cloudflare account.
 - Direct model upstreams other than OpenRouter
 - A general analytics suite
 - Automatic retention or deletion workflows
-- Automatic outcome inference services
+- Model-based or semantic outcome inference services
 
 ## 15. Known Incomplete Work
 

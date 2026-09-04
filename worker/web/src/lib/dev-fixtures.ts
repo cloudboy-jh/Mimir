@@ -146,6 +146,8 @@ const sessions: Session[] = [
     request_count: 21,
     tokens_in: 381_420,
     tokens_out: 42_870,
+    cache_read_tokens: 268_000,
+    cache_write_tokens: 18_400,
     title: "Restore dashboard evidence hierarchy",
     title_source: "manual",
     title_updated_at: iso(3),
@@ -526,6 +528,22 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
       })
       .map(asSession);
     return clone({ sessions: page, descendants, next_cursor }) as T;
+  }
+
+  if (url.pathname === "/dashboard/api/sessions/outcomes" && init.method === "POST") {
+    const body = JSON.parse(String(init.body ?? "{}")) as { session_ids?: string[]; outcome: Outcome; reason?: string };
+    const sessionIds = [...new Set(body.session_ids ?? [])];
+    const updated = sessionIds.map((id) => {
+      const session = sessions.find((item) => item.id === id);
+      if (!session) throw new Error("Fixture session not found.");
+      session.outcome = body.outcome;
+      session.outcome_reason = body.reason ?? null;
+      session.outcome_src = "user";
+      session.outcome_updated_at = now.toISOString();
+      outcomeEvents.unshift({ id: `out_fixture_${outcomeEvents.length + 1}`, outcome: body.outcome, source: "user", reason: body.reason ?? null, evidence_json: null, created_at: now.toISOString() });
+      return { id, outcome: body.outcome };
+    });
+    return clone({ updated }) as T;
   }
 
   if (segments[2] === "sessions" && segments[3] && segments[4] === "outcome" && init.method === "POST") {

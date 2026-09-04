@@ -1,5 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import { autoResolveStaleOutcomes } from "../src/sessions/outcomes";
 import {
   addMachineToken,
   createExecutionContext,
@@ -580,6 +581,104 @@ describe("Dashboard integration", () => {
       outcome_src: "user",
       outcome_reason: "Live data verified",
     });
+  });
+
+  it("updates selected root outcomes atomically", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-a', '2026-09-01T00:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-b', '2026-09-01T00:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary) VALUES ('bulk-child', 'bulk-a', '2026-09-01T00:00:01Z', 'inactive', 'header');
+    `);
+    const response = await dashboardRequest("/dashboard/api/sessions/outcomes", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_ids: ["bulk-a", "bulk-b", "bulk-a"],
+        outcome: "discarded",
+        reason: "Superseded",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      updated: [
+        { id: "bulk-a", outcome: "discarded" },
+        { id: "bulk-b", outcome: "discarded" },
+      ],
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id IN ('bulk-a', 'bulk-b') AND source = 'user'",
+      ).first(),
+    ).toEqual({ count: 2 });
+
+    const rejected = await dashboardRequest(
+      "/dashboard/api/sessions/outcomes",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          session_ids: ["bulk-a", "bulk-child"],
+          outcome: "landed",
+        }),
+      },
+    );
+    expect(rejected.status).toBe(400);
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome FROM sessions WHERE id = 'bulk-a'",
+      ).first(),
+    ).toEqual({ work_outcome: "discarded" });
+  });
+
+  it("auto-resolves stale sessions only with retrievable commit evidence", async () => {
+    const artifact = (session: string, commit: string, key: string) =>
+      env.DB.prepare(
+        "INSERT INTO session_git_artifacts(session_id, commit_sha, provenance, patch_r2_key, patch_sha256, patch_bytes, patch_files, patch_additions, patch_deletions, capture_status, accepted_at, saved_at, created_at) VALUES (?, ?, 'git', ?, ?, 10, 1, 1, 0, 'saved', '2026-09-01T00:00:00Z', '2026-09-01T00:00:01Z', '2026-09-01T00:00:00Z')",
+      ).bind(session, commit, key, "f".repeat(64));
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO sessions(id, started_at, last_active_at, state, boundary) VALUES ('auto-root', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 'inactive', 'header')",
+      ),
+      env.DB.prepare(
+        "INSERT INTO sessions(id, started_at, last_active_at, state, boundary, outcome_src) VALUES ('manual-root', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 'inactive', 'header', 'user')",
+      ),
+      env.DB.prepare(
+        "INSERT INTO sessions(id, started_at, last_active_at, state, boundary) VALUES ('recent-tree', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z', 'inactive', 'header')",
+      ),
+      env.DB.prepare(
+        "INSERT INTO sessions(id, parent_session_id, started_at, last_active_at, state, boundary) VALUES ('recent-child', 'recent-tree', '2026-09-03T12:00:00Z', '2026-09-03T12:00:00Z', 'inactive', 'header')",
+      ),
+      artifact("auto-root", "a".repeat(40), "sessions/auto-root/git/a/patch.patch"),
+      artifact("manual-root", "b".repeat(40), "sessions/manual-root/git/b/patch.patch"),
+      artifact("recent-tree", "c".repeat(40), "sessions/recent-tree/git/c/patch.patch"),
+    ]);
+    await Promise.all([
+      env.LOGS.put("sessions/auto-root/git/a/patch.patch", "patch"),
+      env.LOGS.put("sessions/manual-root/git/b/patch.patch", "patch"),
+      env.LOGS.put("sessions/recent-tree/git/c/patch.patch", "patch"),
+    ]);
+
+    await expect(
+      autoResolveStaleOutcomes(env, "2026-09-04T00:00:00Z"),
+    ).resolves.toEqual({ count: 1, session_ids: ["auto-root"] });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = 'auto-root'",
+      ).first(),
+    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome FROM sessions WHERE id IN ('manual-root', 'recent-tree') ORDER BY id",
+      ).all(),
+    ).toMatchObject({
+      results: [
+        { work_outcome: "unresolved" },
+        { work_outcome: "unresolved" },
+      ],
+    });
+    await expect(
+      autoResolveStaleOutcomes(env, "2026-09-04T00:00:00Z"),
+    ).resolves.toEqual({ count: 0, session_ids: [] });
   });
 
   it("serves filter facets from saved traffic, ordered by frequency and scoped on request", async () => {

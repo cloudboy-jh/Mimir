@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentOutcomeEvidence, getSessionGitArtifactPatch, type OutcomeEvent } from "../src/lib/api";
+import { currentOutcomeEvidence, getSessionGitArtifactPatch, outcomeCommitEvidence, type OutcomeEvent } from "../src/lib/api";
 
 function event(id: string, outcome: OutcomeEvent["outcome"], evidence: unknown): OutcomeEvent {
   return {
@@ -44,6 +44,19 @@ describe("currentOutcomeEvidence", () => {
     const cleared = event("2", "landed", null);
     cleared.source = "user";
     expect(currentOutcomeEvidence([cleared, event("1", "landed", git)], "landed")).toBeNull();
+  });
+});
+
+describe("outcomeCommitEvidence", () => {
+  it("retains every distinct commit across revisited outcome events", () => {
+    const first = event("1", "landed", { commit: "a".repeat(40) });
+    const revisit = event("2", "landed", { commit: "b".repeat(40) });
+    const duplicate = event("3", "landed", { commit: "A".repeat(40) });
+    expect(
+      outcomeCommitEvidence([duplicate, revisit, first]).map(
+        (entry) => entry.evidence.commit,
+      ),
+    ).toEqual(["A".repeat(40), "b".repeat(40)]);
   });
 });
 

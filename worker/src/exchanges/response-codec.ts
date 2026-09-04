@@ -70,6 +70,9 @@ export function extractUsage(response: unknown) {
   const events = Array.isArray(records.events) ? records.events : [response];
   let promptTokens = 0;
   let completionTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let cacheIncludedInPromptTokens = false;
   for (const event of events) {
     const record =
       typeof event === "object" && event
@@ -85,6 +88,13 @@ export function extractUsage(response: unknown) {
         : typeof message.usage === "object" && message.usage
           ? (message.usage as Record<string, unknown>)
           : {};
+    const promptDetails =
+      typeof usage.prompt_tokens_details === "object" &&
+      usage.prompt_tokens_details
+        ? (usage.prompt_tokens_details as Record<string, unknown>)
+        : {};
+    if (promptDetails.cached_tokens !== undefined)
+      cacheIncludedInPromptTokens = true;
     promptTokens = Math.max(
       promptTokens,
       finiteNumber(usage.prompt_tokens ?? usage.input_tokens, 0),
@@ -93,6 +103,24 @@ export function extractUsage(response: unknown) {
       completionTokens,
       finiteNumber(usage.completion_tokens ?? usage.output_tokens, 0),
     );
+    cacheReadTokens = Math.max(
+      cacheReadTokens,
+      finiteNumber(
+        promptDetails.cached_tokens ?? usage.cache_read_input_tokens,
+        0,
+      ),
+    );
+    cacheWriteTokens = Math.max(
+      cacheWriteTokens,
+      finiteNumber(usage.cache_creation_input_tokens, 0),
+    );
   }
-  return { prompt_tokens: promptTokens, completion_tokens: completionTokens };
+  return {
+    prompt_tokens: cacheIncludedInPromptTokens
+      ? Math.max(0, promptTokens - cacheReadTokens)
+      : promptTokens,
+    completion_tokens: completionTokens,
+    cache_read_tokens: cacheReadTokens,
+    cache_write_tokens: cacheWriteTokens,
+  };
 }

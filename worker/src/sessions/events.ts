@@ -19,7 +19,12 @@ export type SessionEventTurn = {
   model?: string;
   provider?: string | null;
   request_kind?: RequestKind;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+  };
   latency_ms?: number;
   excerpt?: string;
 };
@@ -140,16 +145,24 @@ function parseTurn(
       return { error: "invalid turn usage" };
     const inputTokens = usage.input_tokens;
     const outputTokens = usage.output_tokens;
+    const cacheReadTokens = usage.cache_read_tokens ?? 0;
+    const cacheWriteTokens = usage.cache_write_tokens ?? 0;
     if (
       typeof inputTokens !== "number" ||
       typeof outputTokens !== "number" ||
+      typeof cacheReadTokens !== "number" ||
+      typeof cacheWriteTokens !== "number" ||
       inputTokens < 0 ||
-      outputTokens < 0
+      outputTokens < 0 ||
+      cacheReadTokens < 0 ||
+      cacheWriteTokens < 0
     )
       return { error: "invalid turn usage" };
     turn.usage = {
       input_tokens: Math.floor(inputTokens),
       output_tokens: Math.floor(outputTokens),
+      cache_read_tokens: Math.floor(cacheReadTokens),
+      cache_write_tokens: Math.floor(cacheWriteTokens),
     };
   }
   if (body.latency_ms !== undefined) {

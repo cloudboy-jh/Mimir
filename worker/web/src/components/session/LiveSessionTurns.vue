@@ -26,7 +26,7 @@ defineProps<{ turns: LiveSessionTurn[]; liveness: SessionLiveness }>();
           </div>
           <p v-if="turn.excerpt" class="mt-1.5 line-clamp-2 text-xs leading-5 text-zinc-600 dark:text-zinc-400">{{ turn.excerpt }}</p>
         </div>
-        <span v-if="turn.usage" class="font-mono text-xs text-zinc-500 sm:text-right">{{ compactNumber(turn.usage.input_tokens + turn.usage.output_tokens) }} tokens</span>
+        <span v-if="turn.usage" class="font-mono text-xs text-zinc-500 sm:text-right">{{ compactNumber(turn.usage.input_tokens + turn.usage.output_tokens + (turn.usage.cache_read_tokens ?? 0) + (turn.usage.cache_write_tokens ?? 0)) }} tokens<span v-if="(turn.usage.cache_read_tokens ?? 0) > 0" class="block text-[10px]">{{ compactNumber(turn.usage.cache_read_tokens ?? 0) }} cached</span></span>
       </li>
     </ol>
   </section>

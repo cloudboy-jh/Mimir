@@ -28,6 +28,8 @@ const PAYLOAD_FIELDS: Record<string, true> = {
 const USAGE_FIELDS: Record<string, true> = {
   input_tokens: true,
   output_tokens: true,
+  cache_read_tokens: true,
+  cache_write_tokens: true,
 };
 const TOOL_ACTIVITY_FIELDS: Record<string, true> = {
   name: true,
@@ -53,7 +55,12 @@ type ReportedExchange = {
   request: unknown;
   response: unknown;
   tool_activity: NormalizedToolActivity[];
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
   latency_ms: number;
   request_kind: RequestKind;
   title: string | null;
@@ -107,12 +114,17 @@ export function parseReportedExchange(
   const usage = body.usage as Record<string, unknown>;
   if (
     Object.keys(usage).some((field) => !USAGE_FIELDS[field]) ||
-    Object.keys(usage).length !== 2
+    !("input_tokens" in usage) ||
+    !("output_tokens" in usage)
   )
     return { error: "usage must contain input_tokens and output_tokens" };
   if (
     !boundedInteger(usage.input_tokens) ||
-    !boundedInteger(usage.output_tokens)
+    !boundedInteger(usage.output_tokens) ||
+    (usage.cache_read_tokens !== undefined &&
+      !boundedInteger(usage.cache_read_tokens)) ||
+    (usage.cache_write_tokens !== undefined &&
+      !boundedInteger(usage.cache_write_tokens))
   )
     return { error: "invalid usage token counts" };
   if (!boundedInteger(body.latency_ms)) return { error: "invalid latency_ms" };
@@ -134,6 +146,9 @@ export function parseReportedExchange(
     usage: {
       input_tokens: usage.input_tokens as number,
       output_tokens: usage.output_tokens as number,
+      cache_read_tokens: (usage.cache_read_tokens as number | undefined) ?? 0,
+      cache_write_tokens:
+        (usage.cache_write_tokens as number | undefined) ?? 0,
     },
     latency_ms: body.latency_ms as number,
     request_kind: body.request_kind as RequestKind,

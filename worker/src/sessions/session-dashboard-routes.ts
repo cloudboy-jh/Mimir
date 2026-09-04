@@ -4,7 +4,7 @@ import type { AppEnv } from "../env";
 import { ensureSessionSummary } from "./summaries";
 import { SESSION_ID } from "./events";
 import { expireSessions } from "./lifecycle";
-import { canonicalOutcome, updateOutcome } from "./outcomes";
+import { autoResolveStaleOutcomes, bulkUpdateOutcomes, canonicalOutcome, updateOutcome } from "./outcomes";
 import {
   loadGitArtifactPatch,
   loadSessionGitArtifacts,
@@ -167,6 +167,7 @@ async function attachSessionLiveness(
 export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/api/sessions", async (c) => {
     await expireSessions(c.env.DB);
+    await autoResolveStaleOutcomes(c.env);
     const where = ["sessions.parent_session_id IS NULL"];
     const values: Array<string | number> = [];
     const q = c.req.query("q");
@@ -272,6 +273,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
 
   app.get("/dashboard/api/sessions/:id", async (c) => {
     await expireSessions(c.env.DB);
+    await autoResolveStaleOutcomes(c.env);
     const id = c.req.param("id");
     const session = await loadSessionRecord(c.env.DB, id);
     if (!session) return c.json({ error: "session not found" }, 404);
@@ -409,6 +411,15 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
         true,
       ),
     );
+  });
+
+  app.post("/dashboard/api/sessions/outcomes", async (c) => {
+    const body = await c.req.json<{
+      session_ids?: unknown;
+      outcome?: string;
+      reason?: unknown;
+    }>();
+    return bulkUpdateOutcomes(c, body);
   });
 
   app.post("/dashboard/api/sessions/:id/mark", async (c) => {

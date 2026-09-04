@@ -300,7 +300,12 @@ class _Reporter:
         with self._lock:
             if turn_id:
                 self._turn_routes[(session_id, turn_id)] = proxied
-        if not proxied:
+        if proxied:
+            # The provider request carries no mutable header surface. Register
+            # its exact Hermes session before the proxy resolves ownership so
+            # resumed traffic reuses the existing D1 row and its evidence.
+            self.post(build_simple_event("heartbeat", session_id, self._repo))
+        else:
             self.activate_direct(session_id)
         return proxied
 

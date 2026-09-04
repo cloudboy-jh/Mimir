@@ -8,7 +8,7 @@ import {
   loadSessionGitArtifacts,
   readGitArtifactBody,
 } from "./git-artifacts";
-import { canonicalOutcome, endSession, updateOutcome } from "./outcomes";
+import { autoResolveStaleOutcomes, canonicalOutcome, endSession, updateOutcome } from "./outcomes";
 import {
   loadSessionErrorSignatures,
   loadSessionFiles,
@@ -34,6 +34,7 @@ import {
 export function registerSessionRoutes(app: Hono<AppEnv>) {
   app.get("/sessions", async (c) => {
     await expireSessions(c.env.DB);
+    await autoResolveStaleOutcomes(c.env);
     const where: string[] = [];
     const values: string[] = [];
     for (const [field, column] of [
@@ -73,6 +74,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
 
   app.get("/sessions/:id", async (c) => {
     await expireSessions(c.env.DB);
+    await autoResolveStaleOutcomes(c.env);
     const id = c.req.param("id");
     const session = await loadSessionRecord(c.env.DB, id);
     if (!session) return c.json({ error: "session not found" }, 404);

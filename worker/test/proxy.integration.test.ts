@@ -602,6 +602,8 @@ describe("Proxy integration", () => {
       "openai/test",
       3,
       1,
+      0,
+      0,
       100,
       true,
     );

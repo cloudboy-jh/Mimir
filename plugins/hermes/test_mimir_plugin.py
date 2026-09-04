@@ -261,6 +261,11 @@ class HookContractTest(unittest.TestCase):
                 "deliver",
                 lambda _reporter, event, **kwargs: self.delivered.append((event, kwargs)),
             ),
+            patch.object(
+                mimir_plugin._Reporter,
+                "post",
+                lambda _reporter, event: self.delivered.append((event, {})) or True,
+            ),
             patch("threading.Thread.start", return_value=None),
             patch.dict(os.environ, {}, clear=True),
         ]
@@ -302,12 +307,13 @@ class HookContractTest(unittest.TestCase):
             "on_session_finalize",
         })
 
-    def test_proxy_only_emits_no_exact_id_lifecycle(self):
+    def test_proxy_registers_exact_session_before_each_request(self):
         self.ctx.hooks["on_session_start"](session_id="proxy-session")
         self.pre("proxy-session", "turn-1", "openrouter", "https://mimir.example/v1/hermes")
         self.post("proxy-session", "turn-1")
         self.finalize("proxy-session")
-        self.assertEqual(self.events(), [])
+        self.pre("proxy-session", "turn-2", "openrouter", "https://mimir.example/v1/hermes")
+        self.assertEqual(self.kinds(), ["heartbeat", "heartbeat"])
 
     def test_direct_only_emits_activation_turn_and_end(self):
         self.ctx.hooks["on_session_start"](session_id="direct-session")
@@ -325,8 +331,8 @@ class HookContractTest(unittest.TestCase):
         self.post("mixed", "direct")
         self.post("mixed", "proxy-first")
         self.finalize("mixed")
-        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
-        self.assertEqual(self.events()[1]["turn"]["exchange_id"], "direct")
+        self.assertEqual(self.kinds(), ["heartbeat", "heartbeat", "heartbeat", "turn", "end"])
+        self.assertEqual(self.events()[3]["turn"]["exchange_id"], "direct")
 
     def test_no_request_emits_nothing(self):
         self.ctx.hooks["on_session_start"](session_id="idle")

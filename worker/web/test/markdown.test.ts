@@ -99,6 +99,32 @@ describe("sessionMarkdown", () => {
     expect(sessionMarkdown(value, [])).toContain("`abcdef123456` Add Obsidian notes (4 files, +11, -2)");
   });
 
+  it("includes commits from earlier visits without duplicating artifacts", () => {
+    const value = detail("Captured work across visits.");
+    value.outcome_events = [
+      {
+        id: "outcome_2",
+        outcome: "landed",
+        source: "agent",
+        reason: "Second visit.",
+        evidence_json: JSON.stringify({ commit: "b".repeat(40) }),
+        created_at: "2026-08-29T10:11:00Z",
+      },
+      {
+        id: "outcome_1",
+        outcome: "landed",
+        source: "agent",
+        reason: "First visit.",
+        evidence_json: JSON.stringify({ commit: "a".repeat(40) }),
+        created_at: "2026-08-27T10:11:00Z",
+      },
+    ];
+
+    const markdown = sessionMarkdown(value, []);
+    expect(markdown).toContain(`\`${"a".repeat(12)}\` First visit.`);
+    expect(markdown).toContain(`\`${"b".repeat(12)}\` Second visit.`);
+  });
+
   it("falls back to intent when no summary is available", () => {
     expect(sessionMarkdown(detail(null, "Connect Mimir to Obsidian."), [])).toContain("## Summary\n\nConnect Mimir to Obsidian.");
   });
