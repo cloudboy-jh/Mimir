@@ -340,7 +340,7 @@ export default function (pi: ExtensionAPI) {
   if (!connection) return;
 
   pi.registerProvider("openrouter", {
-    baseUrl: `${connection.url}/v1`,
+    baseUrl: `${connection.url}`,
     apiKey: connection.token,
   });
 

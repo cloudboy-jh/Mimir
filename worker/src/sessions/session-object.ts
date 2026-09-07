@@ -1,10 +1,12 @@
 import type { Bindings } from "../env";
 import {
+  SESSION_ID,
   parseSessionEvent,
   type SessionEvent,
   type SessionEventTurn,
 } from "./events";
 import { titleUpdateStatement } from "./titles";
+import { canMutateSession } from "./lifecycle";
 
 // The Session Durable Object owns one live session. Reporters (proxy capture,
 // harness plugins) append events; the object tracks liveness, serves the
@@ -50,6 +52,8 @@ export class SessionObject implements DurableObject {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/event")
       return this.handleEvent(request);
+    if (request.method === "PATCH" && url.pathname === "/parent")
+      return this.handleParent(request);
     if (request.method === "GET" && url.pathname === "/state") {
       if (!(await this.ctx.storage.get<SessionMeta>("meta")))
         return Response.json(
@@ -74,12 +78,31 @@ export class SessionObject implements DurableObject {
       return Response.json({ error: parsed.error }, { status: 400 });
     parsed.installation_id = request.headers.get("x-mimir-installation");
     await this.ensureLoaded(parsed.session_id);
-    if (!(await this.claimInstallation(parsed))) {
-      return Response.json(
-        { error: "session belongs to another installation" },
-        { status: 409 },
-      );
+    try {
+      if (
+        !(await canMutateSession(this.env.DB, parsed.session_id, parsed.installation_id)) ||
+        !(await this.claimInstallation(parsed))
+      ) {
+        return Response.json(
+          { error: "session belongs to another installation" },
+          { status: 409 },
+        );
+      }
+      if (parsed.parent_session_id) {
+        const rejected = await this.assignParent(
+          parsed.session_id,
+          parsed.parent_session_id,
+          parsed.installation_id,
+          true,
+        );
+        if (rejected) return rejected;
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("session parent"))
+        return Response.json({ error: "invalid session parent relationship" }, { status: 409 });
+      throw error;
     }
+    await this.refreshMetadata();
     await this.applyEvent(parsed);
     if (parsed.kind === "end") {
       try {
@@ -100,15 +123,14 @@ export class SessionObject implements DurableObject {
   }
 
   private async claimInstallation(event: SessionEvent): Promise<boolean> {
-    if (!event.installation_id) return true;
+    const installationId = event.installation_id ?? null;
     const meta = this.meta!;
     await this.env.DB.batch([
       this.env.DB.prepare(
-        "INSERT OR IGNORE INTO sessions(id, parent_session_id, installation_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, ?, 'header', ?, ?)",
+        "INSERT OR IGNORE INTO sessions(id, installation_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, 'header', ?, ?)",
       ).bind(
         meta.sessionId,
-        event.parent_session_id ?? meta.parentSessionId,
-        event.installation_id,
+        event.installation_id ?? null,
         meta.startedAt,
         event.ts,
         event.harness,
@@ -116,15 +138,94 @@ export class SessionObject implements DurableObject {
         event.turn?.model ?? null,
       ),
       this.env.DB.prepare(
-        "UPDATE sessions SET installation_id = ? WHERE id = ? AND installation_id IS NULL",
-      ).bind(event.installation_id, meta.sessionId),
+        "UPDATE sessions SET installation_id = COALESCE(installation_id, ?) WHERE id = ? AND (? IS NULL OR installation_id IS NULL OR installation_id = ?)",
+      ).bind(installationId, meta.sessionId, installationId, installationId),
     ]);
     const session = await this.env.DB.prepare(
       "SELECT installation_id FROM sessions WHERE id = ?",
     )
       .bind(meta.sessionId)
       .first<{ installation_id: string | null }>();
-    return session?.installation_id === event.installation_id;
+    return !event.installation_id || session?.installation_id === event.installation_id;
+  }
+
+  private async assignParent(
+    sessionId: string,
+    parentId: string,
+    installationId: string | null,
+    allowMissing: boolean,
+  ): Promise<Response | null> {
+    const parent = await this.env.DB.prepare("SELECT id FROM sessions WHERE id = ?")
+      .bind(parentId)
+      .first();
+    if (!parent && !allowMissing)
+      return Response.json({ error: "parent session not found" }, { status: 404 });
+    if (
+      !(await canMutateSession(this.env.DB, sessionId, installationId)) ||
+      (parent && !(await canMutateSession(this.env.DB, parentId, installationId)))
+    )
+      return Response.json({ error: "session belongs to another installation" }, { status: 403 });
+    try {
+      await this.env.DB.prepare(
+        "UPDATE sessions SET requested_parent_session_id = ? WHERE id = ?",
+      ).bind(parentId, sessionId).run();
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("session parent"))
+        return Response.json({ error: "invalid session parent relationship" }, { status: 409 });
+      throw error;
+    }
+    return null;
+  }
+
+  private async handleParent(request: Request): Promise<Response> {
+    let body: { session_id?: unknown; parent_session_id?: unknown };
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ error: "invalid JSON body" }, { status: 400 });
+    }
+    if (
+      !body ||
+      typeof body.session_id !== "string" || !SESSION_ID.test(body.session_id) ||
+      typeof body.parent_session_id !== "string" || !SESSION_ID.test(body.parent_session_id) ||
+      body.session_id === body.parent_session_id
+    )
+      return Response.json({ error: "invalid parent_session_id" }, { status: 400 });
+    const session = await this.env.DB.prepare("SELECT id FROM sessions WHERE id = ?")
+      .bind(body.session_id).first();
+    if (!session)
+      return Response.json({ error: "session not found" }, { status: 404 });
+    const rejected = await this.assignParent(
+      body.session_id, body.parent_session_id,
+      request.headers.get("x-mimir-installation"), false,
+    );
+    if (rejected) return rejected;
+    // Historical rows may have no live object. Do not manufacture lifecycle
+    // state, an alarm, or an activity timestamp merely to repair metadata.
+    this.meta ??= await this.ctx.storage.get<SessionMeta>("meta") ?? null;
+    await this.refreshMetadata();
+    return Response.json({
+      session_id: body.session_id,
+      parent_session_id: body.parent_session_id,
+    });
+  }
+
+  private async refreshMetadata(): Promise<void> {
+    if (!this.meta) return;
+    const session = await this.env.DB.prepare(
+      "SELECT parent_session_id, installation_id FROM sessions WHERE id = ?",
+    ).bind(this.meta.sessionId).first<{
+      parent_session_id: string | null;
+      installation_id: string | null;
+    }>();
+    if (session && (
+      this.meta.parentSessionId !== session.parent_session_id ||
+      this.meta.installationId !== session.installation_id
+    )) {
+      this.meta.parentSessionId = session.parent_session_id;
+      this.meta.installationId = session.installation_id;
+      await this.ctx.storage.put("meta", this.meta);
+    }
   }
 
   private async applyEvent(event: SessionEvent): Promise<void> {
@@ -152,22 +253,8 @@ export class SessionObject implements DurableObject {
     if (event.kind !== "end") {
       await this.env.DB.batch([
         this.env.DB.prepare(
-          "INSERT OR IGNORE INTO sessions(id, parent_session_id, installation_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, ?, 'header', ?, ?)",
+          "UPDATE sessions SET state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ? AND (? IS NULL OR installation_id IS NULL OR installation_id = ?)",
         ).bind(
-          meta.sessionId,
-          event.parent_session_id ?? meta.parentSessionId,
-          event.installation_id ?? meta.installationId,
-          meta.startedAt,
-          event.ts,
-          event.harness,
-          event.repo ?? null,
-          event.turn?.model ?? null,
-        ),
-        this.env.DB.prepare(
-          "UPDATE sessions SET parent_session_id = COALESCE(parent_session_id, ?), installation_id = COALESCE(installation_id, ?), state = 'active', inactive_at = NULL, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?), model_primary = COALESCE(model_primary, ?) WHERE id = ? AND (? IS NULL OR installation_id IS NULL OR installation_id = ?)",
-        ).bind(
-          event.parent_session_id ?? meta.parentSessionId,
-          event.installation_id ?? meta.installationId,
           event.ts,
           event.ts,
           event.harness,
@@ -191,32 +278,17 @@ export class SessionObject implements DurableObject {
       ]);
     }
     if (event.kind === "end" && event.title) {
-      await this.env.DB.batch([
-        this.env.DB.prepare(
-          "INSERT OR IGNORE INTO sessions(id, parent_session_id, installation_id, started_at, last_active_at, harness, boundary, repo) VALUES (?, ?, ?, ?, ?, ?, 'header', ?)",
-        ).bind(
-          meta.sessionId,
-          event.parent_session_id ?? meta.parentSessionId,
-          event.installation_id ?? meta.installationId,
-          meta.startedAt,
-          event.ts,
-          event.harness,
-          event.repo ?? null,
-        ),
-        titleUpdateStatement(
-          this.env.DB,
-          meta.sessionId,
-          event.title,
-          "harness",
-          event.ts,
-        ),
-      ]);
+      await titleUpdateStatement(
+        this.env.DB,
+        meta.sessionId,
+        event.title,
+        "harness",
+        event.ts,
+      ).run();
     }
     meta.lastEventAt = event.ts;
     if (event.harness) meta.harness = meta.harness ?? event.harness;
     if (event.repo) meta.repo = meta.repo ?? event.repo;
-    if (event.parent_session_id)
-      meta.parentSessionId = meta.parentSessionId ?? event.parent_session_id;
     if (event.installation_id) meta.installationId = event.installation_id;
     if (event.kind === "turn" && event.turn) {
       meta.turnCount += 1;
@@ -234,7 +306,7 @@ export class SessionObject implements DurableObject {
       await this.ctx.storage.put("turns", this.turns);
     }
     await this.ctx.storage.put("meta", meta);
-    await this.ctx.storage.setAlarm(Date.parse(event.ts) + SESSION_SILENCE_MS);
+    await this.ctx.storage.setAlarm(Date.now() + SESSION_SILENCE_MS);
     if (dedupKey) await this.ctx.storage.put(dedupKey, true);
     this.broadcast({ type: "event", event });
   }
@@ -283,6 +355,7 @@ export class SessionObject implements DurableObject {
   // and the session lifecycle update in D1. Idempotent per active period.
   private async finalize(reason: string): Promise<void> {
     const meta = this.meta!;
+    await this.refreshMetadata();
     if (meta.finalizedAt) return;
     const now = new Date().toISOString();
     const exchanges = await this.env.DB.prepare(
@@ -327,10 +400,8 @@ export class SessionObject implements DurableObject {
         meta.repo,
       ),
       this.env.DB.prepare(
-        "UPDATE sessions SET parent_session_id = COALESCE(parent_session_id, ?), installation_id = COALESCE(installation_id, ?), state = 'inactive', ended_at = CASE WHEN state = 'active' THEN ? ELSE ended_at END, inactive_at = CASE WHEN state = 'active' THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?",
+        "UPDATE sessions SET state = 'inactive', ended_at = CASE WHEN state = 'active' THEN ? ELSE ended_at END, inactive_at = CASE WHEN state = 'active' THEN ? ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), repo = COALESCE(repo, ?) WHERE id = ?",
       ).bind(
-        meta.parentSessionId,
-        meta.installationId,
         now,
         now,
         meta.lastEventAt,
@@ -364,6 +435,7 @@ export class SessionObject implements DurableObject {
   // alarm still owns finalization.
   private async currentState() {
     await this.ensureLoaded();
+    await this.refreshMetadata();
     const meta = this.meta!;
     const liveness: SessionLiveness = meta.finalizedAt
       ? "finalized"

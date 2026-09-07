@@ -8,6 +8,8 @@ type ExtensionAPI = {
 };
 type SessionContext = {
   cwd?: string;
+  /** Exact spawning session identity, not fork/transcript lineage. */
+  parentSessionId?: string | null;
   sessionManager?: {
     getSessionId?: () => unknown;
     buildSessionContext?: () => { messages?: unknown };
@@ -38,7 +40,7 @@ const HEARTBEAT_MS = 60_000;
 const MAX_EXCHANGE_BYTES = 512 * 1024;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 type Connection = { url: string; token: string };
-type Session = { id: string; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
+type Session = { id: string; parentId: string | null; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
 type RequestKind = "primary" | "summary" | "compaction";
 type NormalizedToolActivity = { name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string };
 
@@ -187,11 +189,11 @@ export default function (pi: ExtensionAPI) {
   });
   const headers = () => current ? headersFor(current) : { "x-mimir-harness": "oh-my-pi" };
 
-  const configureProvider = () => pi.registerProvider("openrouter", { baseUrl: `${config.url}/v1`, apiKey: config.token, headers: headers() });
+  const configureProvider = () => pi.registerProvider("openrouter", { baseUrl: config.url, apiKey: config.token, headers: headers() });
   configureProvider();
 
   const event = (session: Session, kind: "heartbeat" | "end", reason?: string) => ({
-    version: 1, kind, session_id: session.id, harness: "oh-my-pi", repo: session.repo ?? undefined,
+    version: 1, kind, session_id: session.id, parent_session_id: session.parentId, harness: "oh-my-pi", repo: session.repo ?? undefined,
     title: reason === "switch" ? undefined : sessionTitle(pi), ts: new Date().toISOString(), reason,
   });
 
@@ -218,8 +220,10 @@ export default function (pi: ExtensionAPI) {
     if (!rawID) return;
     const previous = current;
     const id = sessionID(String(rawID));
+    const parentId = typeof ctx.parentSessionId === "string" && ctx.parentSessionId.trim()
+      ? sessionID(ctx.parentSessionId) : null;
     const candidate: Session = {
-      id, cwd, repo: basename(cwd) || null, gitRef: null,
+      id, parentId: parentId !== id ? parentId : null, cwd, repo: basename(cwd) || null, gitRef: null,
       active: previous?.id === id && previous.active,
     };
     Object.assign(candidate, await gitMetadata(pi, cwd));
