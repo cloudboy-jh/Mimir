@@ -11,6 +11,17 @@ export const ROOT_SESSION_COLUMNS = `sessions.id, sessions.parent_session_id, se
 
 export const SESSION_SUBTREE_CTE =
   "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id)";
+
+export function loadSessionParent(db: D1Database, id: string) {
+  return db.prepare(
+    "SELECT id AS session_id, parent_session_id, harness AS app FROM sessions WHERE id = ?",
+  ).bind(id).first<{
+    session_id: string;
+    parent_session_id: string | null;
+    app: string | null;
+  }>();
+}
+
 export async function loadSessionRecord(db: D1Database, id: string) {
   const requested = await db
     .prepare("SELECT parent_session_id FROM sessions WHERE id = ?")

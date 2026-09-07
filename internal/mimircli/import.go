@@ -41,7 +41,7 @@ var importServiceFactory = func(maxSessions int, connected bool) (sessionImportS
 		}
 		client = mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
 	}
-	service := sessionimport.New(client, opencode, pi)
+	service := sessionimport.New(client, opencode, pi, sessionimport.NewOhMyPiAdapter())
 	return service, nil
 }
 
@@ -54,6 +54,10 @@ type importCandidate struct {
 	Exchanges         int    `json:"exchanges"`
 	SkippedOpenRouter int    `json:"skipped_openrouter"`
 	SkippedInvalid    int    `json:"skipped_invalid"`
+	ParentSessionID    string `json:"parent_session_id,omitempty"`
+	ParentLinkStatus   string `json:"parent_link_status,omitempty"`
+	ParentLinkReason   string `json:"parent_link_reason,omitempty"`
+	ParentLinkEvidence string `json:"parent_link_evidence,omitempty"`
 }
 
 func cmdImport(ctx context.Context, args []string, ioctx IO) error {
@@ -70,7 +74,7 @@ func cmdImport(ctx context.Context, args []string, ioctx IO) error {
 	interactive := importInteractive(ioctx) && !jsonOutput
 	if harness == "" {
 		if !interactive {
-			return errors.New("usage: mimir import <opencode|pi> <session-id>... --yes [--json]")
+			return errors.New("usage: mimir import <opencode|pi|oh-my-pi> <session-id>... --yes [--json]")
 		}
 		harness, err = selectImportHarness(ioctx)
 		if err != nil || harness == "" {
@@ -78,7 +82,7 @@ func cmdImport(ctx context.Context, args []string, ioctx IO) error {
 		}
 	}
 	if len(ids) == 0 && !interactive {
-		return errors.New("usage: mimir import <opencode|pi> <session-id>... --yes [--json]")
+		return errors.New("usage: mimir import <opencode|pi|oh-my-pi> <session-id>... --yes [--json]")
 	}
 	if len(ids) > 0 && !yes && !interactive {
 		return errors.New("mimir import requires --yes when input is not interactive")
@@ -139,6 +143,11 @@ func cmdImportList(ctx context.Context, args []string, ioctx IO) error {
 		if _, err := fmt.Fprintf(ioctx.Out, "%s  %-8s  %-20s  %3d exchanges  %s\n", candidate.StartedAt, candidate.Harness, candidate.SourceID, candidate.Exchanges, candidate.Title); err != nil {
 			return err
 		}
+		if candidate.Harness == "oh-my-pi" {
+			if _, err := fmt.Fprintf(ioctx.Out, "  Parent: %s [%s] %s\n", candidate.ParentSessionID, candidate.ParentLinkStatus, candidate.ParentLinkReason); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -146,7 +155,7 @@ func cmdImportList(ctx context.Context, args []string, ioctx IO) error {
 func cmdImportInspect(ctx context.Context, args []string, ioctx IO) error {
 	harness, ids, _, jsonOutput, err := parseImportRunArgs(args)
 	if err != nil || harness == "" || len(ids) != 1 {
-		return errors.New("usage: mimir import inspect <opencode|pi> <session-id> [--json]")
+		return errors.New("usage: mimir import inspect <opencode|pi|oh-my-pi> <session-id> [--json]")
 	}
 	service, err := importServiceFactory(1, false)
 	if err != nil {
@@ -165,6 +174,10 @@ func cmdImportInspect(ctx context.Context, args []string, ioctx IO) error {
 	view := candidateViews(discovery.Sessions)[0]
 	if jsonOutput {
 		return json.NewEncoder(ioctx.Out).Encode(view)
+	}
+	if view.Harness == "oh-my-pi" {
+		_, err = fmt.Fprintf(ioctx.Out, "%s %s\nSession: %s\nParent: %s\nParent link: %s\nEvidence: %s\n%s\nMetadata-only repair; no exchanges or lifecycle events uploaded.\n", view.Harness, view.Title, view.SourceID, view.ParentSessionID, view.ParentLinkStatus, view.ParentLinkEvidence, view.ParentLinkReason)
+		return err
 	}
 	_, err = fmt.Fprintf(ioctx.Out, "%s %s\nSession: %s\nStarted: %s\nExchanges: %d\n", view.Harness, view.Title, view.SourceID, view.StartedAt, view.Exchanges)
 	return err
@@ -254,7 +267,7 @@ func parseReadImportArgs(args []string, requireHarness bool) (string, bool, erro
 			continue
 		}
 		if harness != "" || !validImportHarness(arg) {
-			return "", false, errors.New("usage: mimir import list [opencode|pi] [--json]")
+			return "", false, errors.New("usage: mimir import list [opencode|pi|oh-my-pi] [--json]")
 		}
 		harness = arg
 	}
@@ -313,7 +326,7 @@ func parseImportSince(value string) (time.Time, error) {
 	return importNow().UTC().Add(-duration), nil
 }
 
-func validImportHarness(value string) bool { return value == "opencode" || value == "pi" }
+func validImportHarness(value string) bool { return value == "opencode" || value == "pi" || value == "oh-my-pi" }
 
 func importInteractive(ioctx IO) bool {
 	in, inputOK := ioctx.In.(*os.File)
@@ -324,11 +337,11 @@ func importInteractive(ioctx IO) bool {
 func selectImportHarness(ioctx IO) (string, error) {
 	in := ioctx.In.(*os.File)
 	out := ioctx.Out.(*os.File)
-	result, err := runImportSelector(in, out, "Import from harness", []selector.Item{{Label: "OpenCode"}, {Label: "Pi"}})
+	result, err := runImportSelector(in, out, "Import from harness", []selector.Item{{Label: "OpenCode"}, {Label: "Pi"}, {Label: "Oh My Pi (parent links only)"}})
 	if err != nil || !result.Accepted {
 		return "", err
 	}
-	if len(result.Selected) != 2 {
+	if len(result.Selected) != 3 {
 		return "", errors.New("harness selector returned an invalid selection")
 	}
 	selected := ""
@@ -339,7 +352,7 @@ func selectImportHarness(ioctx IO) (string, error) {
 		if selected != "" {
 			return "", errors.New("select exactly one harness")
 		}
-		selected = []string{"opencode", "pi"}[i]
+		selected = []string{"opencode", "pi", "oh-my-pi"}[i]
 	}
 	if selected == "" {
 		return "", errors.New("select one harness")
@@ -357,6 +370,9 @@ func selectImportSessions(ioctx IO, sessions []sessionimport.Session, selected b
 	items := make([]selector.Item, len(sessions))
 	for i, session := range sessions {
 		label := fmt.Sprintf("%-8s  %-16s  %3d  %s", session.Harness, session.StartedAt.Local().Format("2006-01-02 15:04"), len(session.Exchanges), session.Title)
+		if session.Harness == "oh-my-pi" {
+			label = fmt.Sprintf("%s  %s -> %s [%s] %s", session.Harness, session.SourceID, session.ParentSessionID, session.ParentLinkStatus, session.ParentLinkReason)
+		}
 		items[i] = selector.Item{Label: label, Selected: selected}
 	}
 	result, err := runImportSelector(ioctx.In.(*os.File), ioctx.Out.(*os.File), "Sessions to import", items)
@@ -382,7 +398,7 @@ func candidateViews(sessions []sessionimport.Session) []importCandidate {
 		if !session.StartedAt.IsZero() {
 			started = session.StartedAt.UTC().Format(time.RFC3339)
 		}
-		views = append(views, importCandidate{Harness: session.Harness, SourceID: session.SourceID, SessionID: session.ID, Title: session.Title, StartedAt: started, Exchanges: len(session.Exchanges), SkippedOpenRouter: session.SkippedOpenRouter, SkippedInvalid: session.SkippedInvalid})
+		views = append(views, importCandidate{Harness: session.Harness, SourceID: session.SourceID, SessionID: session.ID, Title: session.Title, StartedAt: started, Exchanges: len(session.Exchanges), SkippedOpenRouter: session.SkippedOpenRouter, SkippedInvalid: session.SkippedInvalid, ParentSessionID: session.ParentSessionID, ParentLinkStatus: session.ParentLinkStatus, ParentLinkReason: session.ParentLinkReason, ParentLinkEvidence: session.ParentLinkEvidence})
 	}
 	return views
 }
@@ -439,6 +455,11 @@ func printImportReport(out io.Writer, report sessionimport.Report, jsonOutput bo
 		}
 	}
 	for _, session := range report.Sessions {
+		if session.ParentLinkStatus != "" {
+			if err := render.Detail(fmt.Sprintf("%s %s -> %s [%s]: %s", session.Source, session.SourceID, session.ParentSessionID, session.ParentLinkStatus, session.ParentLinkReason)); err != nil {
+				return err
+			}
+		}
 		detail := session.Error
 		if detail == "" {
 			detail = session.GitArtifactError

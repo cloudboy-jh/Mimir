@@ -72,6 +72,10 @@ type Session struct {
 	Exchanges         []Exchange `json:"exchanges"`
 	SkippedOpenRouter int        `json:"skipped_openrouter"`
 	SkippedInvalid    int        `json:"skipped_invalid"`
+	ParentSessionID    string     `json:"parent_session_id,omitempty"`
+	ParentLinkStatus  string     `json:"parent_link_status,omitempty"`
+	ParentLinkReason  string     `json:"parent_link_reason,omitempty"`
+	ParentLinkEvidence string    `json:"parent_link_evidence,omitempty"`
 }
 
 type Source interface {
@@ -116,6 +120,9 @@ type SessionReport struct {
 	GitArtifactsSaved     int    `json:"git_artifacts_saved"`
 	GitArtifactsDuplicate int    `json:"git_artifacts_duplicate"`
 	GitArtifactError      string `json:"git_artifact_error,omitempty"`
+	ParentSessionID    string `json:"parent_session_id,omitempty"`
+	ParentLinkStatus  string `json:"parent_link_status,omitempty"`
+	ParentLinkReason  string `json:"parent_link_reason,omitempty"`
 	Error                 string `json:"error,omitempty"`
 }
 

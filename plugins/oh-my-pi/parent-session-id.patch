@@ -1,0 +1,156 @@
+diff --git a/packages/coding-agent/src/extensibility/extensions/runner.ts b/packages/coding-agent/src/extensibility/extensions/runner.ts
+index e2bbea8..f94642d 100644
+--- a/packages/coding-agent/src/extensibility/extensions/runner.ts
++++ b/packages/coding-agent/src/extensibility/extensions/runner.ts
+@@ -607,6 +607,7 @@ export class ExtensionRunner {
+ 		private readonly settings?: Settings,
+ 		private readonly localProtocolOptions?: LocalProtocolOptions,
+ 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
++		private readonly parentSessionId: string | null = null,
+ 	) {
+ 		this.#uiContext = noOpUIContext;
+ 		this.#getMemoryFn = getMemory;
+@@ -1176,6 +1177,7 @@ export class ExtensionRunner {
+ 			hasUI: this.hasUI(),
+ 			cwd: this.cwd,
+ 			sessionManager: this.sessionManager,
++			parentSessionId: this.parentSessionId,
+ 			modelRegistry: this.modelRegistry,
+ 			isProjectTrusted: () => true,
+ 			get model() {
+diff --git a/packages/coding-agent/src/extensibility/extensions/types.ts b/packages/coding-agent/src/extensibility/extensions/types.ts
+index e798973..a49cde6 100644
+--- a/packages/coding-agent/src/extensibility/extensions/types.ts
++++ b/packages/coding-agent/src/extensibility/extensions/types.ts
+@@ -469,6 +469,8 @@ export interface ExtensionContext {
+ 	cwd: string;
+ 	/** Session manager (read-only) */
+ 	sessionManager: ReadonlySessionManager;
++	/** Exact session that spawned this agent, or null for a root. Not fork lineage. */
++	readonly parentSessionId?: string | null;
+ 	/** Model registry for API key resolution */
+ 	modelRegistry: ModelRegistry;
+ 	/** Calling session's `local://` root mapping for external tool bridges. */
+diff --git a/packages/coding-agent/src/sdk.ts b/packages/coding-agent/src/sdk.ts
+index 89d0d6a..f6396c4 100644
+--- a/packages/coding-agent/src/sdk.ts
++++ b/packages/coding-agent/src/sdk.ts
+@@ -602,6 +602,8 @@ export interface CreateAgentSessionOptions {
+ 	 * top-level "Main" session, which has no parent.
+ 	 */
+ 	parentAgentId?: string;
++	/** Exact spawning session ID. Independent from fork lineage and agent display names. */
++	parentSessionId?: string | null;
+ 	/** Inherited eval executor session id for subagents sharing parent eval state. */
+ 	parentEvalSessionId?: string;
+ 
+@@ -1314,6 +1316,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 	const agentDir = options.agentDir ?? getAgentDir();
+ 	const eventBus = options.eventBus ?? new EventBus();
+ 	const subagentEventBus = options.subagentEventBus ?? new EventBus();
++	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
++	// Capture before initialization yields: the parent may switch sessions while this child starts.
++	const parentSessionId = options.parentSessionId !== undefined
++		? options.parentSessionId
++		: options.parentAgentId
++			? agentRegistry.get(options.parentAgentId)?.session?.sessionManager.getSessionId() ?? null
++			: null;
+ 
+ 	registerSshCleanup();
+ 	registerEvalCleanup();
+@@ -1741,7 +1750,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 
+ 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+ 
+-	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
+ 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
+ 	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
+ 	let registeredAgentRef: AgentRef | undefined;
+@@ -2809,6 +2817,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
+ 			settings,
+ 			localProtocolOptions,
+ 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
++			parentSessionId,
+ 		);
+ 
+ 		credentialDisabledTarget = extensionRunner;
+diff --git a/packages/coding-agent/src/task/executor.ts b/packages/coding-agent/src/task/executor.ts
+index 405197a..b434a63 100644
+--- a/packages/coding-agent/src/task/executor.ts
++++ b/packages/coding-agent/src/task/executor.ts
+@@ -2923,6 +2923,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
+ 		signal,
+ 		onProgress,
+ 	} = options;
++	const parentSessionId = options.parentAgentId
++		? AgentRegistry.global().get(options.parentAgentId)?.session?.sessionManager.getSessionId() ?? null
++		: null;
+ 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
+ 	const startTime = Date.now();
+ 	// Set by the session's onFirstChatDispatch hook the first time the agent
+@@ -3393,6 +3396,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
+ 				parentMnemopiSessionState: options.parentMnemopiSessionState,
+ 				parentTaskPrefix: id,
+ 				parentAgentId: options.parentAgentId,
++				parentSessionId,
+ 				agentId: id,
+ 				agentDisplayName: agent.name,
+ 				agentName: agent.name,
+diff --git a/packages/coding-agent/test/sdk-session-isolation.test.ts b/packages/coding-agent/test/sdk-session-isolation.test.ts
+index 0ba6f35..0e0d4e7 100644
+--- a/packages/coding-agent/test/sdk-session-isolation.test.ts
++++ b/packages/coding-agent/test/sdk-session-isolation.test.ts
+@@ -117,6 +117,53 @@ describe("createAgentSession session storage isolation", () => {
+ 		}
+ 	});
+ 
++	it("exposes exact spawning sessions to extensions without confusing roots, siblings or grandchildren", async () => {
++		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-parent-session-"));
++		tempDirs.push(tempDir);
++		const registry = new AgentRegistry();
++		const sessions: AgentSession[] = [];
++		const observed = new Map<string, string | null | undefined>();
++		const spawn = async (id: string, parentAgentId?: string) => {
++			const { session } = await createAgentSession({
++				cwd: tempDir, agentDir: path.join(tempDir, "agent"),
++				modelRegistry: sharedModelRegistry, settings: Settings.isolated(),
++				sessionManager: SessionManager.inMemory(tempDir),
++				disableExtensionDiscovery: true, skills: [], contextFiles: [],
++				promptTemplates: [], slashCommands: [], toolNames: [],
++				enableMCP: false, enableLsp: false, agentRegistry: registry,
++				agentId: id, parentAgentId, taskDepth: parentAgentId ? 1 : 0,
++				extensions: [pi => {
++					pi.on("session_start", (_event, ctx) => {
++						observed.set(id, ctx.parentSessionId);
++					});
++				}],
++			});
++			sessions.push(session);
++			await session.extensionRunner?.emit({ type: "session_start" });
++			return session;
++		};
++		try {
++			const root = await spawn("Root");
++			const child = await spawn("Child", "Root");
++			await spawn("Sibling", "Root");
++			await spawn("Grandchild", "Child");
++			await spawn("Independent");
++			expect(Object.fromEntries(observed)).toEqual({
++				Root: null,
++				Child: root.sessionManager.getSessionId(),
++				Sibling: root.sessionManager.getSessionId(),
++				Grandchild: child.sessionManager.getSessionId(),
++				Independent: null,
++			});
++			const originalParent = observed.get("Child");
++			await root.sessionManager.newSession();
++			await child.extensionRunner?.emit({ type: "session_start" });
++			expect(observed.get("Child")).toBe(originalParent);
++		} finally {
++			for (const session of sessions.reverse()) await session.dispose();
++		}
++	});
++
+ 	it("uses the provided agentDir for the default persistent session root", async () => {
+ 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-sdk-session-isolation-${Snowflake.next()}-`));
+ 		tempDirs.push(tempDir);

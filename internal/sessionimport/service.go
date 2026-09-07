@@ -54,6 +54,22 @@ func (s Service) Discover(ctx context.Context, options Options) (Discovery, erro
 		result.Sessions = append(result.Sessions, sessions...)
 		result.Sources = append(result.Sources, SourceReport{Source: source.Name(), Status: "ok", Count: len(sessions)})
 	}
+	// PI_CODING_AGENT_DIR is shared by both harnesses. When the OMP source
+	// discovers the same exact header ID, it owns that record; never replay its
+	// exchanges under Pi's different turn-ID namespace.
+	ompIDs := make(map[string]bool)
+	for _, session := range result.Sessions {
+		if session.Harness == "oh-my-pi" {
+			ompIDs[session.SourceID] = true
+		}
+	}
+	filtered := result.Sessions[:0]
+	for _, session := range result.Sessions {
+		if session.Harness != "pi" || !ompIDs[session.SourceID] {
+			filtered = append(filtered, session)
+		}
+	}
+	result.Sessions = filtered
 	sortSessions(result.Sessions)
 	return result, nil
 }
@@ -122,6 +138,9 @@ func (s Service) Upload(ctx context.Context, sessions []Session) (Report, error)
 }
 
 func (s Service) upload(ctx context.Context, source string, session Session) SessionReport {
+	if source == "oh-my-pi" {
+		return s.repairOMPParent(ctx, session)
+	}
 	report := SessionReport{Source: source, SourceID: session.SourceID, SessionID: session.ID, Status: "failed", SkippedOpenRouter: session.SkippedOpenRouter, SkippedInvalid: session.SkippedInvalid}
 	if session.ID == "" || session.Harness == "" {
 		report.Error = "invalid discovered session"

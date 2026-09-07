@@ -229,6 +229,53 @@ describe("Dashboard integration", () => {
     ).toBe(400);
   });
 
+  it("matches nested metadata and saved models while paging only owning roots", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary, repo, work_outcome, request_count, tokens_in) VALUES ('tree-a', '2026-07-27T10:00:00Z', 'inactive', 'header', 'root-repo', 'landed', 2, 10);
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary, harness, request_count, tokens_in) VALUES ('tree-a-child', 'tree-a', '2026-07-27T11:00:00Z', 'inactive', 'header', 'reviewer', 3, 20);
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary, title, repo, work_outcome, request_count, tokens_in) VALUES ('tree-a-grandchild', 'tree-a-child', '2026-07-27T12:00:00Z', 'inactive', 'header', 'Nested needle', 'child-repo', 'discarded', 4, 30);
+      INSERT INTO sessions(id, parent_session_id, started_at, state, boundary) VALUES ('tree-a-sibling', 'tree-a', '2026-07-27T10:30:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, started_at, state, boundary, repo, work_outcome, harness, title, model_primary) VALUES ('tree-b', '2026-07-27T09:00:00Z', 'inactive', 'header', 'root-repo', 'landed', 'reviewer', 'Other needle', 'saved-only-model');
+      INSERT INTO sessions(id, started_at, state, boundary, repo, work_outcome, harness, title) VALUES ('tree-unsaved', '2026-07-27T08:00:00Z', 'inactive', 'header', 'root-repo', 'landed', 'reviewer', 'Unsaved needle');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('tree-saved', 'tree-a-grandchild', '2026-07-27T12:00:00Z', 'harness', 'saved-only-model', 1, 'log/tree-saved.json', 'saved');
+      INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('tree-not-saved', 'tree-unsaved', '2026-07-27T12:01:00Z', 'harness', 'saved-only-model', 1, 'log/tree-not-saved.json', 'accepted');
+    `);
+    const filters = "q=NEEDLE&app=reviewer&model=saved-only-model&repo=root-repo&outcome=landed&to=2026-07-27T10:00:00Z&limit=1";
+    type Page = {
+      sessions: Array<{ id: string; outcome: string; request_count: number; tokens_in: number }>;
+      descendants: Array<{ id: string; parent_session_id: string; request_count: number }>;
+      next_cursor: string | null;
+    };
+    const first = await (await dashboardRequest(`/dashboard/api/sessions?${filters}`)).json<Page>();
+    expect(first.sessions).toEqual([
+      expect.objectContaining({ id: "tree-a", outcome: "landed", request_count: 9, tokens_in: 60 }),
+    ]);
+    expect(first.descendants.map((session) => session.id)).toEqual([
+      "tree-a-child", "tree-a-grandchild", "tree-a-sibling",
+    ]);
+    expect(first.descendants).toContainEqual(expect.objectContaining({
+      id: "tree-a-child", parent_session_id: "tree-a", request_count: 3,
+    }));
+    expect(first.descendants).toContainEqual(expect.objectContaining({
+      id: "tree-a-grandchild", parent_session_id: "tree-a-child", request_count: 4,
+    }));
+    expect(first.next_cursor).toEqual(expect.any(String));
+    const second = await (await dashboardRequest(
+      `/dashboard/api/sessions?${filters}&cursor=${encodeURIComponent(first.next_cursor!)}`,
+    )).json<Page>();
+    expect(second.sessions.map((session) => session.id)).toEqual(["tree-b"]);
+    expect(second.descendants).toEqual([]);
+    expect(second.next_cursor).toBeNull();
+    const bySavedModel = await (await dashboardRequest(
+      "/dashboard/api/sessions?q=SAVED-ONLY-MODEL&app=reviewer",
+    )).json<Page>();
+    expect(bySavedModel.sessions.map((session) => session.id)).toEqual(["tree-a", "tree-b"]);
+    const byChildRepo = await (await dashboardRequest(
+      "/dashboard/api/sessions?repo=child-repo",
+    )).json<Page>();
+    expect(byChildRepo.sessions).toEqual([]);
+  });
+
   it("reports exact-session model usage and isolates supporting-run models", async () => {
     await env.DB.exec(`
         INSERT INTO sessions(id, started_at, state, harness, boundary, repo, model_primary, intent) VALUES ('multi-root', '2026-07-27T11:00:00Z', 'inactive', 'opencode', 'header', 'mimir', 'gpt-5.6-sol', 'Swap models while coding');
@@ -275,9 +322,9 @@ describe("Dashboard integration", () => {
           await dashboardRequest(
             "/dashboard/api/sessions?model=child-only-model",
           )
-        ).json()) as { sessions: unknown[] }
-      ).sessions,
-    ).toEqual([]);
+        ).json()) as { sessions: Array<{ id: string }> }
+      ).sessions.map((session) => session.id),
+    ).toEqual(["multi-root"]);
 
     const detail = (await (
       await dashboardRequest("/dashboard/api/sessions/multi-root")

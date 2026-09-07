@@ -132,3 +132,31 @@ func TestBackfillPreservesPartialSourceFailure(t *testing.T) {
 		t.Fatalf("report=%#v", report)
 	}
 }
+
+func TestOMPParentRepairPreviewAndApproval(t *testing.T) {
+	session := sessionimport.Session{ID: "child", SourceID: "child", Harness: "oh-my-pi", ParentSessionID: "parent", ParentLinkStatus: "pending", ParentLinkEvidence: "omp-artifact-tree"}
+	service := &fakeSessionImportService{discovery: sessionimport.Discovery{Sessions: []sessionimport.Session{session}}}
+	withImportService(t, service)
+	var out bytes.Buffer
+	ioctx := IO{In: strings.NewReader(""), Out: &out, Err: &bytes.Buffer{}}
+	if err := ExecuteIO(context.Background(), []string{"import", "inspect", "oh-my-pi", "child", "--json"}, ioctx); err != nil {
+		t.Fatal(err)
+	}
+	var preview importCandidate
+	if err := json.Unmarshal(out.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.ParentSessionID != "parent" || preview.ParentLinkStatus != "pending" || len(service.uploaded) != 0 {
+		t.Fatalf("preview=%#v uploads=%#v", preview, service.uploaded)
+	}
+	if err := ExecuteIO(context.Background(), []string{"backfill", "oh-my-pi", "--all", "--json"}, ioctx); err == nil || len(service.uploaded) != 0 {
+		t.Fatalf("unapproved repair: error=%v uploads=%#v", err, service.uploaded)
+	}
+	out.Reset()
+	if err := ExecuteIO(context.Background(), []string{"backfill", "oh-my-pi", "--all", "--yes", "--json"}, ioctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.uploaded) != 1 {
+		t.Fatalf("approved repair did not apply selected history: %#v", service.uploaded)
+	}
+}

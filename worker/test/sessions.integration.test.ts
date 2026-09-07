@@ -14,6 +14,91 @@ import {
 } from "./support";
 
 describe("Sessions integration", () => {
+  it("repairs exact parent metadata without changing lifecycle, outcomes, or siblings", async () => {
+    await addMachineToken("repair-install", "repair-token");
+    const headers = { authorization: "Bearer repair-token", "content-type": "application/json" };
+    const event = { version: 1, kind: "end", ts: "2026-08-13T10:00:00Z", harness: "oh-my-pi" };
+    for (const id of ["repair-root", "repair-child", "repair-sibling"]) {
+      expect((await request(`/sessions/${id}/events`, {
+        method: "POST", headers, body: JSON.stringify(event),
+      })).status).toBe(200);
+    }
+    await env.DB.exec(`
+      UPDATE sessions SET work_outcome = 'landed', request_count = 3, tokens_in = 11 WHERE id = 'repair-root';
+      UPDATE sessions SET work_outcome = 'discarded', request_count = 2, tokens_in = 7 WHERE id = 'repair-child';
+      UPDATE sessions SET parent_session_id = 'repair-root' WHERE id = 'repair-sibling';
+    `);
+    const before = (await env.DB.prepare(
+      "SELECT id, state, started_at, ended_at, inactive_at, last_active_at, work_outcome, request_count, tokens_in FROM sessions ORDER BY id",
+    ).all()).results;
+    const stateBefore = await (await request("/sessions/repair-child/object-state", { headers })).json<Record<string, unknown>>();
+    const transcriptBefore = await (await env.LOGS.get("sessions/repair-child/transcript.json"))!.text();
+    const patch: RequestInit = {
+      method: "PATCH", headers, body: JSON.stringify({ parent_session_id: "repair-root" }),
+    };
+    const linked = await request("/sessions/repair-child/parent", patch);
+    expect(linked.status).toBe(200);
+    expect(await linked.json()).toEqual({ session_id: "repair-child", parent_session_id: "repair-root" });
+    expect((await request("/sessions/repair-child/parent", patch)).status).toBe(200);
+    expect(await (await request("/sessions/repair-child/parent", { headers })).json()).toEqual({
+      session_id: "repair-child", parent_session_id: "repair-root", app: "oh-my-pi",
+    });
+    expect((await env.DB.prepare(
+      "SELECT id, state, started_at, ended_at, inactive_at, last_active_at, work_outcome, request_count, tokens_in FROM sessions ORDER BY id",
+    ).all()).results).toEqual(before);
+    expect(await (await request("/sessions/repair-child/object-state", { headers })).json()).toEqual({
+      ...stateBefore, parent_session_id: "repair-root",
+    });
+    expect(await (await env.LOGS.get("sessions/repair-child/transcript.json"))!.text()).toBe(transcriptBefore);
+    expect(await env.DB.prepare(
+      "SELECT parent_session_id FROM sessions WHERE id = 'repair-sibling'",
+    ).first()).toEqual({ parent_session_id: "repair-root" });
+    expect((await env.DB.prepare("SELECT * FROM session_outcome_events").all()).results).toEqual([]);
+  });
+
+  it("enforces both parent endpoint owners and rejects missing, conflicting, and cyclic parents atomically", async () => {
+    await addMachineToken("parent-owner", "parent-owner-token");
+    await addMachineToken("other-owner", "other-owner-token");
+    await env.DB.exec(`
+      INSERT INTO sessions(id, installation_id, started_at, state, boundary) VALUES ('link-a', 'parent-owner', '2026-08-13T10:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, boundary) VALUES ('link-b', 'parent-owner', '2026-08-13T10:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, boundary) VALUES ('link-c', 'parent-owner', '2026-08-13T10:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, installation_id, started_at, state, boundary) VALUES ('link-foreign', 'other-owner', '2026-08-13T10:00:00Z', 'inactive', 'header');
+    `);
+    const link = (child: string, parent: string, token = "parent-owner-token") =>
+      request(`/sessions/${child}/parent`, {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ parent_session_id: parent }),
+      });
+    expect((await link("link-a", "missing-parent")).status).toBe(404);
+    expect((await link("missing-child", "link-a")).status).toBe(404);
+    expect((await link("link-a", "link-foreign")).status).toBe(403);
+    expect((await link("link-foreign", "link-a")).status).toBe(403);
+    expect((await link("link-a", "link-a")).status).toBe(400);
+    const competing = await Promise.all([link("link-a", "link-b"), link("link-b", "link-a")]);
+    expect(competing.map((response) => response.status).sort()).toEqual([200, 409]);
+    const linked = await env.DB.prepare(
+      "SELECT id, parent_session_id FROM sessions WHERE id IN ('link-a', 'link-b') AND parent_session_id IS NOT NULL",
+    ).first<{ id: string; parent_session_id: string }>();
+    expect(linked).not.toBeNull();
+    expect((await link(linked!.id, "link-c")).status).toBe(409);
+    expect((await link("link-c", linked!.id)).status).toBe(200);
+    expect((await link(linked!.parent_session_id, "link-c")).status).toBe(409);
+    expect((await request(`/sessions/${linked!.id}/object-state`, {
+      headers: { authorization: "Bearer parent-owner-token" },
+    })).status).toBe(404);
+    await expect(env.DB.prepare(
+      "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+    ).bind("link-c", linked!.parent_session_id).run()).rejects.toThrow();
+    await expect(env.DB.prepare(
+      "UPDATE sessions SET parent_session_id = NULL WHERE id = ?",
+    ).bind(linked!.id).run()).rejects.toThrow();
+    expect(await env.DB.prepare(
+      "SELECT parent_session_id FROM sessions WHERE id = 'link-foreign'",
+    ).first()).toEqual({ parent_session_id: null });
+  });
+
   it("lists root sessions with aggregated supporting-run evidence and roots child outcomes", async () => {
     await env.DB.exec(`
         INSERT INTO sessions(id, started_at, boundary, state, request_count, tokens_in, tokens_out, intent) VALUES ('root-session', '2026-07-27T10:00:00Z', 'header', 'inactive', 1, 10, 5, 'Ship the feature');

@@ -225,7 +225,7 @@ const sessions: Session[] = [
     display_title: "Prototype a session synchronization path and validate ownership behavior",
     intent: "Prototype a session synchronization path and validate ownership behavior",
     summary_text: "The session prototyped synchronization behavior, but the approach was discarded after ownership validation.", summary_status: "ready", summary_source: "generated", summary_updated_at: iso(1100),
-    child_session_count: 1,
+    child_session_count: 0,
     capture: savedCapture(8, 1),
     device: deviceIdentity(devices[2]),
   },
@@ -331,7 +331,7 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     state: "inactive",
     last_active_at: iso(50),
     inactive_at: iso(49),
-    harness: "opencode",
+    harness: "goose",
     boundary: "exact",
     outcome: "landed",
     outcome_src: "agent",
@@ -339,8 +339,8 @@ const supportingSessions: SessionDetail["supporting_sessions"] = [
     outcome_reason: "Traced the capture bound regression to the evidence pipeline.",
     repo: "mimir",
     source_ref: "feature/dashboard-evidence",
-    model_primary: "anthropic/claude-opus-4.1-thinking",
-    models: [{ name: "anthropic/claude-opus-4.1-thinking", request_count: 1, first_seen_at: iso(53), last_seen_at: iso(50) }],
+    model_primary: "qwen/qwen3-coder",
+    models: [{ name: "qwen/qwen3-coder", request_count: 1, first_seen_at: iso(53), last_seen_at: iso(50) }],
     request_count: 1,
     tokens_in: 14_600,
     tokens_out: 1_740,
@@ -398,7 +398,7 @@ const sessionExchanges: SessionExchange[] = Array.from({ length: 21 }, (_, index
 sessionExchanges.push(
   { id: "req_fixture_sub_01", session_id: "ses_fixture_supporting_review", ts: iso(55), model: "anthropic/claude-opus-4.1-thinking", provider: "anthropic", finish_reason: "stop", latency_ms: 2_140, harness: "opencode", input_tokens: 11_400, output_tokens: 1_380, request_excerpt: "Locate the evidence selection fault in the session detail sidebar.", capture_status: "saved", capture_reason: null, failure_code: null },
   { id: "req_fixture_sub_02", session_id: "ses_fixture_supporting_motion", ts: iso(41), model: "google/gemini-2.5-pro-preview-06-05", provider: "google", finish_reason: "stop", latency_ms: 3_020, harness: "opencode", input_tokens: 7_900, output_tokens: 940, request_excerpt: "Review Reka presence states and reduced-motion handling for the overlays.", capture_status: "saved", capture_reason: null, failure_code: null },
-  { id: "req_fixture_sub_03", session_id: "ses_fixture_supporting_tooling", ts: iso(52), model: "anthropic/claude-opus-4.1-thinking", provider: "anthropic", finish_reason: "stop", latency_ms: 1_880, harness: "opencode", input_tokens: 9_100, output_tokens: 1_060, request_excerpt: "Trace patch capture bounds across the evidence pipeline.", capture_status: "saved", capture_reason: null, failure_code: null },
+  { id: "req_fixture_sub_03", session_id: "ses_fixture_supporting_tooling", ts: iso(52), model: "deepseek/deepseek-v3.2", provider: "deepseek", finish_reason: "stop", latency_ms: 1_880, harness: "goose", input_tokens: 9_100, output_tokens: 1_060, request_excerpt: "Trace patch capture bounds across the evidence pipeline.", capture_status: "saved", capture_reason: null, failure_code: null },
 );
 
 const exchanges: Exchange[] = sessionExchanges.map((exchange) => ({
@@ -438,13 +438,29 @@ function asSession(item: Session | SessionDetail["supporting_sessions"][number])
   };
 }
 
+function descendantsFor(rootId: string): SessionDetail["supporting_sessions"] {
+  const visited = new Set([rootId]);
+  const descendants: SessionDetail["supporting_sessions"] = [];
+  const pending = [rootId];
+  while (pending.length) {
+    const parentId = pending.pop()!;
+    for (const child of supportingSessions) {
+      if (child.parent_session_id !== parentId || visited.has(child.id)) continue;
+      visited.add(child.id);
+      descendants.push(child);
+      pending.push(child.id);
+    }
+  }
+  return descendants;
+}
+
 function detailFor(session: Session): SessionDetail {
   const { capture, liveness: _liveness, ...detailSession } = session;
   const rich = session.id === sessions[0].id;
   return {
     session: detailSession,
     capture,
-    supporting_sessions: supportingSessions.filter((child) => child.parent_session_id === session.id),
+    supporting_sessions: descendantsFor(session.id),
     outcome_events: rich ? outcomeEvents : [],
     files: rich ? [
       "worker/web/src/components/session/SessionHeader.vue",
@@ -473,9 +489,9 @@ function paginate<T>(items: T[], params: URLSearchParams) {
 function facetsFor(): Facets {
   return {
     repos: ["mimir"],
-    apps: [...new Set(sessions.flatMap((session) => session.harness ? [session.harness] : []))],
-    models: [...new Set(sessions.flatMap((session) => session.models.map((model) => model.name)))],
-    providers: ["openai", "anthropic", "google"],
+    apps: [...new Set(allSessions.flatMap((session) => session.harness ? [session.harness] : []))],
+    models: [...new Set([...allSessions.flatMap((session) => [session.model_primary, ...session.models.map((model) => model.name)].filter((name): name is string => Boolean(name))), ...sessionExchanges.filter((exchange) => exchange.capture_status === "saved").map((exchange) => exchange.model)])],
+    providers: [...new Set(sessionExchanges.flatMap((exchange) => exchange.provider ? [exchange.provider] : []))],
     finish_reasons: ["stop", "tool-calls"],
   };
 }
@@ -510,24 +526,40 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
 
   if (url.pathname === "/dashboard/api/sessions") {
     const needle = (url.searchParams.get("q") ?? "").toLowerCase();
-    const filtered = sessions.filter((session) => {
-      const haystack = [session.id, session.display_title, session.title, session.intent, session.repo, session.harness, ...session.models.map((model) => model.name)].filter(Boolean).join(" ").toLowerCase();
-      return (!needle || haystack.includes(needle))
-        && (!url.searchParams.get("repo") || session.repo === url.searchParams.get("repo"))
-        && (!url.searchParams.get("outcome") || session.outcome === url.searchParams.get("outcome"))
-        && (!url.searchParams.get("app") || session.harness === url.searchParams.get("app"))
-        && (!url.searchParams.get("model") || session.models.some((model) => model.name === url.searchParams.get("model")));
+    const repo = url.searchParams.get("repo");
+    const outcome = url.searchParams.get("outcome");
+    const app = url.searchParams.get("app");
+    const model = url.searchParams.get("model");
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    const trees = sessions.map((session) => ({ session, descendants: descendantsFor(session.id) }));
+    const savedModels = new Map<string, string[]>();
+    for (const exchange of sessionExchanges) {
+      if (exchange.capture_status !== "saved") continue;
+      const models = savedModels.get(exchange.session_id) ?? [];
+      models.push(exchange.model);
+      savedModels.set(exchange.session_id, models);
+    }
+    const filtered = trees.filter(({ session, descendants }) => {
+      if ((repo && session.repo !== repo) || (outcome && session.outcome !== outcome)
+        || (from && session.started_at < from) || (to && session.started_at > to)) return false;
+      const nodes = [session, ...descendants];
+      const modelsFor = (node: (typeof nodes)[number]) => [
+        node.model_primary, ...node.models.map((entry) => entry.name), ...(savedModels.get(node.id) ?? []),
+      ];
+      return (!needle || nodes.some((node) =>
+        [node.id, node.display_title, node.title, node.intent, node.repo, node.harness, ...modelsFor(node)]
+          .filter(Boolean).join(" ").toLowerCase().includes(needle)))
+        && (!app || nodes.some((node) => node.harness === app))
+        && (!model || nodes.some((node) => modelsFor(node).includes(model)));
     });
+    filtered.sort((a, b) => b.session.activity_at.localeCompare(a.session.activity_at) || b.session.id.localeCompare(a.session.id));
     const { page, next_cursor } = paginate(filtered, url.searchParams);
-    const pageIds = new Set(page.map((session) => session.id));
-    const descendants = supportingSessions
-      .filter((child) => {
-        let parent = child.parent_session_id;
-        while (parent && !pageIds.has(parent)) parent = sessionRecord(parent)?.parent_session_id ?? null;
-        return Boolean(parent);
-      })
-      .map(asSession);
-    return clone({ sessions: page, descendants, next_cursor }) as T;
+    return clone({
+      sessions: page.map(({ session }) => session),
+      descendants: page.flatMap(({ descendants }) => descendants.map(asSession)),
+      next_cursor,
+    }) as T;
   }
 
   if (url.pathname === "/dashboard/api/sessions/outcomes" && init.method === "POST") {

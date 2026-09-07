@@ -67,6 +67,83 @@ describe("Session object", () => {
       .run();
   }
 
+
+  it("links child-before-parent exact identities without inventing parent activity", async () => {
+    await installOwnershipFixtures();
+    const child = await postInstallationEvent("event-one-token", "late-child", {
+      version: 1, kind: "turn", ts: "2026-08-13T10:00:00Z",
+      parent_session_id: "late-parent",
+      turn: { exchange_id: "late-turn", usage: { input_tokens: 7, output_tokens: 2 } },
+    });
+    expect(child.status).toBe(200);
+    expect(await env.DB.prepare("SELECT id FROM sessions WHERE id = 'late-parent'").first()).toBeNull();
+    const beforeChild = await env.DB.prepare(
+      "SELECT started_at, last_active_at, state, work_outcome, request_count FROM sessions WHERE id = 'late-child'",
+    ).first();
+    const beforeState = (await objectState("late-child")).body;
+    expect(beforeState).toMatchObject({ parent_session_id: null, turn_count: 1, tokens_in: 7 });
+    expect((await postInstallationEvent("event-one-token", "late-parent", {
+      version: 1, kind: "heartbeat", ts: "2026-08-13T10:01:00Z",
+    })).status).toBe(200);
+    expect(await env.DB.prepare(
+      "SELECT parent_session_id FROM sessions WHERE id = 'late-child'",
+    ).first()).toEqual({ parent_session_id: "late-parent" });
+    expect(await env.DB.prepare(
+      "SELECT started_at, last_active_at, state, work_outcome, request_count FROM sessions WHERE id = 'late-child'",
+    ).first()).toEqual(beforeChild);
+    expect((await objectState("late-child")).body).toEqual({
+      ...beforeState, parent_session_id: "late-parent",
+    });
+    const ended = await postInstallationEvent("event-one-token", "late-child", {
+      version: 1, kind: "end", ts: "2026-08-13T10:02:00Z",
+    });
+    expect(ended.status).toBe(200);
+    const transcript = await (await env.LOGS.get("sessions/late-child/transcript.json"))!.json();
+    expect(transcript).toMatchObject({ parent_session_id: "late-parent", turn_count: 1 });
+  });
+
+  it("rejects conflicting and cyclic lifecycle links before reopening a child", async () => {
+    const heartbeat = { version: 1, kind: "heartbeat", ts: "2026-08-13T10:00:00Z" };
+    await postEvent("cycle-root", heartbeat);
+    await postEvent("cycle-other", heartbeat);
+    await postEvent("cycle-child", { ...heartbeat, parent_session_id: "cycle-root" });
+    await postEvent("cycle-grandchild", { ...heartbeat, parent_session_id: "cycle-child" });
+    await postEvent("cycle-child", { ...heartbeat, kind: "end" });
+    const before = (await objectState("cycle-child")).body;
+    expect((await postEvent("cycle-child", {
+      ...heartbeat, ts: "2026-08-13T11:00:00Z", parent_session_id: "cycle-other",
+    })).status).toBe(409);
+    expect((await objectState("cycle-child")).body).toEqual(before);
+    expect((await postEvent("cycle-root", {
+      ...heartbeat, parent_session_id: "cycle-grandchild",
+    })).status).toBe(409);
+    expect(await env.DB.prepare(
+      "SELECT parent_session_id FROM sessions WHERE id = 'cycle-root'",
+    ).first()).toEqual({ parent_session_id: null });
+  });
+
+  it("does not attach pending children to another installation or permit pending cycles", async () => {
+    await installOwnershipFixtures();
+    const heartbeat = { version: 1, kind: "heartbeat", ts: "2026-08-13T10:00:00Z" };
+    expect((await postInstallationEvent("event-one-token", "isolated-child", {
+      ...heartbeat, parent_session_id: "foreign-parent",
+    })).status).toBe(200);
+    expect((await postInstallationEvent("event-two-token", "foreign-parent", heartbeat)).status).toBe(200);
+    expect(await env.DB.prepare(
+      "SELECT parent_session_id, installation_id FROM sessions WHERE id = 'isolated-child'",
+    ).first()).toEqual({ parent_session_id: null, installation_id: "event-install-1" });
+    expect((await postInstallationEvent("event-one-token", "isolated-child", {
+      ...heartbeat, parent_session_id: "foreign-parent",
+    })).status).toBe(409);
+    expect((await postEvent("pending-a", { ...heartbeat, parent_session_id: "pending-b" })).status).toBe(200);
+    expect((await postEvent("pending-b", { ...heartbeat, parent_session_id: "pending-a" })).status).toBe(409);
+    expect(await env.DB.prepare(
+      "SELECT id, parent_session_id FROM sessions WHERE id IN ('pending-a', 'pending-b') ORDER BY id",
+    ).all()).toMatchObject({ results: [
+      { id: "pending-a", parent_session_id: "pending-b" },
+      { id: "pending-b", parent_session_id: null },
+    ] });
+  });
   it("tracks turn events and projects liveness", async () => {
     const accepted = await postEvent("object-live", {
       version: 1,

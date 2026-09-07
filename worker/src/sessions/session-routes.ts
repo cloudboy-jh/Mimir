@@ -13,6 +13,7 @@ import {
   loadSessionErrorSignatures,
   loadSessionFiles,
   loadSessionOutcomeEvents,
+  loadSessionParent,
   loadSessionRecord,
   loadSessionStatus,
   loadSupportingSessions,
@@ -37,15 +38,17 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
     await autoResolveStaleOutcomes(c.env);
     const where: string[] = [];
     const values: string[] = [];
-    for (const [field, column] of [
-      ["repo", "repo"],
-      ["model", "model_primary"],
-    ] as const) {
-      const value = c.req.query(field);
-      if (value) {
-        where.push(`${column} = ?`);
-        values.push(value);
-      }
+    const repo = c.req.query("repo");
+    if (repo) {
+      where.push("repo = ?");
+      values.push(repo);
+    }
+    const model = c.req.query("model");
+    if (model) {
+      where.push(
+        "EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND (matched.model_primary = ? OR EXISTS (SELECT 1 FROM exchanges model_filter WHERE model_filter.session_id = matched.id AND model_filter.capture_status = 'saved' AND model_filter.model = ?)))",
+      );
+      values.push(model, model);
     }
     const outcome = c.req.query("outcome");
     if (outcome) {
@@ -152,6 +155,42 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
   app.use("/sessions/:id/outcome", requireSessionOwnership);
   app.use("/sessions/:id/end", requireSessionOwnership);
   app.use("/sessions/:id/git-artifacts", requireSessionOwnership);
+  app.use("/sessions/:id/parent", requireSessionOwnership);
+
+  app.get("/sessions/:id/parent", async (c) => {
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    const session = await loadSessionParent(c.env.DB, id);
+    if (!session) return c.json({ error: "session not found" }, 404);
+    return c.json(session);
+  });
+
+  app.patch("/sessions/:id/parent", async (c) => {
+    const id = c.req.param("id");
+    if (!SESSION_ID.test(id)) return c.json({ error: "invalid session id" }, 400);
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const parentId = body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>).parent_session_id
+      : null;
+    if (typeof parentId !== "string" || !SESSION_ID.test(parentId) || parentId === id)
+      return c.json({ error: "invalid parent_session_id" }, 400);
+    const installationID = c.get("installationID");
+    const stub = c.env.SESSIONS.get(c.env.SESSIONS.idFromName(id));
+    const response = await stub.fetch("https://session-object/parent", {
+      method: "PATCH",
+      headers: installationID ? { "x-mimir-installation": installationID } : undefined,
+      body: JSON.stringify({ session_id: id, parent_session_id: parentId }),
+    });
+    return new Response(response.body, {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  });
 
   app.post("/sessions/:id/mark", async (c) => {
     const body = await c.req.json<{

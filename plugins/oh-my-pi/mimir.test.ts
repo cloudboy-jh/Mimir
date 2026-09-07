@@ -146,4 +146,43 @@ describe("Oh My Pi extension", () => {
     await harness.invoke("session_shutdown", {});
     expect(eventKinds(harness.requests, "active-b")).toEqual(["heartbeat", "end"]);
   });
+
+  test("retains each agent's exact parent across nested sessions and switches", async () => {
+    const harness = createHarness();
+    const context = (id: string, parentSessionId: string | null) => ({
+      cwd: "C:/repo", parentSessionId,
+      sessionManager: { getSessionId: () => id, buildSessionContext: () => ({ messages: [] }) },
+    });
+    for (const [id, parent] of [["root", null], ["child", "root"], ["grandchild", "child"], ["other-root", null]] as const) {
+      await harness.invoke("session_switch", {}, context(id, parent));
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, context(id, parent));
+    }
+    await harness.invoke("session_shutdown", {});
+    const events = harness.requests.filter((request) => request.url.endsWith("/events")).map((request) => request.body);
+    expect(events).toMatchObject([
+      { kind: "heartbeat", session_id: "root", parent_session_id: null },
+      { kind: "end", session_id: "root", parent_session_id: null },
+      { kind: "heartbeat", session_id: "child", parent_session_id: "root" },
+      { kind: "end", session_id: "child", parent_session_id: "root" },
+      { kind: "heartbeat", session_id: "grandchild", parent_session_id: "child" },
+      { kind: "end", session_id: "grandchild", parent_session_id: "child" },
+      { kind: "heartbeat", session_id: "other-root", parent_session_id: null },
+      { kind: "end", session_id: "other-root", parent_session_id: null },
+    ]);
+  });
+
+  test("canonicalizes parent IDs exactly like session IDs and never reports self-parentage", async () => {
+    const harness = createHarness();
+    for (const [id, parent] of [["child", "unsafe parent"], ["self", "self"]]) {
+      await harness.invoke("session_switch", {}, { cwd: "C:/repo", parentSessionId: parent, sessionManager: { getSessionId: () => id } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, { sessionManager: { buildSessionContext: () => ({ messages: [] }) } });
+    }
+    await harness.invoke("session_shutdown", {});
+    expect(harness.requests.find((request) => request.url.endsWith("/sessions/child/events"))?.body).toMatchObject({
+      parent_session_id: __testing.sessionID("unsafe parent"),
+    });
+    expect(harness.requests.find((request) => request.url.endsWith("/sessions/self/events"))?.body).toMatchObject({
+      parent_session_id: null,
+    });
+  });
 });

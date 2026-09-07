@@ -173,24 +173,26 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
     const q = c.req.query("q");
     if (q) {
       where.push(
-        `(${sessionTitleSearchClause("sessions")} OR instr(lower(COALESCE(sessions.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(sessions.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = sessions.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(sessions.id), lower(?)) > 0)`,
+        `EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND (${sessionTitleSearchClause("matched")} OR instr(lower(COALESCE(matched.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = matched.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(matched.id), lower(?)) > 0))`,
       );
       values.push(q, q, q, q, q, q, q);
     }
-    for (const [parameter, column] of [
-      ["repo", "repo"],
-      ["app", "harness"],
-    ] as const) {
-      const value = c.req.query(parameter);
-      if (value) {
-        where.push(`sessions.${column} = ?`);
-        values.push(value);
-      }
+    const repo = c.req.query("repo");
+    if (repo) {
+      where.push("sessions.repo = ?");
+      values.push(repo);
+    }
+    const app = c.req.query("app");
+    if (app) {
+      where.push(
+        "EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND matched.harness = ?)",
+      );
+      values.push(app);
     }
     const model = c.req.query("model");
     if (model) {
       where.push(
-        "(sessions.model_primary = ? OR EXISTS (SELECT 1 FROM exchanges model_filter WHERE model_filter.session_id = sessions.id AND model_filter.capture_status = 'saved' AND model_filter.model = ?))",
+        "EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND (matched.model_primary = ? OR EXISTS (SELECT 1 FROM exchanges model_filter WHERE model_filter.session_id = matched.id AND model_filter.capture_status = 'saved' AND model_filter.model = ?)))",
       );
       values.push(model, model);
     }

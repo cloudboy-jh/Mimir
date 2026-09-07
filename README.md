@@ -262,6 +262,21 @@ captures OpenRouter plus bounded direct-provider evidence. Idle drafts do not
 create dashboard sessions. Restart `omp` after install or update. Use
 `OMP_CODING_AGENT_DIR` when OMP has a nonstandard agent home.
 
+Sub-agent grouping requires OMP to expose `ctx.parentSessionId`. Mimir sends
+that exact identity in lifecycle events; it never treats fork lineage, prompt
+text, or timestamp proximity as a parent relationship. Sessions remain separate
+records under a collapsed root row, with a caret revealing the complete tree.
+Root totals include descendants; the root work outcome remains independent.
+
+The upstream OMP change is supplied in
+[`plugins/oh-my-pi/parent-session-id.patch`](plugins/oh-my-pi/parent-session-id.patch),
+tested against OMP 18.1.13 at `6e48b5ce564aa1d7eff60ffe92748f451385ad7d`.
+Apply it to that OMP checkout with `git apply <path-to-patch>`, then follow
+OMP's build instructions. Updating Mimir alone does not add this API to an
+existing OMP binary. Install the rebuilt OMP and updated Mimir adapter on each
+capturing machine, and restart OMP. Older binaries continue capturing sessions
+but cannot report their live parent relationships.
+
 ### OpenCode
 
 The installer manages the Mimir plugin and skills without rewriting general

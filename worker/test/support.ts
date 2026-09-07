@@ -6,6 +6,7 @@ import {
 import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 import worker from "../src/index";
 import { finalizeAcceptedExchange } from "../src/exchanges/capture-pipeline";
+import parentIntegrity from "../migrations/0020_session_parent_integrity.sql?raw";
 
 const schema = `
 CREATE TABLE machines (installation_id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, arch TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT);
@@ -72,6 +73,7 @@ export async function dashboardRequest(path: string, init?: RequestInit) {
 
 beforeAll(async () => {
   await env.DB.exec(schema);
+  await env.DB.exec(parentIntegrity.replace(/--[^\n]*/g, "").replace(/\n/g, " "));
 });
 
 beforeEach(async () => {
