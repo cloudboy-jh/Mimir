@@ -8,17 +8,24 @@ const base = {
 };
 
 describe("parseSessionEvent", () => {
-  it("accepts turn, heartbeat, and end events", () => {
+  it("accepts turn, heartbeat, failure, and end events", () => {
     expect(
       parseSessionEvent({
         ...base,
         kind: "turn",
-        turn: { model: "openai/test" },
+        turn: { model: "openai/test", result: "completed" },
       }),
-    ).toMatchObject({ kind: "turn", turn: { model: "openai/test" } });
+    ).toMatchObject({
+      kind: "turn",
+      turn: { model: "openai/test", result: "completed" },
+    });
     expect(parseSessionEvent({ ...base, kind: "heartbeat" })).toMatchObject({
       kind: "heartbeat",
       harness: null,
+    });
+    expect(parseSessionEvent({ ...base, kind: "failure" })).toMatchObject({
+      kind: "failure",
+      reason: "assistant completion failed",
     });
     expect(parseSessionEvent({ ...base, kind: "end" })).toMatchObject({
       kind: "end",
@@ -76,6 +83,13 @@ describe("parseSessionEvent", () => {
         turn: { request_kind: "fancy" },
       }),
     ).toEqual({ error: "invalid turn request_kind" });
+    expect(
+      parseSessionEvent({
+        ...base,
+        kind: "turn",
+        turn: { result: "unknown" },
+      }),
+    ).toEqual({ error: "invalid turn result" });
     expect(
       parseSessionEvent({ ...base, kind: "turn", turn: { latency_ms: -5 } }),
     ).toEqual({ error: "invalid turn latency_ms" });

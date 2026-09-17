@@ -151,3 +151,24 @@ func TestCursorLoadCheckUsesHotReloadAction(t *testing.T) {
 		t.Fatalf("checks %#v", checks)
 	}
 }
+
+func TestOMPParentLinkCapabilityRequiresCurrentManagedExtension(t *testing.T) {
+	service := Service{}
+	for _, test := range []struct {
+		status install.ArtifactStatus
+		want   string
+	}{
+		{install.ArtifactCurrent, "ok"},
+		{install.ArtifactModified, "failed"},
+	} {
+		var checks []Check
+		service.addOMPParentLinkCheck(install.ArtifactReport{Artifacts: []install.ArtifactResult{{
+			Source: "plugins/oh-my-pi/mimir.ts", Status: test.status,
+		}}}, func(name, status, detail, repair string) {
+			checks = append(checks, Check{Name: name, Status: status, Detail: detail, Repair: repair})
+		})
+		if len(checks) != 1 || checks[0].Name != "oh-my-pi.parent-links" || checks[0].Status != test.want {
+			t.Fatalf("status %s checks %#v", test.status, checks)
+		}
+	}
+}

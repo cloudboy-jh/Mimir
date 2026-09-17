@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRequestKind,
+  completionResult,
   deriveIntent,
   deriveSessionFields,
+  extractFinishReason,
 } from "./evidence";
 import {
   extractUsage,
@@ -47,6 +49,19 @@ describe("capture", () => {
       ]),
     ).toEqual({ token: "[REDACTED]", value: "[REDACTED]" });
     expect(redact("Bearer machine-secret", [])).toBe("Bearer [REDACTED]");
+  });
+
+  it("classifies terminal model results without treating tool continuations as complete", () => {
+    expect(completionResult("stop")).toBe("completed");
+    expect(completionResult("tool_calls")).toBe("pending");
+    expect(completionResult("length")).toBe("failed");
+    expect(
+      completionResult(
+        extractFinishReason({
+          message: { stopReason: "aborted", errorMessage: "cancelled" },
+        }),
+      ),
+    ).toBe("failed");
   });
 
   it("rejects streams above the capture limit", async () => {

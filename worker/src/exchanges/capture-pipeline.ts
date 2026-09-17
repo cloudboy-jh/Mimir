@@ -11,6 +11,7 @@ import {
   classifyRequestKind,
   deriveIntent,
   deriveSessionFields,
+  completionResult,
   excerpt,
   extractFinishReason,
   extractProvider,
@@ -260,6 +261,7 @@ export async function capture(
       exchange_id: id,
       model: input.model,
       provider: prepared.provider,
+      result: completionResult(prepared.finishReason),
       request_kind: requestKind,
       usage: {
         input_tokens: prepared.usage.prompt_tokens,

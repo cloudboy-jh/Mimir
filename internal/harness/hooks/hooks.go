@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/aes"
@@ -36,6 +37,7 @@ const (
 	storageLockTimeout = 10 * time.Second
 	stateMaxAge        = 7 * 24 * time.Hour
 	outboxMaxAge       = 30 * 24 * time.Hour
+	maxTranscriptBytes = 4 * 1024 * 1024
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -329,10 +331,20 @@ func (s Service) normalize(harness string, body map[string]any) (normalizedInput
 		if exchangeKey == now {
 			exchangeKey = state.Key
 		}
-		delivery := exchangeDelivery(harness, session, repo, exchangeKey, now, model, state.Prompt, response, title)
+		usage := emptyUsage()
+		if harness == "codex" {
+			usage = codexTranscriptUsage(stringValue(body["transcript_path"]), exchangeKey)
+		}
+		delivery := exchangeDelivery(harness, session, repo, exchangeKey, now, model, state.Prompt, response, title, usage)
 		return normalizedInput{deliveries: []Delivery{delivery}, clearState: s.statePath(session)}, nil
-	case "PreCompact", "PostCompact", "preCompact", "StopFailure", "stop":
+	case "PreCompact", "PostCompact", "preCompact", "stop":
 		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "heartbeat", now, "", title)}}, nil
+	case "StopFailure":
+		reason := firstString(body, "error", "message", "reason")
+		if reason == "" {
+			reason = "assistant completion failed"
+		}
+		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "failure", now, boundedString(reason, 2000), title)}}, nil
 	case end:
 		reason := stringValue(body["reason"])
 		if reason == "" {
@@ -365,7 +377,7 @@ func eventDelivery(harness, session, repo, kind, ts, reason, title string) Deliv
 	return Delivery{Kind: "event", Harness: harness, SessionID: session, Repo: repo, Body: body}
 }
 
-func exchangeDelivery(harness, session, repo, key, ts, model, prompt, response, title string) Delivery {
+func exchangeDelivery(harness, session, repo, key, ts, model, prompt, response, title string, usage map[string]any) Delivery {
 	id := canonicalID(harness + ":" + session + ":" + key)
 	provider := map[string]string{"claude-code": "anthropic", "codex": "openai"}[harness]
 	body := map[string]any{
@@ -373,7 +385,7 @@ func exchangeDelivery(harness, session, repo, key, ts, model, prompt, response, 
 		"request":       map[string]any{"messages": []any{map[string]any{"role": "user", "content": prompt}}},
 		"response":      map[string]any{"role": "assistant", "content": response},
 		"tool_activity": []any{},
-		"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0}, "latency_ms": 0,
+		"usage":         usage, "latency_ms": 0,
 	}
 	if provider != "" {
 		body["provider"] = provider
@@ -384,8 +396,83 @@ func exchangeDelivery(harness, session, repo, key, ts, model, prompt, response, 
 	return Delivery{Kind: "exchange", Harness: harness, SessionID: session, Repo: repo, Body: body}
 }
 
+type transcriptUsage struct {
+	Input      int64 `json:"input_tokens"`
+	Cached     int64 `json:"cached_input_tokens"`
+	CacheWrite int64 `json:"cache_write_input_tokens"`
+	Output     int64 `json:"output_tokens"`
+}
+
+func emptyUsage() map[string]any {
+	return map[string]any{"input_tokens": int64(0), "output_tokens": int64(0)}
+}
+
+func codexTranscriptUsage(path, turnID string) map[string]any {
+	if path == "" || turnID == "" {
+		return emptyUsage()
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return emptyUsage()
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return emptyUsage()
+	}
+	offset := info.Size() - maxTranscriptBytes
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return emptyUsage()
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), maxTranscriptBytes)
+	if offset > 0 {
+		scanner.Scan()
+	}
+	var latest transcriptUsage
+	found := false
+	activeTurn := false
+	for scanner.Scan() {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Type   string          `json:"type"`
+				TurnID string          `json:"turn_id"`
+				Usage  transcriptUsage `json:"usage"`
+				Info   struct {
+					Last transcriptUsage `json:"last_token_usage"`
+				} `json:"info"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		switch {
+		case event.Type == "token_usage_record" && event.Payload.TurnID == turnID:
+			latest, found = event.Payload.Usage, true
+		case event.Type == "event_msg" && event.Payload.Type == "task_started":
+			activeTurn = event.Payload.TurnID == turnID
+		case event.Type == "event_msg" && event.Payload.Type == "token_count" && activeTurn:
+			latest, found = event.Payload.Info.Last, true
+		}
+	}
+	if !found {
+		return emptyUsage()
+	}
+	cached := max(int64(0), latest.Cached)
+	return map[string]any{
+		"input_tokens":       max(int64(0), latest.Input-cached),
+		"output_tokens":      max(int64(0), latest.Output),
+		"cache_read_tokens":  cached,
+		"cache_write_tokens": max(int64(0), latest.CacheWrite),
+	}
+}
+
 func (s Service) loadDelivery(harness string) Delivery {
-	source := map[string]string{"claude-code": "plugins/claude-code/hooks/hooks.json", "codex": "plugins/codex/hooks.json", "cursor": "plugins/cursor/hooks.json"}[harness]
+	source := map[string]string{"claude-code": "plugins/claude-code/hooks/hooks.json", "codex": "plugins/codex/hooks/hooks.json", "cursor": "plugins/cursor/hooks.json"}[harness]
 	data, err := os.ReadFile(installedHookPath(harness))
 	if err != nil {
 		data, _ = mimirassets.Bundle.ReadFile(source)
@@ -420,12 +507,7 @@ func installedHookPath(harness string) string {
 		}
 		return filepath.Join(home, "skills", "mimir", "hooks", "hooks.json")
 	case "codex":
-		if configured := strings.TrimSpace(os.Getenv("CODEX_HOME")); configured != "" {
-			home = configured
-		} else {
-			home = filepath.Join(home, ".codex")
-		}
-		return filepath.Join(home, "hooks.json")
+		return filepath.Join(home, ".agents", "plugins", "plugins", "mimir", "hooks", "hooks.json")
 	default:
 		return filepath.Join(home, ".cursor", "hooks.json")
 	}

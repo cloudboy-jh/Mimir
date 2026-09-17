@@ -146,7 +146,7 @@ personal single-owner trust model.
 | `GET` | `/sessions/:id` | Return one session, exchanges, files, and errors. |
 | `GET` | `/sessions/:id/status` | Return the derived capture summary and human receipt, with a link when Access is configured. |
 | `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. Also notifies the session object, which finalizes. |
-| `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `end`) to the session object. The path session ID is authoritative; events may carry a harness title. |
+| `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `failure`, `end`) to the session object. Turns classify their terminal result as `completed`, `pending`, or `failed`; the path session ID is authoritative. |
 | `POST` | `/sessions/:id/exchanges` | Validate, redact, and persist a bounded exchange reconstructed by a trusted harness integration. |
 | `GET` | `/sessions/:id/live` | WebSocket live feed from the session object: snapshot plus event broadcast. |
 | `GET` | `/sessions/:id/object-state` | Read the session object's liveness projection and counters. |
@@ -400,6 +400,17 @@ Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 `unresolved`. Outcome is independent from capture: `landed` says the result was
 kept, while `saved` says an exchange is durably represented in both R2 and D1.
 
+Each active period of an exact session is an outcome generation. Finalization
+projects `landed` when the latest primary terminal signal is a clean completion,
+or `abandoned` when it is failed, pending, or absent. An explicit agent or user
+outcome recorded during the generation prevents automatic replacement.
+Supporting sessions never resolve a root while another member of the tree
+remains active.
+
+Activity after whole-tree finalization starts a new generation. Mimir appends an
+automatic `unresolved` event to the root, retains every prior outcome event, and
+resolves the new generation independently when the tree becomes inactive again.
+
 Git artifacts are independent of both projections: their presence does not make
 an outcome landed, and an unresolved session may have any number of preserved
 commit artifacts within the ingestion bounds.
@@ -505,11 +516,20 @@ filtering; a later event supersedes the projection without deleting history.
 Machine-token outcome routes assign source `agent`, and Access-protected
 dashboard routes assign source `user`; caller-supplied source values cannot
 override that attribution. `git` is reserved for trusted harness evidence,
-`auto` identifies deterministic stale-session resolution, and `migration`
-identifies the legacy backfill. Lazy session maintenance marks an unresolved
-root session landed after 48 hours without activity only when it has a saved Git
-artifact with a retrievable, non-empty patch and positive changed-file count.
-The event ID is deterministic, so repeated maintenance is idempotent.
+`auto` identifies deterministic generation transitions and stale-session
+resolution, and `migration` identifies the legacy backfill. Generation events
+carry their start, end, terminal session, terminal result, and automation signal
+as structured evidence. Their IDs are deterministic, so finalization retries
+are idempotent.
+
+Lazy session maintenance remains a compatibility fallback: it marks an
+unresolved root landed after 48 hours without activity only when a saved Git
+artifact has a retrievable, non-empty patch and positive changed-file count.
+Managed Pi and Oh My Pi adapters expose the exact active session as
+`MIMIR_SESSION_ID`. The installed `mimir-use` skill records stronger evidenced
+outcomes before requesting the final capture receipt; OpenCode provides
+equivalent native tools. Missing exact identity never falls back to a guessed
+outcome target.
 
 ## 8. Search And Configuration
 
@@ -768,16 +788,18 @@ session metadata, and reconstructs direct-provider turns. OpenCode integration
 uses the managed plugin and OpenCode's supported plugin loading flow.
 
 `mimir install` enrolls safe absent or byte-identical Claude Code plugin files
-under `~/.claude/skills/mimir/` and hook manifests at `~/.codex/hooks.json` and
-`~/.cursor/hooks.json`. It preserves a different existing file rather than
+under `~/.claude/skills/mimir/`, an isolated personal Codex marketplace plugin
+under `~/.agents/plugins/plugins/mimir/`, and a Cursor hook manifest at
+`~/.cursor/hooks.json`. It preserves different existing files rather than
 merging or replacing user-owned hook configuration. The manifests invoke the
 receipt-owned hidden `mimir _hook` adapter, which writes a bounded private,
 authenticated-encrypted outbox under `$MIMIR_HOME` before bounded best-effort
-delivery. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override their official user
-homes; Cursor has no documented equivalent. Harness start hooks also
-report the embedded manifest hash so `mimir doctor` can distinguish installed
-bytes from the active loaded version. Activation follows the harness-supported
-reload path; Cursor hot-reloads its hooks file.
+delivery. `CLAUDE_CONFIG_DIR` overrides the official Claude user home; Codex
+uses its official personal marketplace path and Cursor has no documented home
+override. Harness start hooks also report the embedded manifest hash so
+`mimir doctor` can distinguish installed bytes from the active loaded version.
+Activation follows each harness's supported reload path; Codex users review and
+trust the plugin's `/hooks` declaration, and Cursor hot-reloads its hooks file.
 
 When Hermes desktop or TUI is installed, the same lifecycle commands append a
 Mimir-owned block to the active Hermes profile `.env`. It redirects the built-in

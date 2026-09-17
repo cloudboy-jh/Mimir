@@ -84,6 +84,20 @@ object.
 This is intentional: a user can resume the same harness conversation after a
 clean end, a silence timeout, sleep, or disconnection.
 
+### Outcome generations
+
+Each active period has its own outcome projection. A clean completed primary
+turn followed by whole-tree finalization becomes `landed`. A failure signal,
+pending tool continuation, or finalization without a clean completion becomes
+`abandoned`. Explicit agent and user outcomes take precedence within the active
+generation.
+
+When a finalized exact session resumes, Mimir appends an automatic
+`unresolved` event before accepting the new work. Prior outcomes remain in the
+immutable history. Supporting sessions apply explicit outcomes to their root,
+but automatic resolution waits until no session in the root tree remains
+active.
+
 ## Liveness
 
 Liveness is a projection from event age, independent of durable capture state
@@ -101,20 +115,22 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 
 | Component | Responsibility |
 | --- | --- |
-| Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; report saved exchanges to the session object |
+| Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; classify saved primary turns as completed, pending, or failed |
 | Pi extension | Route OpenRouter through Mimir with exact session headers; persist bounded reconstructed direct-provider turns; report heartbeats, titles, and lifecycle events |
 | OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
-| Hermes plugin | After sticky direct-provider evidence, report an activation heartbeat, direct turn summaries, and an end; emit no exact-ID lifecycle for proxy-only, no-turn, or unclassified managed-route sessions; suppress proxied turns in mixed sessions |
-| Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges and report start/end lifecycle events |
-| Session Durable Object | Coordinate liveness, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
+| Hermes plugin | After sticky direct-provider evidence, report an activation heartbeat, successful direct turns, and an end; emit no exact-ID lifecycle for proxy-only, no-turn, or unclassified managed-route sessions; suppress proxied turns in mixed sessions |
+| Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges, report completion failures when exposed, and report start/end lifecycle events; Codex also reads matching transcript usage records |
+| Session Durable Object | Coordinate liveness, outcome generations, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
 | CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |
 | Dashboard | Access-protected session and request views backed by Worker APIs |
 
 Event payloads contain summaries and excerpts, not transport archives.
 Reconstructed harness exchanges are persisted and searchable after Worker
 redaction, but can only contain fields exposed by the harness and may omit tool
-activity, transport metadata, exact token use, or timing. Only traffic that
-reaches the Worker proxy produces a full redacted transport exchange.
+activity, transport metadata, token use, or timing. Codex includes token usage
+when its bounded transcript tail contains a record for the completed turn. Only
+traffic that reaches the Worker proxy produces a full redacted transport
+exchange.
 
 ## Persistence Verification
 

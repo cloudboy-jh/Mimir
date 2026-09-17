@@ -12,6 +12,7 @@ type SessionContext = {
   parentSessionId?: string | null;
   sessionManager?: {
     getSessionId?: () => unknown;
+    getSessionFile?: () => unknown;
     buildSessionContext?: () => { messages?: unknown };
   };
 };
@@ -31,9 +32,9 @@ type TurnEnd = {
 type SessionShutdown = { reason?: unknown };
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HEARTBEAT_MS = 60_000;
@@ -63,6 +64,32 @@ function connection(): Connection | null {
 
 function sessionID(value: string): string {
   return SESSION_ID.test(value) ? value : `oh-my-pi-${createHash("sha256").update(value).digest("hex").slice(0, 32)}`;
+}
+
+function sessionHeaderID(path: string): string | null {
+  let file: number | undefined;
+  try {
+    file = openSync(path, "r");
+    const bytes = Buffer.allocUnsafe(64 * 1024);
+    const count = readSync(file, bytes, 0, bytes.length, 0);
+    for (const line of bytes.subarray(0, count).toString("utf8").split(/\r?\n/, 2)) {
+      const value = JSON.parse(line) as { type?: unknown; id?: unknown };
+      if (value.type === "session" && typeof value.id === "string" && value.id.trim()) return value.id;
+    }
+  } catch { /* missing or malformed local history is not parent evidence */ }
+  finally { if (file !== undefined) try { closeSync(file); } catch { /* best effort */ } }
+  return null;
+}
+
+function artifactParentSessionID(sessionFile: unknown): string | null {
+  if (typeof sessionFile !== "string" || !sessionFile.endsWith(".jsonl")) return null;
+  const directory = dirname(sessionFile);
+  const name = basename(sessionFile, ".jsonl");
+  const separator = name.lastIndexOf(".");
+  const parentFile = separator >= 0
+    ? join(directory, `${name.slice(0, separator)}.jsonl`)
+    : `${directory}.jsonl`;
+  return parentFile === sessionFile ? null : sessionHeaderID(parentFile);
 }
 
 function safe(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
@@ -179,6 +206,19 @@ export default function (pi: ExtensionAPI) {
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let requestKind: RequestKind = "primary";
   let initialization = 0;
+  const inheritedSessionID = process.env.MIMIR_SESSION_ID;
+  let exportedSessionID: string | null = null;
+
+  const exposeSessionID = (id: string) => {
+    process.env.MIMIR_SESSION_ID = id;
+    exportedSessionID = id;
+  };
+  const restoreSessionID = () => {
+    if (!exportedSessionID || process.env.MIMIR_SESSION_ID !== exportedSessionID) return;
+    if (inheritedSessionID === undefined) delete process.env.MIMIR_SESSION_ID;
+    else process.env.MIMIR_SESSION_ID = inheritedSessionID;
+    exportedSessionID = null;
+  };
 
   const headersFor = (session: Session) => ({
     "x-mimir-session": session.id,
@@ -220,8 +260,11 @@ export default function (pi: ExtensionAPI) {
     if (!rawID) return;
     const previous = current;
     const id = sessionID(String(rawID));
-    const parentId = typeof ctx.parentSessionId === "string" && ctx.parentSessionId.trim()
-      ? sessionID(ctx.parentSessionId) : null;
+    const rawParentId = Object.prototype.hasOwnProperty.call(ctx, "parentSessionId")
+      ? ctx.parentSessionId
+      : artifactParentSessionID(ctx.sessionManager?.getSessionFile?.());
+    const parentId = typeof rawParentId === "string" && rawParentId.trim()
+      ? sessionID(rawParentId) : null;
     const candidate: Session = {
       id, parentId: parentId !== id ? parentId : null, cwd, repo: basename(cwd) || null, gitRef: null,
       active: previous?.id === id && previous.active,
@@ -233,6 +276,7 @@ export default function (pi: ExtensionAPI) {
       if (generation !== initialization) return;
     }
     current = candidate;
+    exposeSessionID(candidate.id);
     requestKind = "primary";
     configureProvider();
     const source = read(fileURLToPath(import.meta.url));
@@ -291,6 +335,7 @@ export default function (pi: ExtensionAPI) {
       await post(config, `/sessions/${encodeURIComponent(session.id)}/events`, event(session, "end", reason), headersFor(session));
     }
     current = null;
+    restoreSessionID();
     snapshots.clear();
   });
 }

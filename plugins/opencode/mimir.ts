@@ -738,7 +738,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         },
       }),
       mimir_session_outcome: tool({
-        description: "Record the evidenced work outcome for the current OpenCode session. Child-session outcomes are applied to the root work session.",
+        description: "Record the evidenced work outcome for the current OpenCode session. Call this before the final response after meaningful completed work; child-session outcomes apply to the root work session.",
         args: {
           outcome: tool.schema.enum(["landed", "discarded", "abandoned", "unresolved"]),
           reason: tool.schema.string().min(1).max(2000),

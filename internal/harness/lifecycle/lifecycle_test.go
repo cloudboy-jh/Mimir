@@ -55,7 +55,7 @@ func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
 	root := t.TempDir()
 	service := New()
 	service.Paths = func() (install.InstallationPaths, error) {
-		return install.InstallationPaths{OpenCodeHome: root, ClaudeCodeHome: root, CodexHome: root, CursorHome: root}, nil
+		return install.InstallationPaths{OpenCodeHome: root, ClaudeCodeHome: root, CodexHome: root, AgentPlugins: root, CursorHome: root}, nil
 	}
 	service.Hermes = hermes.New()
 	service.LoadReceipt = func() (install.Receipt, error) {
@@ -65,7 +65,7 @@ func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
 		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent},
 		{Path: filepath.Join(root, "claude-hooks.json"), Source: "plugins/claude-code/hooks/hooks.json", Status: install.ArtifactConflict},
-		{Path: filepath.Join(root, "codex-hooks.json"), Source: "plugins/codex/hooks.json", Status: install.ArtifactModified},
+		{Path: filepath.Join(root, "plugins", "mimir", "hooks", "hooks.json"), Source: "plugins/codex/hooks/hooks.json", Status: install.ArtifactModified},
 		{Path: filepath.Join(root, "cursor-hooks.json"), Source: "plugins/cursor/hooks.json", Status: install.ArtifactConflict},
 	}}
 	report, err := service.InstallCurrent(context.Background(), mimirapi.Pointer{URL: "https://mimir.test"}, artifacts)

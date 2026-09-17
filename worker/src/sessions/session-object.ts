@@ -7,6 +7,10 @@ import {
 } from "./events";
 import { titleUpdateStatement } from "./titles";
 import { canMutateSession } from "./lifecycle";
+import {
+  finalizeOutcomeGeneration,
+  reopenOutcomeGeneration,
+} from "./outcomes";
 
 // The Session Durable Object owns one live session. Reporters (proxy capture,
 // harness plugins) append events; the object tracks liveness, serves the
@@ -30,6 +34,9 @@ type SessionMeta = {
   lastEventAt: string;
   finalizedAt: string | null;
   endReason: string | null;
+  generationStartedAt?: string;
+  generationResult?: "completed" | "pending" | "failed" | null;
+  generationCompletedTurns?: number;
   turnCount: number;
   tokensIn: number;
   tokensOut: number;
@@ -77,7 +84,7 @@ export class SessionObject implements DurableObject {
     if ("error" in parsed)
       return Response.json({ error: parsed.error }, { status: 400 });
     parsed.installation_id = request.headers.get("x-mimir-installation");
-    await this.ensureLoaded(parsed.session_id);
+    await this.ensureLoaded(parsed.session_id, parsed.ts);
     try {
       if (
         !(await canMutateSession(this.env.DB, parsed.session_id, parsed.installation_id)) ||
@@ -103,6 +110,7 @@ export class SessionObject implements DurableObject {
       throw error;
     }
     await this.refreshMetadata();
+    if (parsed.kind !== "end") await this.hydrateFinalizedMetadata();
     await this.applyEvent(parsed);
     if (parsed.kind === "end") {
       try {
@@ -228,6 +236,18 @@ export class SessionObject implements DurableObject {
     }
   }
 
+  private async hydrateFinalizedMetadata(): Promise<void> {
+    if (!this.meta || this.meta.finalizedAt) return;
+    const session = await this.env.DB.prepare(
+      "SELECT state, ended_at FROM sessions WHERE id = ?",
+    )
+      .bind(this.meta.sessionId)
+      .first<{ state: string; ended_at: string | null }>();
+    if (session?.state !== "inactive" || !session.ended_at) return;
+    this.meta.finalizedAt = session.ended_at;
+    await this.ctx.storage.put("meta", this.meta);
+  }
+
   private async applyEvent(event: SessionEvent): Promise<void> {
     const meta = this.meta!;
     let duplicateTurn = false;
@@ -248,7 +268,8 @@ export class SessionObject implements DurableObject {
         Date.parse(event.ts) <= Date.parse(meta.finalizedAt)
       )
         return;
-      await this.reopen();
+      const previousFinalizedAt = meta.finalizedAt;
+      await this.reopen(event.ts, previousFinalizedAt);
     }
     if (event.kind !== "end") {
       await this.env.DB.batch([
@@ -290,6 +311,7 @@ export class SessionObject implements DurableObject {
     if (event.harness) meta.harness = meta.harness ?? event.harness;
     if (event.repo) meta.repo = meta.repo ?? event.repo;
     if (event.installation_id) meta.installationId = event.installation_id;
+    if (event.kind === "failure") meta.generationResult = "failed";
     if (event.kind === "turn" && event.turn) {
       meta.turnCount += 1;
       meta.tokensIn += event.turn.usage?.input_tokens ?? 0;
@@ -301,6 +323,12 @@ export class SessionObject implements DurableObject {
         (meta.cacheWriteTokens ?? 0) +
         (event.turn.usage?.cache_write_tokens ?? 0);
       this.turns!.push({ ...event.turn, ts: event.ts });
+      if ((event.turn.request_kind ?? "primary") === "primary") {
+        meta.generationResult = event.turn.result ?? "completed";
+        if (meta.generationResult === "completed")
+          meta.generationCompletedTurns =
+            (meta.generationCompletedTurns ?? 0) + 1;
+      }
       if (this.turns!.length > MAX_STORED_TURNS)
         this.turns = this.turns!.slice(-MAX_STORED_TURNS);
       await this.ctx.storage.put("turns", this.turns);
@@ -312,12 +340,24 @@ export class SessionObject implements DurableObject {
   }
 
   // reopen continues a finalized session: new activity on the same session ID
-  // wakes the same object and the session flips back to active with its full
-  // history. Finalized is a state, not a tombstone.
-  private async reopen(): Promise<void> {
+  // wakes the same object and starts a new outcome generation. Prior outcome
+  // events remain immutable while the root projection returns to unresolved.
+  private async reopen(
+    startedAt: string,
+    previousFinalizedAt: string,
+  ): Promise<void> {
     const meta = this.meta!;
+    await reopenOutcomeGeneration(
+      this.env.DB,
+      meta.sessionId,
+      startedAt,
+      previousFinalizedAt,
+    );
     meta.finalizedAt = null;
     meta.endReason = null;
+    meta.generationStartedAt = startedAt;
+    meta.generationResult = null;
+    meta.generationCompletedTurns = 0;
     await this.env.DB.prepare(
       "UPDATE sessions SET state = 'active', inactive_at = NULL WHERE id = ?",
     )
@@ -411,6 +451,14 @@ export class SessionObject implements DurableObject {
         meta.sessionId,
       ),
     ]);
+    await finalizeOutcomeGeneration(
+      this.env.DB,
+      meta.sessionId,
+      meta.generationStartedAt ?? meta.startedAt,
+      meta.lastEventAt,
+      meta.generationResult ?? null,
+      reason,
+    );
     meta.finalizedAt = now;
     meta.endReason = reason;
     await this.ctx.storage.put("meta", meta);
@@ -453,6 +501,9 @@ export class SessionObject implements DurableObject {
       last_event_at: meta.lastEventAt,
       finalized_at: meta.finalizedAt,
       end_reason: meta.endReason,
+      generation_started_at: meta.generationStartedAt ?? meta.startedAt,
+      generation_result: meta.generationResult ?? null,
+      generation_completed_turns: meta.generationCompletedTurns ?? 0,
       turn_count: meta.turnCount,
       tokens_in: meta.tokensIn,
       tokens_out: meta.tokensOut,
@@ -510,15 +561,21 @@ export class SessionObject implements DurableObject {
 
   async webSocketError(_ws: WebSocket): Promise<void> {}
 
-  private async ensureLoaded(sessionId?: string): Promise<void> {
+  private async ensureLoaded(
+    sessionId?: string,
+    startedAt?: string,
+  ): Promise<void> {
     if (this.meta && this.turns) return;
     const [meta, turns] = await Promise.all([
       this.ctx.storage.get<SessionMeta>("meta"),
       this.ctx.storage.get<StoredTurn[]>("turns"),
     ]);
-    const now = new Date().toISOString();
+    const now = startedAt ?? new Date().toISOString();
     if (meta) meta.parentSessionId ??= null;
     if (meta) meta.installationId ??= null;
+    if (meta) meta.generationStartedAt ??= meta.startedAt;
+    if (meta) meta.generationResult ??= meta.turnCount > 0 ? "completed" : null;
+    if (meta) meta.generationCompletedTurns ??= meta.turnCount;
     this.meta = meta ?? {
       sessionId: sessionId ?? "unknown",
       parentSessionId: null,
@@ -534,6 +591,9 @@ export class SessionObject implements DurableObject {
       tokensOut: 0,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      generationStartedAt: now,
+      generationResult: null,
+      generationCompletedTurns: 0,
     };
     this.turns = turns ?? [];
   }

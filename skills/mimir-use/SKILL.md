@@ -49,18 +49,52 @@ guessed session IDs.
 Proxy use and a scheduled `x-mimir-capture` response header are not proof that
 an exchange was saved. Never report persistence from transport activity alone.
 
-## After meaningful work — capture receipt
+## After meaningful work — record outcome, then receipt
 
-After meaningful work, get the authoritative capture receipt when the harness
-exposes an exact session ID. Pi exposes it to bash as `PI_SESSION_ID`:
+Before the final response for meaningful work, record one canonical outcome and
+then fetch the authoritative capture receipt. Do not leave completed work
+`unresolved`.
+
+Prefer a native `mimir_session_outcome` tool when the harness provides one.
+Mimir's Pi and Oh My Pi adapters expose the exact current identity as
+`MIMIR_SESSION_ID`; Pi's host-provided `PI_SESSION_ID` remains a fallback:
 
 ```bash
-mimir session status "$PI_SESSION_ID" --json
+session_id="${MIMIR_SESSION_ID:-${PI_SESSION_ID:-}}"
+if [ -n "$session_id" ]; then
+  mimir session outcome "$session_id" landed --reason "implemented and verified" --json
+  mimir session status "$session_id" --json
+fi
 ```
 
-In another harness, use its exact session ID when available. Do not guess one.
+In another harness, use its exact session ID when available. Never infer or
+guess one. If no exact identity is available, skip mutation rather than
+updating the wrong session.
 
-The result returns the receipt. When dashboard Access is configured, the
+Canonical outcomes:
+- `landed`: the completed result was kept or shipped
+- `discarded`: the result was deliberately rejected or reverted
+- `abandoned`: work stopped without a result
+- `unresolved`: no evidenced result is available
+
+Choose from observed evidence. Include a concise reason and supporting evidence
+when available. A passing behavioral check, accepted deliverable, retained
+change, merge, or deployment supports `landed`; merely attempting work does
+not. Record `abandoned` for an evidenced stop without a result. Use
+`unresolved` only when the result genuinely cannot be established.
+
+Explicit evidence is stronger than automatic lifecycle inference. If a harness
+cannot expose an exact identity, the Worker resolves the generation
+deterministically at finalization: a clean completed primary turn becomes
+`landed`; a failed, pending, or absent terminal signal becomes `abandoned`.
+Resuming a finalized exact session starts a new `unresolved` generation while
+preserving the prior outcome history.
+
+Outcome must be recorded before the receipt so the returned status reflects
+both projections. Capture and work outcome remain independent: a saved session
+can be unresolved, and landed work is not proof that its exchanges were saved.
+
+The status result returns the receipt. When dashboard Access is configured, the
 receipt includes `View session`. Let the harness display that result near the
 completed response; do not repeat the session ID, timestamp, counts, or receipt
 in agent prose unless the user explicitly asks for storage details.
@@ -70,26 +104,8 @@ Treat these as real user-visible states (never rewrite them):
 - `Partially saved`
 - `Mimir couldn't save this session`
 
-Do not call `mimir session status` during routine tool use or when no
-meaningful unit of work has completed.
-
-## Setting outcomes
-
-Set an outcome only when completed work provides evidence:
-
-```bash
-mimir session outcome <session-id> <value> --reason "concise reason" --json
-```
-
-Canonical values:
-- `landed`: the result was kept or shipped
-- `discarded`: the result was deliberately rejected or reverted
-- `abandoned`: work stopped without a result
-- `unresolved`: no evidenced result is available
-
-Include a concise reason and the supporting evidence. Capture state and work
-outcome are independent: a saved session can remain unresolved, and landed work
-is not proof that its exchanges were saved.
+Do not call `mimir session status` during routine tool use or when no meaningful
+unit of work has completed.
 
 ## Ending a session
 

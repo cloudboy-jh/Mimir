@@ -536,6 +536,156 @@ describe("Session object", () => {
     ).toBe("active");
   });
 
+  it("projects each reopened generation from its last terminal signal", async () => {
+    const id = "object-outcome-generations";
+    await postEvent(id, {
+      version: 1,
+      kind: "turn",
+      ts: "2026-08-14T10:00:00Z",
+      turn: { result: "completed", model: "openai/test" },
+    });
+    await postEvent(id, {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T10:01:00Z",
+      reason: "closed",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+
+    await postEvent(id, {
+      version: 1,
+      kind: "failure",
+      ts: "2026-08-14T11:00:00Z",
+      reason: "provider unavailable",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT state, work_outcome, outcome_src FROM sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toEqual({
+      state: "active",
+      work_outcome: "unresolved",
+      outcome_src: "auto",
+    });
+
+    await postEvent(id, {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T11:01:00Z",
+      reason: "closed",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "abandoned", outcome_src: "auto" });
+    expect(
+      await env.DB.prepare(
+        "SELECT outcome FROM session_outcome_events WHERE session_id = ? ORDER BY created_at",
+      )
+        .bind(id)
+        .all(),
+    ).toMatchObject({
+      results: [
+        { outcome: "landed" },
+        { outcome: "unresolved" },
+        { outcome: "abandoned" },
+      ],
+    });
+  });
+
+  it("preserves an explicit outcome over automatic generation completion", async () => {
+    const id = "object-explicit-outcome";
+    await postEvent(id, {
+      version: 1,
+      kind: "turn",
+      ts: "2026-08-14T12:00:00Z",
+      turn: { result: "completed" },
+    });
+    const explicit = await request(`/sessions/${id}/outcome`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        outcome: "discarded",
+        reason: "User rejected the generated change",
+      }),
+    });
+    expect(explicit.status).toBe(200);
+    await postEvent(id, {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T12:01:00Z",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "discarded", outcome_src: "agent" });
+    expect(
+      await env.DB.prepare(
+        "SELECT outcome, source FROM session_outcome_events WHERE session_id = ?",
+      )
+        .bind(id)
+        .all(),
+    ).toMatchObject({
+      results: [{ outcome: "discarded", source: "agent" }],
+    });
+  });
+
+  it("waits for the root generation before projecting supporting-session completion", async () => {
+    await postEvent("generation-root", {
+      version: 1,
+      kind: "heartbeat",
+      ts: "2026-08-14T13:00:00Z",
+    });
+    await postEvent("generation-child", {
+      version: 1,
+      kind: "turn",
+      parent_session_id: "generation-root",
+      ts: "2026-08-14T13:00:30Z",
+      turn: { result: "completed" },
+    });
+    await postEvent("generation-child", {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T13:01:00Z",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = 'generation-root'",
+      ).first(),
+    ).toEqual({ work_outcome: "unresolved", outcome_src: null });
+
+    await postEvent("generation-root", {
+      version: 1,
+      kind: "turn",
+      ts: "2026-08-14T13:02:00Z",
+      turn: { result: "completed" },
+    });
+    await postEvent("generation-root", {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T13:03:00Z",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = 'generation-root'",
+      ).first(),
+    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+  });
+
   it("requires a websocket upgrade for the live feed", async () => {
     const response = await request("/sessions/object-live/live", {
       headers: { authorization: "Bearer machine-token" },

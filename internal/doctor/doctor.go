@@ -118,6 +118,7 @@ func (s Service) Run(ctx context.Context) Report {
 			}
 			add("managed-artifact "+artifact.Source, status, string(artifact.Status)+" · "+artifact.Path, repair)
 		}
+		s.addOMPParentLinkCheck(artifacts, add)
 	}
 	pointer, err := s.LoadPointer()
 	if err != nil {
@@ -178,6 +179,20 @@ func selectedHarness(selected []string, id string) bool {
 	return false
 }
 
+func (s Service) addOMPParentLinkCheck(artifacts install.ArtifactReport, add func(string, string, string, string)) {
+	for _, artifact := range artifacts.Artifacts {
+		if artifact.Source != "plugins/oh-my-pi/mimir.ts" {
+			continue
+		}
+		if artifactUsable(artifact.Status) {
+			add("oh-my-pi.parent-links", "ok", "exact host parent metadata with bounded artifact-tree fallback", "")
+		} else {
+			add("oh-my-pi.parent-links", "failed", "installed integration cannot guarantee live parent linkage", "mimir install or mimir update")
+		}
+		return
+	}
+}
+
 // addBinaryJunkCheck reports stale files sitting next to the receipt-owned
 // executable: Mimir swap leftovers (.old, .rollback, orphaned staged temps)
 // and foreign junk (.bak, linker ~ files). Mimir-owned leftovers are removed
@@ -233,7 +248,7 @@ func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.Art
 		{"opencode", "OpenCode", "plugins/opencode/mimir.ts", "restart OpenCode"},
 		{"hermes", "Hermes", "plugins/hermes/__init__.py", "restart Hermes"},
 		{"claude-code", "Claude Code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},
-		{"codex", "Codex", "plugins/codex/hooks.json", "restart Codex"},
+		{"codex", "Codex", "plugins/codex/hooks/hooks.json", "review and trust the Mimir plugin hooks in /hooks, then restart Codex"},
 		{"cursor", "Cursor", "plugins/cursor/hooks.json", "open or continue a Cursor agent session; Cursor reloads hooks.json automatically"},
 	}
 	plugins := make(map[string]install.ArtifactResult)

@@ -5,11 +5,13 @@ import extension, { __testing } from "./mimir";
 const originalFetch = globalThis.fetch;
 const originalURL = process.env.MIMIR_URL;
 const originalToken = process.env.MIMIR_TOKEN;
+const originalSessionID = process.env.MIMIR_SESSION_ID;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalURL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = originalURL;
   if (originalToken === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = originalToken;
+  if (originalSessionID === undefined) delete process.env.MIMIR_SESSION_ID; else process.env.MIMIR_SESSION_ID = originalSessionID;
 });
 
 type Handler = (...args: never[]) => unknown;
@@ -70,6 +72,25 @@ describe("Pi Mimir extension", () => {
       url: "https://env.example",
       token: "env-token",
     });
+  });
+
+  test("exports the exact session ID for CLI outcomes and restores the inherited value", async () => {
+    process.env.MIMIR_SESSION_ID = "inherited-session";
+    const harness = createHarness();
+    await harness.invoke("session_start", { reason: "startup" }, {
+      cwd: "C:/repo",
+      sessionManager: { getSessionId: () => "first-session" },
+    });
+    expect(process.env.MIMIR_SESSION_ID).toBe("first-session");
+
+    await harness.invoke("session_start", { reason: "new" }, {
+      cwd: "C:/repo",
+      sessionManager: { getSessionId: () => "second-session" },
+    });
+    expect(process.env.MIMIR_SESSION_ID).toBe("second-session");
+
+    await harness.invoke("session_shutdown", { reason: "shutdown" });
+    expect(process.env.MIMIR_SESSION_ID).toBe("inherited-session");
   });
 
   test("builds bounded direct-provider exchanges and skips OpenRouter", () => {

@@ -56,6 +56,72 @@ func TestOfficialPayloadsProduceCanonicalExchanges(t *testing.T) {
 	}
 }
 
+func TestClaudeStopFailureEmitsFailureSignal(t *testing.T) {
+	var sent []Delivery
+	service := Service{Home: t.TempDir(), Now: time.Now, Deliver: func(_ context.Context, delivery Delivery) error {
+		sent = append(sent, delivery)
+		return nil
+	}}
+	if err := service.Ingest(context.Background(), "claude-code", strings.NewReader(`{"hook_event_name":"StopFailure","session_id":"failed","error":"provider unavailable"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || sent[0].Kind != "event" || sent[0].Body["kind"] != "failure" || sent[0].Body["reason"] != "provider unavailable" {
+		t.Fatalf("deliveries = %#v", sent)
+	}
+}
+
+func TestCodexStopReadsUsageForTheExactTurnFromTranscript(t *testing.T) {
+	transcript := filepath.Join(t.TempDir(), "rollout.jsonl")
+	file, err := os.Create(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	for _, event := range []any{
+		map[string]any{"type": "token_usage_record", "payload": map[string]any{
+			"turn_id": "t1",
+			"usage":   map[string]any{"input_tokens": 100, "cached_input_tokens": 40, "cache_write_input_tokens": 3, "output_tokens": 12},
+		}},
+		map[string]any{"type": "token_usage_record", "payload": map[string]any{
+			"turn_id": "other",
+			"usage":   map[string]any{"input_tokens": 999, "cached_input_tokens": 0, "output_tokens": 999},
+		}},
+	} {
+		if err := encoder.Encode(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent []Delivery
+	service := Service{Home: t.TempDir(), Now: time.Now, Deliver: func(_ context.Context, delivery Delivery) error {
+		sent = append(sent, delivery)
+		return nil
+	}}
+	prompt, _ := json.Marshal(map[string]any{
+		"hook_event_name": "UserPromptSubmit", "session_id": "codex-usage", "turn_id": "t1", "prompt": "measure this",
+	})
+	complete, _ := json.Marshal(map[string]any{
+		"hook_event_name": "Stop", "session_id": "codex-usage", "turn_id": "t1", "last_assistant_message": "done", "transcript_path": transcript,
+	})
+	if err := service.Ingest(context.Background(), "codex", bytes.NewReader(prompt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Ingest(context.Background(), "codex", bytes.NewReader(complete)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("deliveries = %#v", sent)
+	}
+	usage, ok := sent[0].Body["usage"].(map[string]any)
+	if !ok || usage["input_tokens"] != float64(60) || usage["output_tokens"] != float64(12) ||
+		usage["cache_read_tokens"] != float64(40) || usage["cache_write_tokens"] != float64(3) {
+		t.Fatalf("usage = %#v", sent[0].Body["usage"])
+	}
+}
+
 func TestInputIsBounded(t *testing.T) {
 	service := Service{Home: t.TempDir()}
 	err := service.Ingest(context.Background(), "codex", bytes.NewReader(bytes.Repeat([]byte("x"), MaxInputBytes+1)))
@@ -68,7 +134,9 @@ func TestEmbeddedManifestsUseHiddenHookCommand(t *testing.T) {
 	for _, path := range []string{
 		"plugins/claude-code/.claude-plugin/plugin.json",
 		"plugins/claude-code/hooks/hooks.json",
-		"plugins/codex/hooks.json",
+		"plugins/codex/plugin.json",
+		"plugins/codex/marketplace.json",
+		"plugins/codex/hooks/hooks.json",
 		"plugins/cursor/hooks.json",
 	} {
 		data, err := mimirassets.Bundle.ReadFile(path)
@@ -83,7 +151,7 @@ func TestEmbeddedManifestsUseHiddenHookCommand(t *testing.T) {
 			t.Fatalf("%s does not invoke the managed hook adapter", path)
 		}
 	}
-	data, err := mimirassets.Bundle.ReadFile("plugins/codex/hooks.json")
+	data, err := mimirassets.Bundle.ReadFile("plugins/codex/hooks/hooks.json")
 	if err != nil {
 		t.Fatal(err)
 	}

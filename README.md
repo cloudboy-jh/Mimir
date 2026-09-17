@@ -85,10 +85,12 @@ Select several loaded root sessions to apply one outcome and reason atomically.
 ![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
 
 Installed agents use the `mimir-use` skill and machine-readable CLI to query
-memory directly. Ask the agent for recent sessions, prior decisions, or evidence;
-it runs Mimir commands itself and presents readable results rather than raw JSON.
-Pi's managed extension routes OpenRouter through Mimir with exact session headers
-and reports bounded reconstructed turns for providers that bypass the proxy.
+memory directly. After meaningful work, the skill records the evidenced outcome
+before fetching the capture receipt, so successful work does not remain
+`unresolved`. Pi and Oh My Pi expose the exact active identity as
+`MIMIR_SESSION_ID`; OpenCode supplies native status and outcome tools. Ask the
+agent for recent sessions, prior decisions, or evidence; it runs Mimir commands
+itself and presents readable results rather than raw JSON.
 
 ## What Mimir remembers
 
@@ -105,8 +107,14 @@ Mimir reconstructs the session so you can see:
   unresolved sessions;
 - whether durable capture succeeded;
 - whether the work landed, was discarded, was abandoned, or remains unresolved.
-  Unresolved sessions inactive for 48 hours are marked landed only when a saved,
-  complete Git patch artifact supplies the evidence.
+
+Each active period is an outcome generation. A clean completed primary turn
+followed by finalization is automatically `landed`; a reported failure, pending
+tool continuation, or finalization without a clean completion is `abandoned`.
+An explicit agent or user outcome wins. Reopening an exact session preserves its
+outcome history but returns the current projection to `unresolved` until the new
+generation finishes. The 48-hour saved-patch fallback remains for older
+unresolved sessions with durable Git evidence.
 
 That makes prior work useful before the next attempt:
 
@@ -250,32 +258,27 @@ The installer manages a global Pi extension and the shared Mimir skill. The
 extension routes Pi's OpenRouter provider through Mimir with exact session,
 repository, and harness headers. For direct and subscription providers it
 uploads bounded reconstructed completed turns, including tool results exposed
-by Pi. Restart Pi after install or update. Ask Pi for Mimir memory normally;
-the skill runs the machine-readable CLI and formats results.
+by Pi. It also exports the exact active identity as `MIMIR_SESSION_ID`, allowing
+the skill to record an evidenced outcome and then fetch its receipt without
+guessing. Restart Pi after install or update.
 
 ### Oh My Pi
 
 Oh My Pi is selected independently under the Pi group during setup. Mimir
 installs its adapter at `~/.omp/agent/extensions/mimir.ts` (or the active OMP
-profile), activates exact lifecycle heartbeats on the first real turn, and
-captures OpenRouter plus bounded direct-provider evidence. Idle drafts do not
-create dashboard sessions. Restart `omp` after install or update. Use
+profile), activates exact lifecycle heartbeats on the first real turn, captures
+OpenRouter plus bounded direct-provider evidence, and exports the exact active
+identity as `MIMIR_SESSION_ID` for outcome and receipt commands. Idle drafts do
+not create dashboard sessions. Restart `omp` after install or update. Use
 `OMP_CODING_AGENT_DIR` when OMP has a nonstandard agent home.
 
-Sub-agent grouping requires OMP to expose `ctx.parentSessionId`. Mimir sends
-that exact identity in lifecycle events; it never treats fork lineage, prompt
+Sub-agent grouping uses OMP's explicit `ctx.parentSessionId` when available.
+For current unpatched OMP builds, the adapter derives the same exact relationship
+from OMP's bounded session artifact tree. It never treats fork lineage, prompt
 text, or timestamp proximity as a parent relationship. Sessions remain separate
 records under a collapsed root row, with a caret revealing the complete tree.
 Root totals include descendants; the root work outcome remains independent.
-
-The upstream OMP change is supplied in
-[`plugins/oh-my-pi/parent-session-id.patch`](plugins/oh-my-pi/parent-session-id.patch),
-tested against OMP 18.1.13 at `6e48b5ce564aa1d7eff60ffe92748f451385ad7d`.
-Apply it to that OMP checkout with `git apply <path-to-patch>`, then follow
-OMP's build instructions. Updating Mimir alone does not add this API to an
-existing OMP binary. Install the rebuilt OMP and updated Mimir adapter on each
-capturing machine, and restart OMP. Older binaries continue capturing sessions
-but cannot report their live parent relationships.
+`mimir doctor` reports whether the installed adapter supports this fallback.
 
 ### OpenCode
 
@@ -297,13 +300,15 @@ update. See [Hermes capture setup](docs/hermes-capture-setup.md).
 
 ### Claude Code, Codex, and Cursor
 
-The installer enrolls receipt-owned hook manifests in each harness's supported
-location. Their start, prompt, completion, and end hooks invoke the hidden
-`mimir _hook` adapter, which reconstructs bounded prompt/assistant exchanges and
-queues delivery when the Worker is unavailable. Existing different hook files
-are preserved as conflicts rather than merged or overwritten. Claude Code uses
-`/reload-plugins` or a restart; Codex requires a restart; Cursor reloads
-`hooks.json` when you open or continue an agent session.
+The installer enrolls receipt-owned hooks in each harness's supported location.
+Their start, prompt, completion, and end hooks invoke the hidden `mimir _hook`
+adapter, which reconstructs bounded prompt/assistant exchanges and queues
+delivery when the Worker is unavailable. Claude Code and Cursor preserve
+different existing hook files as conflicts rather than merging or overwriting
+them. Codex uses an isolated personal marketplace plugin under
+`~/.agents/plugins`; review and trust its `/hooks` declaration when prompted.
+Claude Code uses `/reload-plugins` or a restart; Codex requires a restart;
+Cursor reloads `hooks.json` when you open or continue an agent session.
 
 ### Other harnesses and tools
 

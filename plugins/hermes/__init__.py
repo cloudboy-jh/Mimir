@@ -5,9 +5,9 @@ session object for providers the Mimir proxy cannot reach (Nous portal
 account, direct providers).
 
 Each turn is classified from Hermes' pre_api_request transport metadata.
-Turns routed through the Mimir OpenRouter redirect emit no plugin lifecycle
-events, avoiding a duplicate exact-ID session. Direct-provider evidence is
-sticky for the session and activates event-only lifecycle reporting.
+Turns routed through the Mimir OpenRouter redirect emit only an exact-ID
+heartbeat with no repo identity, allowing the proxy exchange to adopt that
+session instead of creating a duplicate heuristic row.
 
 Install: copy this directory to the plugins directory under your Hermes home
 (~/.hermes/plugins/ or %LOCALAPPDATA%/hermes/plugins on Windows). Uninstall:
@@ -301,10 +301,10 @@ class _Reporter:
             if turn_id:
                 self._turn_routes[(session_id, turn_id)] = proxied
         if proxied:
-            # The provider request carries no mutable header surface. Register
-            # its exact Hermes session before the proxy resolves ownership so
-            # resumed traffic reuses the existing D1 row and its evidence.
-            self.post(build_simple_event("heartbeat", session_id, self._repo))
+            # Proxy requests carry no repo header. Match that identity exactly
+            # so resolveSession adopts this header row instead of creating a
+            # separate (repo=null) heuristic session.
+            self.post(build_simple_event("heartbeat", session_id, None))
         else:
             self.activate_direct(session_id)
         return proxied

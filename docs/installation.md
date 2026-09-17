@@ -217,7 +217,8 @@ endpoint.
 | Redirected OpenRouter and other Mimir proxy traffic | Complete redacted request/response transport exchange, streamed upstream and archived in R2 |
 | Pi direct providers and subscription providers | Bounded reconstruction from Pi's completed turn; not byte-for-byte provider transport |
 | OpenCode OAuth, subscription, or direct providers | Bounded reconstruction from OpenCode's session store; not byte-for-byte provider transport |
-| Claude Code, Codex, and Cursor supported hooks | Bounded prompt/assistant reconstruction; tool traces and usage may be unavailable |
+| Claude Code and Cursor supported hooks | Bounded prompt/assistant reconstruction; tool traces and usage may be unavailable |
+| Codex supported hooks | Bounded prompt/assistant reconstruction plus transcript token usage when Codex emits a matching turn usage record |
 | Hermes Nous portal, OAuth, and direct providers | Event-only completed-turn summary; no searchable exchange object |
 
 OpenRouter plugin uploads are suppressed when proxy capture is canonical.

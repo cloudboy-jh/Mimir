@@ -71,7 +71,70 @@ function messagesFrom(value: unknown): StructuredMessage[] {
   });
 }
 
+function streamedResponse(value: Extract<LogEnvelope["response"], { format: "reconstructed_sse" }>): StructuredMessage[] {
+  const events = Array.isArray(value.events) ? value.events : [];
+  const tools = new Map<string, { name: string; id: string; arguments: string; input?: unknown }>();
+  let streamedText = "";
+  let role = "assistant";
+  for (const rawEvent of events) {
+    const event = record(rawEvent);
+    if (!event) continue;
+    const choices = Array.isArray(event.choices) ? event.choices : [];
+    for (const rawChoice of choices) {
+      const choice = record(rawChoice);
+      const delta = record(choice?.delta);
+      if (!delta) continue;
+      if (typeof delta.role === "string") role = delta.role;
+      if (typeof delta.content === "string") streamedText += delta.content;
+      const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+      for (const rawCall of calls) {
+        const call = record(rawCall);
+        if (!call) continue;
+        const fn = record(call.function);
+        const key = typeof call.index === "number" ? `openai:${call.index}` : `openai:${printable(call.id)}`;
+        const current = tools.get(key) ?? { name: "", id: "", arguments: "" };
+        if (typeof call.id === "string") current.id = call.id;
+        if (typeof fn?.name === "string") current.name += fn.name;
+        if (typeof fn?.arguments === "string") current.arguments += fn.arguments;
+        tools.set(key, current);
+      }
+    }
+    const index = typeof event.index === "number" ? event.index : 0;
+    const contentBlock = record(event.content_block);
+    if (event.type === "content_block_start" && contentBlock?.type === "tool_use") {
+      tools.set(`anthropic:${index}`, {
+        name: typeof contentBlock.name === "string" ? contentBlock.name : "",
+        id: typeof contentBlock.id === "string" ? contentBlock.id : "",
+        arguments: "",
+        input: contentBlock.input,
+      });
+    }
+    const delta = record(event.delta);
+    if (typeof delta?.text === "string") streamedText += delta.text;
+    if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      const key = `anthropic:${index}`;
+      const current = tools.get(key) ?? { name: "", id: "", arguments: "" };
+      current.arguments += delta.partial_json;
+      tools.set(key, current);
+    }
+  }
+  const text = typeof value.content === "string" && value.content ? value.content : streamedText;
+  const blocks: StructuredBlock[] = text ? [{ type: "text", text }] : [];
+  for (const tool of tools.values()) {
+    blocks.push({
+      type: "tool-call",
+      title: tool.name || tool.id || undefined,
+      text: tool.arguments || printable(tool.input ?? {}),
+    });
+  }
+  return blocks.length ? [{ role, blocks }] : [];
+}
+
 function responseMessages(value: LogEnvelope["response"]): StructuredMessage[] {
+  if (value.format === "reconstructed_sse") {
+    const streamed = streamedResponse(value);
+    if (streamed.length) return streamed;
+  }
   const payload = value.format === "json" ? value.body : value.content;
   const root = record(payload);
   const direct = message(root?.message);

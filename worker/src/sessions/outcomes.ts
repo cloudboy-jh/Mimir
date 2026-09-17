@@ -105,6 +105,144 @@ export async function bulkUpdateOutcomes(
   });
 }
 
+type GenerationResult = "completed" | "pending" | "failed" | null;
+
+export async function reopenOutcomeGeneration(
+  db: D1Database,
+  sessionID: string,
+  startedAt: string,
+  previousFinalizedAt: string,
+) {
+  const root = await rootSessionID(db, sessionID);
+  if (await treeHasActiveSession(db, root, sessionID)) return false;
+  return applyAutomaticGenerationOutcome(
+    db,
+    root,
+    "unresolved",
+    "Session reopened for a new generation",
+    {
+      generation_started_at: startedAt,
+      previous_finalized_at: previousFinalizedAt,
+      trigger_session_id: sessionID,
+      automation: { signal: "session_reopened" },
+    },
+    startedAt,
+    true,
+  );
+}
+
+export async function finalizeOutcomeGeneration(
+  db: D1Database,
+  sessionID: string,
+  startedAt: string,
+  endedAt: string,
+  result: GenerationResult,
+  endReason: string,
+) {
+  const root = await rootSessionID(db, sessionID);
+  if (await treeHasActiveSession(db, root)) return false;
+  const outcome: WorkOutcome = result === "completed" ? "landed" : "abandoned";
+  const reason =
+    result === "completed"
+      ? "Automatically marked landed after a clean completed assistant turn"
+      : "Automatically marked abandoned after the generation ended without a clean completed assistant turn";
+  return applyAutomaticGenerationOutcome(
+    db,
+    root,
+    outcome,
+    reason,
+    {
+      generation_started_at: startedAt,
+      generation_ended_at: endedAt,
+      terminal_session_id: sessionID,
+      terminal_result: result ?? "none",
+      end_reason: endReason,
+      automation: {
+        signal:
+          result === "completed"
+            ? "clean_assistant_completion"
+            : "ended_without_clean_completion",
+      },
+    },
+    endedAt,
+    false,
+  );
+}
+
+async function treeHasActiveSession(
+  db: D1Database,
+  root: string,
+  excludedID?: string,
+) {
+  const row = await db
+    .prepare(
+      `WITH RECURSIVE subtree(id) AS (
+        SELECT ?
+        UNION ALL
+        SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id
+      )
+      SELECT 1 AS active FROM sessions
+      WHERE id IN (SELECT id FROM subtree) AND state = 'active' AND (? IS NULL OR id <> ?)
+      LIMIT 1`,
+    )
+    .bind(root, excludedID ?? null, excludedID ?? null)
+    .first();
+  return row !== null;
+}
+
+async function applyAutomaticGenerationOutcome(
+  db: D1Database,
+  sessionID: string,
+  outcome: WorkOutcome,
+  reason: string,
+  evidence: Record<string, unknown>,
+  createdAt: string,
+  replacePriorGeneration: boolean,
+) {
+  const normalized: NormalizedOutcome = {
+    outcome,
+    source: "auto",
+    reason,
+    evidence,
+    evidenceJson: JSON.stringify(evidence),
+  };
+  const eventID = await endOutcomeEventID(
+    sessionID,
+    createdAt,
+    normalized,
+  );
+  const condition = replacePriorGeneration
+    ? ""
+    : " AND work_outcome = 'unresolved' AND (outcome_src IS NULL OR outcome_src = 'auto')";
+  const writes = await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) SELECT ?, id, ?, 'auto', ?, ?, ? FROM sessions WHERE id = ?${condition}`,
+      )
+      .bind(
+        eventID,
+        outcome,
+        reason,
+        normalized.evidenceJson,
+        createdAt,
+        sessionID,
+      ),
+    db
+      .prepare(
+        `UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = 'auto', outcome_updated_at = ?, outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ?${condition} AND EXISTS (SELECT 1 FROM session_outcome_events WHERE id = ?)`,
+      )
+      .bind(
+        outcome,
+        legacyOutcome(outcome),
+        createdAt,
+        reason,
+        sessionID,
+        eventID,
+      ),
+  ]);
+  return (writes[1]?.meta.changes ?? 0) > 0;
+}
+
 const AUTO_OUTCOME_STALE_MS = 48 * 60 * 60 * 1_000;
 const AUTO_OUTCOME_CANDIDATE_LIMIT = 100;
 

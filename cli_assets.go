@@ -18,7 +18,7 @@ var LogoPNG []byte
 // Wrangler state, and dependency directories are deliberately not embedded.
 //
 //go:embed plugins/pi/mimir.ts plugins/oh-my-pi/mimir.ts plugins/opencode/mimir.ts plugins/hermes/__init__.py plugins/hermes/plugin.yaml
-//go:embed plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/hooks/hooks.json plugins/codex/hooks.json plugins/cursor/hooks.json
+//go:embed plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/hooks/hooks.json plugins/codex/plugin.json plugins/codex/marketplace.json plugins/codex/hooks/hooks.json plugins/cursor/hooks.json
 //go:embed skills/mimir-setup skills/mimir-use
 //go:embed worker/src/app.ts worker/src/env.ts worker/src/index.ts
 //go:embed worker/src/auth/auth-middleware.ts

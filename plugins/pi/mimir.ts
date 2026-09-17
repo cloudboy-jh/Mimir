@@ -3,8 +3,8 @@
 // The managed extension routes Pi's OpenRouter provider through Mimir and adds
 // exact session metadata to every proxied request. Other Pi providers bypass
 // the proxy, so their completed turns are uploaded as bounded reconstructed
-// exchanges. Querying memory remains the responsibility of the installed
-// mimir-use skill and the Mimir CLI.
+// exchanges. Querying memory and recording evidenced outcomes remain the
+// responsibility of the installed mimir-use skill and the Mimir CLI.
 //
 // No credentials live in this file. Connection resolves from, in order:
 //   1. MIMIR_URL + MIMIR_TOKEN environment variables
@@ -350,6 +350,19 @@ export default function (pi: ExtensionAPI) {
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let nextRequestKind: RequestKind = "primary";
   let initialization = 0;
+  const inheritedSessionID = process.env.MIMIR_SESSION_ID;
+  let exportedSessionID: string | null = null;
+
+  const exposeSessionID = (id: string) => {
+    process.env.MIMIR_SESSION_ID = id;
+    exportedSessionID = id;
+  };
+  const restoreSessionID = () => {
+    if (!exportedSessionID || process.env.MIMIR_SESSION_ID !== exportedSessionID) return;
+    if (inheritedSessionID === undefined) delete process.env.MIMIR_SESSION_ID;
+    else process.env.MIMIR_SESSION_ID = inheritedSessionID;
+    exportedSessionID = null;
+  };
 
   const captureHeaders = (current: SessionState): Record<string, string> => ({
     "x-mimir-harness": "pi",
@@ -421,6 +434,7 @@ export default function (pi: ExtensionAPI) {
       if (generation !== initialization) return;
     }
     session = candidate;
+    exposeSessionID(candidate.id);
     nextRequestKind = "primary";
     const load = loadHarnessLoad();
     if (load) delivery.deliver(`load:${load.source_sha256}`, "/integrations/harness-loads", load);
@@ -487,6 +501,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
     session = null;
+    restoreSessionID();
   });
 }
 

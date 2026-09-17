@@ -57,7 +57,9 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	for _, target := range []string{
 		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
 		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
-		filepath.Join(paths.CodexHome, "hooks.json"),
+		filepath.Join(paths.AgentPlugins, "marketplace.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "plugin.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"),
 		filepath.Join(paths.CursorHome, "hooks.json"),
 	} {
 		if _, err := os.Stat(target); err != nil {
@@ -476,7 +478,7 @@ func TestManagedInstallationPathsHonorOfficialHomeOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.ClaudeCodeHome != claudeHome || paths.CodexHome != codexHome || paths.CursorHome != filepath.Join(home, ".cursor") {
+	if paths.ClaudeCodeHome != claudeHome || paths.CodexHome != codexHome || paths.AgentPlugins != filepath.Join(home, ".agents", "plugins") || paths.CursorHome != filepath.Join(home, ".cursor") {
 		t.Fatalf("paths = %#v", paths)
 	}
 }
@@ -840,14 +842,14 @@ func TestCursorHookConflictIsPreservedAndNotOwned(t *testing.T) {
 	}
 }
 
-func TestRefreshArtifactsEnrollsMissingHooksAndPreservesForeignHooks(t *testing.T) {
+func TestRefreshArtifactsInstallsIsolatedCodexPluginAndPreservesForeignRootHooks(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	foreignCodex := []byte(`{"hooks":{"SessionStart":[]}}`)
-	codex := filepath.Join(paths.CodexHome, "hooks.json")
-	if err := os.MkdirAll(filepath.Dir(codex), 0o700); err != nil {
+	rootHooks := filepath.Join(paths.CodexHome, "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(rootHooks), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(codex, foreignCodex, 0o600); err != nil {
+	if err := os.WriteFile(rootHooks, foreignCodex, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	report, err := RefreshArtifacts("update")
@@ -857,23 +859,59 @@ func TestRefreshArtifactsEnrollsMissingHooksAndPreservesForeignHooks(t *testing.
 	for _, target := range []string{
 		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"),
 		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"),
+		filepath.Join(paths.AgentPlugins, "marketplace.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "plugin.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"),
 	} {
 		if result := resultForPath(t, report, target); result.Status != artifactInstalled {
 			t.Fatalf("%s status = %s, want installed", target, result.Status)
 		}
 	}
-	if result := resultForPath(t, report, codex); result.Status != artifactConflict {
-		t.Fatalf("Codex status = %s, want conflict", result.Status)
-	}
-	if got := mustReadFile(t, codex); !bytes.Equal(got, foreignCodex) {
-		t.Fatal("foreign Codex hooks were rewritten")
+	if got := mustReadFile(t, rootHooks); !bytes.Equal(got, foreignCodex) {
+		t.Fatal("foreign Codex root hooks were rewritten")
 	}
 	receipt, err := loadInstallReceipt()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, owned := receipt.Artifacts[codex]; owned {
-		t.Fatal("foreign Codex hooks were claimed")
+	if _, owned := receipt.Artifacts[rootHooks]; owned {
+		t.Fatal("foreign Codex root hooks were claimed")
+	}
+}
+
+func TestSyncManagedArtifactsRemovesOnlyReceiptOwnedLegacyCodexRootHooks(t *testing.T) {
+	paths := isolatedInstallation(t, false)
+	legacy := filepath.Join(paths.CodexHome, "hooks.json")
+	data, err := mimirassets.Bundle.ReadFile("plugins/codex/hooks/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receipt := newInstallReceipt()
+	receipt.Harnesses = []string{"codex"}
+	receipt.Artifacts[legacy] = installReceiptArtifact{Source: "plugins/codex/hooks.json", Hash: hashBytes(data)}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshArtifacts("update"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy root hook remains: %v", err)
+	}
+	for _, target := range []string{
+		filepath.Join(paths.AgentPlugins, "marketplace.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "plugin.json"),
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"),
+	} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("isolated Codex artifact missing %s: %v", target, err)
+		}
 	}
 }
 

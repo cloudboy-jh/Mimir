@@ -314,6 +314,7 @@ class HookContractTest(unittest.TestCase):
         self.finalize("proxy-session")
         self.pre("proxy-session", "turn-2", "openrouter", "https://mimir.example/v1/hermes")
         self.assertEqual(self.kinds(), ["heartbeat", "heartbeat"])
+        self.assertTrue(all(event["repo"] is None for event in self.events()))
 
     def test_direct_only_emits_activation_turn_and_end(self):
         self.ctx.hooks["on_session_start"](session_id="direct-session")

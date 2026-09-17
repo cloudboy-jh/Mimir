@@ -7,7 +7,7 @@ import { normalizeSessionTitle } from "./titles";
 // owns liveness and finalization; R2/D1 remain canonical storage.
 export const SESSION_EVENT_VERSION = 1;
 export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-export const SESSION_EVENT_KINDS = ["turn", "heartbeat", "end"] as const;
+export const SESSION_EVENT_KINDS = ["turn", "heartbeat", "failure", "end"] as const;
 export type SessionEventKind = (typeof SESSION_EVENT_KINDS)[number];
 
 const MAX_EXCERPT_CHARS = 500;
@@ -18,6 +18,7 @@ export type SessionEventTurn = {
   exchange_id?: string;
   model?: string;
   provider?: string | null;
+  result?: "completed" | "pending" | "failed";
   request_kind?: RequestKind;
   usage?: {
     input_tokens: number;
@@ -108,6 +109,8 @@ export function parseSessionEvent(
     if (turn && "error" in turn) return turn;
     if (turn) event.turn = turn;
   }
+  if (event.kind === "failure" && !event.reason)
+    event.reason = "assistant completion failed";
   if (event.kind === "end" && !event.reason) event.reason = "explicit";
   return event;
 }
@@ -133,6 +136,15 @@ function parseTurn(
     if (typeof body.provider !== "string" || body.provider.length > 256)
       return { error: "invalid turn provider" };
     turn.provider = body.provider;
+  }
+  if (body.result !== undefined) {
+    if (
+      body.result !== "completed" &&
+      body.result !== "pending" &&
+      body.result !== "failed"
+    )
+      return { error: "invalid turn result" };
+    turn.result = body.result;
   }
   if (body.request_kind !== undefined) {
     if (!REQUEST_KINDS.has(body.request_kind as string))

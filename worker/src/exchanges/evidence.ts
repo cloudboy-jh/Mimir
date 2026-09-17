@@ -331,17 +331,57 @@ export function extractFinishReason(response: unknown) {
       typeof event === "object" && event
         ? (event as Record<string, unknown>)
         : {};
-    const choices = Array.isArray(record.choices) ? record.choices : [];
-    for (const choice of choices)
-      if (
-        typeof choice === "object" &&
-        choice &&
-        typeof (choice as Record<string, unknown>).finish_reason === "string"
-      )
-        return (choice as Record<string, unknown>).finish_reason as string;
-    if (typeof record.stop_reason === "string") return record.stop_reason;
+    const message =
+      typeof record.message === "object" && record.message
+        ? (record.message as Record<string, unknown>)
+        : null;
+    for (const candidate of message ? [record, message] : [record]) {
+      if (typeof candidate.errorMessage === "string" && candidate.errorMessage)
+        return "error";
+      const choices = Array.isArray(candidate.choices)
+        ? candidate.choices
+        : [];
+      for (const choice of choices)
+        if (
+          typeof choice === "object" &&
+          choice &&
+          typeof (choice as Record<string, unknown>).finish_reason === "string"
+        )
+          return (choice as Record<string, unknown>).finish_reason as string;
+      if (typeof candidate.stop_reason === "string")
+        return candidate.stop_reason;
+      if (typeof candidate.stopReason === "string")
+        return candidate.stopReason;
+    }
   }
   return null;
+}
+
+export type CompletionResult = "completed" | "pending" | "failed";
+
+export function completionResult(
+  finishReason: string | null,
+): CompletionResult {
+  const reason = finishReason?.trim().toLowerCase().replaceAll("-", "_");
+  if (
+    reason === "tool_calls" ||
+    reason === "function_call" ||
+    reason === "tool_use"
+  )
+    return "pending";
+  if (
+    reason === "error" ||
+    reason === "failed" ||
+    reason === "cancelled" ||
+    reason === "canceled" ||
+    reason === "aborted" ||
+    reason === "interrupted" ||
+    reason === "length" ||
+    reason === "max_tokens" ||
+    reason === "content_filter"
+  )
+    return "failed";
+  return "completed";
 }
 
 export function excerpt(value: string) {

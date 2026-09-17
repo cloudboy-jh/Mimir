@@ -186,7 +186,7 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 	}
 	report.OpenCodeReady = report.OpenCode.State != "failed"
 	report.ClaudeCode = selectedHookState(selectedSet["claude-code"], mechanical.Artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
-	report.Codex = selectedHookState(selectedSet["codex"], mechanical.Artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Codex = selectedHookState(selectedSet["codex"], mechanical.Artifacts, paths.AgentPlugins, "plugins/codex/", "Codex")
 	report.Cursor = selectedHookState(selectedSet["cursor"], mechanical.Artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
 	s.step("OpenCode integration configured")
 	if !selectedSet["hermes"] {
@@ -488,7 +488,7 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		failures = append(failures, report.OhMyPi.Detail)
 	}
 	report.ClaudeCode = selectedHookState(selected["claude-code"], artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
-	report.Codex = selectedHookState(selected["codex"], artifacts, paths.CodexHome, "plugins/codex/", "Codex")
+	report.Codex = selectedHookState(selected["codex"], artifacts, paths.AgentPlugins, "plugins/codex/", "Codex")
 	report.Cursor = selectedHookState(selected["cursor"], artifacts, paths.CursorHome, "plugins/cursor/", "Cursor")
 	if !selected["hermes"] {
 		report.Hermes = unselectedState()

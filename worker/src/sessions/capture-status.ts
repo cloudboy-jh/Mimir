@@ -221,8 +221,8 @@ function exchangeDetail(count: number) {
   return `${count} ${count === 1 ? "exchange" : "exchanges"}`;
 }
 
-const EMPTY_FINALIZED_PI_SESSION = `
-  harness = 'pi'
+const EMPTY_FINALIZED_HARNESS_SESSION = `
+  harness IN ('pi', 'hermes')
   AND parent_session_id IS NULL
   AND boundary = 'header'
   AND state = 'inactive'
@@ -231,6 +231,8 @@ const EMPTY_FINALIZED_PI_SESSION = `
   AND request_count = 0
   AND tokens_in = 0
   AND tokens_out = 0
+  AND cache_read_tokens = 0
+  AND cache_write_tokens = 0
   AND model_primary IS NULL
   AND intent IS NULL
   AND title IS NULL
@@ -247,12 +249,12 @@ const EMPTY_FINALIZED_PI_SESSION = `
   AND NOT EXISTS (SELECT 1 FROM session_git_artifacts WHERE session_git_artifacts.session_id = sessions.id)
 `;
 
-async function removeEmptyFinalizedPiSessions(
+async function removeEmptyFinalizedHarnessSessions(
   env: Bindings,
   limit: number,
 ): Promise<string[]> {
   const candidates = await env.DB.prepare(
-    `SELECT id FROM sessions WHERE ${EMPTY_FINALIZED_PI_SESSION} ORDER BY ended_at, id LIMIT ?`,
+    `SELECT id FROM sessions WHERE ${EMPTY_FINALIZED_HARNESS_SESSION} ORDER BY ended_at, id LIMIT ?`,
   )
     .bind(limit)
     .all<{ id: string }>();
@@ -260,7 +262,7 @@ async function removeEmptyFinalizedPiSessions(
   for (const candidate of candidates.results) {
     await env.LOGS.delete(`sessions/${candidate.id}/transcript.json`);
     const result = await env.DB.prepare(
-      `DELETE FROM sessions WHERE id = ? AND ${EMPTY_FINALIZED_PI_SESSION}`,
+      `DELETE FROM sessions WHERE id = ? AND ${EMPTY_FINALIZED_HARNESS_SESSION}`,
     )
       .bind(candidate.id)
       .run();
@@ -285,7 +287,7 @@ export async function reconcile(
     ),
   );
   const emptySessionsRemoved = scanDatabase
-    ? await removeEmptyFinalizedPiSessions(env, limit)
+    ? await removeEmptyFinalizedHarnessSessions(env, limit)
     : [];
   const decodedCursor = decodeDatabaseCursor(databaseCursor);
   const queried = scanDatabase

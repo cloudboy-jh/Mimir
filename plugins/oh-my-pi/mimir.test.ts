@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import extension, { __testing } from "./mimir";
 
 const originalFetch = globalThis.fetch;
 const originalURL = process.env.MIMIR_URL;
 const originalToken = process.env.MIMIR_TOKEN;
+const originalSessionID = process.env.MIMIR_SESSION_ID;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   if (originalURL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = originalURL;
   if (originalToken === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = originalToken;
+  if (originalSessionID === undefined) delete process.env.MIMIR_SESSION_ID; else process.env.MIMIR_SESSION_ID = originalSessionID;
 });
 
 type Handler = (...args: never[]) => unknown;
@@ -57,6 +62,25 @@ describe("Oh My Pi extension", () => {
   test("canonicalizes unsafe session IDs with an OMP-specific prefix", () => {
     expect(__testing.sessionID("valid-session")).toBe("valid-session");
     expect(__testing.sessionID("unsafe session")).toMatch(/^oh-my-pi-[0-9a-f]{32}$/);
+  });
+
+  test("exports the exact session ID for CLI outcomes and restores the inherited value", async () => {
+    process.env.MIMIR_SESSION_ID = "inherited-session";
+    const harness = createHarness();
+    await harness.invoke("session_start", {}, {
+      cwd: "C:/repo",
+      sessionManager: { getSessionId: () => "first-session" },
+    });
+    expect(process.env.MIMIR_SESSION_ID).toBe("first-session");
+
+    await harness.invoke("session_switch", {}, {
+      cwd: "C:/repo",
+      sessionManager: { getSessionId: () => "second-session" },
+    });
+    expect(process.env.MIMIR_SESSION_ID).toBe("second-session");
+
+    await harness.invoke("session_shutdown", {});
+    expect(process.env.MIMIR_SESSION_ID).toBe("inherited-session");
   });
 
   test("configures exact headers without activating a draft session", async () => {
@@ -169,6 +193,50 @@ describe("Oh My Pi extension", () => {
       { kind: "heartbeat", session_id: "other-root", parent_session_id: null },
       { kind: "end", session_id: "other-root", parent_session_id: null },
     ]);
+  });
+
+  test("recovers exact parents from OMP artifact paths when the host omits parent metadata", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "mimir-omp-parent-"));
+    try {
+      const rootFile = join(directory, "root.jsonl");
+      const artifacts = join(directory, "root");
+      const childFile = join(artifacts, "Child.jsonl");
+      const grandchildFile = join(artifacts, "Child.Grandchild.jsonl");
+      mkdirSync(artifacts);
+      writeFileSync(rootFile, `{"type":"session","id":"root"}\n`);
+      writeFileSync(childFile, `{"type":"title","title":""}\n{"type":"session","id":"child"}\n`);
+      writeFileSync(grandchildFile, `{"type":"session","id":"grandchild"}\n`);
+
+      const harness = createHarness();
+      const context = (id: string, file: string) => ({
+        cwd: "C:/repo",
+        sessionManager: {
+          getSessionId: () => id,
+          getSessionFile: () => file,
+          buildSessionContext: () => ({ messages: [] }),
+        },
+      });
+      for (const [id, file] of [["root", rootFile], ["child", childFile], ["grandchild", grandchildFile]] as const) {
+        await harness.invoke("session_switch", {}, context(id, file));
+        await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, context(id, file));
+      }
+      await harness.invoke("session_shutdown", {});
+
+      const events = harness.requests
+        .filter((request) => request.url.endsWith("/events")
+          && request.body !== null
+          && typeof request.body === "object"
+          && "kind" in request.body
+          && request.body.kind === "heartbeat")
+        .map((request) => request.body);
+      expect(events).toMatchObject([
+        { session_id: "root", parent_session_id: null },
+        { session_id: "child", parent_session_id: "root" },
+        { session_id: "grandchild", parent_session_id: "child" },
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("canonicalizes parent IDs exactly like session IDs and never reports self-parentage", async () => {

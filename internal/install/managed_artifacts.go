@@ -56,6 +56,7 @@ type installationPaths struct {
 	OpenCodeHome   string `json:"opencode_home"`
 	ClaudeCodeHome string `json:"claude_code_home"`
 	CodexHome      string `json:"codex_home"`
+	AgentPlugins   string `json:"agent_plugins"`
 	CursorHome     string `json:"cursor_home"`
 	HermesHome     string `json:"hermes_home,omitempty"`
 	HermesDetected bool   `json:"hermes_detected"`
@@ -181,6 +182,7 @@ func managedInstallationPaths() (installationPaths, error) {
 		OpenCodeHome:   opencodeHome,
 		ClaudeCodeHome: claudeHome,
 		CodexHome:      codexHome,
+		AgentPlugins:   filepath.Join(userHome, ".agents", "plugins"),
 		CursorHome:     filepath.Join(userHome, ".cursor"),
 		HermesHome:     hermesHome,
 		HermesDetected: found,
@@ -619,6 +621,18 @@ func receiptManagedArtifactSpec(paths installationPaths, target string, owned in
 	case source == "plugins/codex/hooks.json":
 		root = paths.CodexHome
 		expected = filepath.Join(root, "hooks.json")
+	case source == "plugins/codex/marketplace.json":
+		root = paths.AgentPlugins
+		managedDir = root
+		expected = filepath.Join(root, "marketplace.json")
+	case source == "plugins/codex/plugin.json":
+		root = paths.AgentPlugins
+		managedDir = filepath.Join(root, "plugins", "mimir")
+		expected = filepath.Join(managedDir, "plugin.json")
+	case source == "plugins/codex/hooks/hooks.json":
+		root = paths.AgentPlugins
+		managedDir = filepath.Join(root, "plugins", "mimir")
+		expected = filepath.Join(managedDir, "hooks", "hooks.json")
 	case source == "plugins/cursor/hooks.json":
 		root = paths.CursorHome
 		expected = filepath.Join(root, "hooks.json")
@@ -1421,7 +1435,9 @@ func bundledManagedArtifacts(paths installationPaths) ([]managedArtifactSpec, er
 		{"plugins/opencode/mimir.ts", filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts"), paths.OpenCodeHome},
 		{"plugins/claude-code/.claude-plugin/plugin.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json"), paths.ClaudeCodeHome},
 		{"plugins/claude-code/hooks/hooks.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"), paths.ClaudeCodeHome},
-		{"plugins/codex/hooks.json", filepath.Join(paths.CodexHome, "hooks.json"), paths.CodexHome},
+		{"plugins/codex/marketplace.json", filepath.Join(paths.AgentPlugins, "marketplace.json"), paths.AgentPlugins},
+		{"plugins/codex/plugin.json", filepath.Join(paths.AgentPlugins, "plugins", "mimir", "plugin.json"), paths.AgentPlugins},
+		{"plugins/codex/hooks/hooks.json", filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"), paths.AgentPlugins},
 		{"plugins/cursor/hooks.json", filepath.Join(paths.CursorHome, "hooks.json"), paths.CursorHome},
 	}
 	for _, skill := range []string{"mimir-setup", "mimir-use"} {

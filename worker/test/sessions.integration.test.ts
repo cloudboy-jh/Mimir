@@ -33,6 +33,11 @@ describe("Sessions integration", () => {
     ).all()).results;
     const stateBefore = await (await request("/sessions/repair-child/object-state", { headers })).json<Record<string, unknown>>();
     const transcriptBefore = await (await env.LOGS.get("sessions/repair-child/transcript.json"))!.text();
+    const outcomesBefore = (
+      await env.DB.prepare(
+        "SELECT * FROM session_outcome_events ORDER BY session_id, created_at, id",
+      ).all()
+    ).results;
     const patch: RequestInit = {
       method: "PATCH", headers, body: JSON.stringify({ parent_session_id: "repair-root" }),
     };
@@ -53,7 +58,13 @@ describe("Sessions integration", () => {
     expect(await env.DB.prepare(
       "SELECT parent_session_id FROM sessions WHERE id = 'repair-sibling'",
     ).first()).toEqual({ parent_session_id: "repair-root" });
-    expect((await env.DB.prepare("SELECT * FROM session_outcome_events").all()).results).toEqual([]);
+    expect(
+      (
+        await env.DB.prepare(
+          "SELECT * FROM session_outcome_events ORDER BY session_id, created_at, id",
+        ).all()
+      ).results,
+    ).toEqual(outcomesBefore);
   });
 
   it("enforces both parent endpoint owners and rejects missing, conflicting, and cyclic parents atomically", async () => {
@@ -1181,14 +1192,15 @@ describe("Sessions integration", () => {
     expect(await env.LOGS.get("log/accepted-object.json")).not.toBeNull();
   });
 
-  it("removes only strict empty finalized Pi roots and their transcripts", async () => {
+  it("removes only strict empty finalized Pi and Hermes roots and their transcripts", async () => {
     await env.DB.exec(`
       INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi');
+      INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-hermes', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'hermes');
       INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness, title, title_source) VALUES ('named-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi', 'Kept', 'harness');
       INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-omp', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'oh-my-pi');
       INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary, harness) VALUES ('empty-active-pi', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', '2026-01-01T00:01:00Z', 'header', 'pi');
     `);
-    for (const id of ["empty-pi", "named-pi", "empty-omp", "empty-active-pi"]) {
+    for (const id of ["empty-pi", "empty-hermes", "named-pi", "empty-omp", "empty-active-pi"]) {
       await env.LOGS.put(`sessions/${id}/transcript.json`, "{}");
     }
 
@@ -1201,8 +1213,8 @@ describe("Sessions integration", () => {
     };
 
     expect(result.empty_sessions_removed).toEqual({
-      count: 1,
-      session_ids: ["empty-pi"],
+      count: 2,
+      session_ids: ["empty-hermes", "empty-pi"],
     });
     expect(
       await env.DB.prepare("SELECT id FROM sessions ORDER BY id").all<{
@@ -1217,6 +1229,9 @@ describe("Sessions integration", () => {
     });
     expect(
       await env.LOGS.get("sessions/empty-pi/transcript.json"),
+    ).toBeNull();
+    expect(
+      await env.LOGS.get("sessions/empty-hermes/transcript.json"),
     ).toBeNull();
     expect(
       await env.LOGS.get("sessions/named-pi/transcript.json"),
