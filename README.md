@@ -414,7 +414,8 @@ integrations. For Pi, it installs `~/.pi/agent/extensions/mimir.ts` (or
 `$PI_CODING_AGENT_DIR/extensions/mimir.ts`); restart Pi to activate it.
 `mimir setup` and `mimir login` refresh integrations only when a managed installation
 receipt already exists; they do not silently enroll global hook files. Updates
-preserve unowned or locally modified files and do not deploy the Worker.
+preserve unowned or locally modified files, report those integrations as
+preserved without failing the binary update, and do not deploy the Worker.
 
 ## Validation
 

@@ -466,16 +466,14 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	} else if install.ArtifactsReady(artifacts, paths.PiHome, "plugins/pi/") {
 		report.Pi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Pi capture extension staged; activation is unverified until a load is reported"}
 	} else {
-		report.Pi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Pi extension files were preserved"}
-		failures = append(failures, report.Pi.Detail)
+		report.Pi = harness.IntegrationState{State: "preserved", Scope: "capture", Detail: "existing Pi extension files are user-owned or modified; managed files were not installed"}
 	}
 	if !selected["opencode"] {
 		report.OpenCode = unselectedState()
 	} else if install.ArtifactsReady(artifacts, paths.OpenCodeHome, openintegration.ArtifactSourcePrefixes()...) {
 		report.OpenCode = harness.IntegrationState{State: "staged", Scope: "capture", RestartRequired: true, Detail: "managed OpenCode capture plugin staged; activation is unverified until a load is reported"}
 	} else {
-		report.OpenCode = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified OpenCode files were preserved"}
-		failures = append(failures, report.OpenCode.Detail)
+		report.OpenCode = harness.IntegrationState{State: "preserved", Scope: "capture", Detail: "existing OpenCode plugin files are user-owned or modified; managed files were not installed"}
 	}
 	if !selected["oh-my-pi"] {
 		report.OhMyPi = unselectedState()
@@ -484,8 +482,7 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	} else if install.ArtifactsReady(artifacts, paths.OhMyPiHome, "plugins/oh-my-pi/") {
 		report.OhMyPi = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "managed Oh My Pi capture extension staged; activation is unverified until a load is reported"}
 	} else {
-		report.OhMyPi = harness.IntegrationState{State: "failed", Scope: "capture", Detail: "conflicting or modified Oh My Pi extension files were preserved"}
-		failures = append(failures, report.OhMyPi.Detail)
+		report.OhMyPi = harness.IntegrationState{State: "preserved", Scope: "capture", Detail: "existing Oh My Pi extension files are user-owned or modified; managed files were not installed"}
 	}
 	report.ClaudeCode = selectedHookState(selected["claude-code"], artifacts, paths.ClaudeCodeHome, "plugins/claude-code/", "Claude Code")
 	report.Codex = selectedHookState(selected["codex"], artifacts, paths.AgentPlugins, "plugins/codex/", "Codex")
@@ -497,8 +494,7 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 	} else if !found {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	} else if !install.ArtifactsReady(artifacts, paths.HermesHome, hermesintegration.ArtifactSourcePrefixes()...) {
-		report.Hermes = harness.IntegrationState{State: "failed", Scope: "all-providers", Detail: "conflicting or modified Hermes plugin files were preserved"}
-		failures = append(failures, report.Hermes.Detail)
+		report.Hermes = harness.IntegrationState{State: "preserved", Scope: "all-providers", Detail: "existing Hermes plugin files are user-owned or modified; managed files were not installed"}
 	} else if receiptErr != nil {
 		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: receiptErr.Error()}
 		failures = append(failures, receiptErr.Error())

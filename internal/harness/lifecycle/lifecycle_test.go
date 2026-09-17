@@ -51,19 +51,25 @@ func TestRefreshUsesUpdateArtifactSync(t *testing.T) {
 	}
 }
 
-func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
+func TestArtifactConflictsArePreservedWithoutFailingRefresh(t *testing.T) {
 	root := t.TempDir()
 	service := New()
 	service.Paths = func() (install.InstallationPaths, error) {
-		return install.InstallationPaths{OpenCodeHome: root, ClaudeCodeHome: root, CodexHome: root, AgentPlugins: root, CursorHome: root}, nil
+		return install.InstallationPaths{
+			PiHome: root, OhMyPiHome: root, OpenCodeHome: root, ClaudeCodeHome: root,
+			CodexHome: root, AgentPlugins: root, CursorHome: root, HermesHome: root,
+		}, nil
 	}
 	service.Hermes = hermes.New()
 	service.LoadReceipt = func() (install.Receipt, error) {
-		return install.Receipt{Harnesses: []string{"opencode", "claude-code", "codex", "cursor"}}, nil
+		return install.Receipt{Harnesses: []string{"pi", "oh-my-pi", "opencode", "hermes", "claude-code", "codex", "cursor"}}, nil
 	}
-	service.Hermes.Discover = func() (string, bool, error) { return "", false, nil }
+	service.Hermes.Discover = func() (string, bool, error) { return root, true, nil }
 	artifacts := install.ArtifactReport{Artifacts: []install.ArtifactResult{
-		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactCurrent},
+		{Path: filepath.Join(root, "pi-mimir.ts"), Source: "plugins/pi/mimir.ts", Status: install.ArtifactModified},
+		{Path: filepath.Join(root, "omp-mimir.ts"), Source: "plugins/oh-my-pi/mimir.ts", Status: install.ArtifactModified},
+		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: install.ArtifactConflict},
+		{Path: filepath.Join(root, "plugins", "mimir", "__init__.py"), Source: "plugins/hermes/__init__.py", Status: install.ArtifactModified},
 		{Path: filepath.Join(root, "claude-hooks.json"), Source: "plugins/claude-code/hooks/hooks.json", Status: install.ArtifactConflict},
 		{Path: filepath.Join(root, "plugins", "mimir", "hooks", "hooks.json"), Source: "plugins/codex/hooks/hooks.json", Status: install.ArtifactModified},
 		{Path: filepath.Join(root, "cursor-hooks.json"), Source: "plugins/cursor/hooks.json", Status: install.ArtifactConflict},
@@ -72,7 +78,10 @@ func TestHookArtifactConflictIsPreservedWithoutFailingRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for label, state := range map[string]harness.IntegrationState{"Claude Code": report.ClaudeCode, "Codex": report.Codex, "Cursor": report.Cursor} {
+	for label, state := range map[string]harness.IntegrationState{
+		"Pi": report.Pi, "Oh My Pi": report.OhMyPi, "OpenCode": report.OpenCode, "Hermes": report.Hermes,
+		"Claude Code": report.ClaudeCode, "Codex": report.Codex, "Cursor": report.Cursor,
+	} {
 		if state.State != "preserved" || !strings.Contains(state.Detail, "user-owned or modified") {
 			t.Fatalf("%s state = %#v", label, state)
 		}
