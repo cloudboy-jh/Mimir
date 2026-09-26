@@ -31,11 +31,12 @@ only for source-oriented workflows, then run `mimir install` to adopt a verified
 binary when no other binary owner is recorded.
 
 Interactive `mimir install` prompts once for harness selection and defaults to
-detected harnesses in this order: OpenCode, Pi, Hermes, Claude Code, Codex, and
-Cursor. Automation must select explicitly with repeatable `--harness <id>` or
-`--harness all`; JSON and noninteractive installs never prompt. Run `mimir
-harness` to inspect activation state and change the persisted selection using
-friendly names. `mimir enable|disable <name>` provides case-insensitive
+detected harnesses in this order: OpenCode, Pi, Oh My Pi, Hermes, Claude Code,
+Codex, and Cursor. Automation must select explicitly with repeatable
+`--harness <id>` or `--harness all`; JSON and noninteractive installs never
+prompt. Run `mimir harness` to inspect activation state and change the
+persisted selection using friendly names. `mimir enable|disable <name>` provides
+case-insensitive
 shortcuts for Pi, OpenCode, and Hermes. Disable removes only receipt-owned,
 unmodified artifacts. Modified or otherwise unsafe files remain owned and are
 preserved for a later enable or full ownership-driven uninstall.
@@ -173,6 +174,7 @@ update, apply the activation action for the active harness:
 | Harness | Activation action |
 | --- | --- |
 | Pi | Restart Pi |
+| Oh My Pi | Restart Oh My Pi |
 | OpenCode | Restart OpenCode |
 | Hermes | Restart Hermes |
 | Claude Code | Run `/reload-plugins` or restart Claude Code |
@@ -182,14 +184,44 @@ update, apply the activation action for the active harness:
 Then run `mimir doctor --json`. A current file that has not been loaded is
 reported as staged rather than healthy.
 
-Pi receives a managed global capture extension at
-`~/.pi/agent/extensions/mimir.ts` (or
-`$PI_CODING_AGENT_DIR/extensions/mimir.ts`) and the shared skill. OpenCode
-receives the managed capture plugin and skills. Hermes receives its plugin,
-skills, and bounded managed OpenRouter route. Claude Code receives a
-skills-directory plugin; Codex and Cursor receive managed hook manifests. A
-different existing hook file is preserved as a conflict, never merged or
-overwritten.
+### Integration details
+
+Pi's managed global extension routes its OpenRouter provider through Mimir
+with exact session, repository, and harness headers. For direct and subscription
+providers it uploads bounded completed turns, including tool results exposed
+by Pi. It exports `MIMIR_SESSION_ID` so the installed skill can record an
+evidenced outcome and fetch the capture receipt without guessing.
+
+Oh My Pi is selected independently in the Pi group. Its adapter is installed
+at `~/.omp/agent/extensions/mimir.ts` or the active OMP profile; set
+`OMP_CODING_AGENT_DIR` for a nonstandard agent home. It starts exact lifecycle
+heartbeats on the first real turn, not on an idle draft, captures OpenRouter and
+bounded direct-provider evidence, and exports `MIMIR_SESSION_ID`. Sub-agent
+grouping uses `ctx.parentSessionId` when available; on current unpatched builds
+the adapter derives the same exact relationship from the bounded session
+artifact tree. It never infers parentage from forks, prompt text, or timestamp
+proximity. Sessions remain separate under a collapsed root row; root totals
+include descendants but the root outcome is independent. `mimir doctor`
+reports whether the installed adapter supports this fallback.
+
+OpenCode's managed plugin uploads bounded reconstructed non-OpenRouter
+exchanges from its session store and reports lifecycle events, titles, model
+switches, and Git outcome evidence. OpenRouter proxy exchanges remain
+canonical. It does not rewrite general OpenCode JSON or JSONC. See
+[OpenCode capture setup](opencode-capture-setup.md).
+
+Hermes redirects its built-in OpenRouter provider through the
+installation-scoped `/v1/hermes/<installation-id>` route. Its plugin reports
+direct-provider completed-turn summaries and lifecycle events, but those
+event-only summaries contain no request/response bodies and create no
+searchable exchange objects. See [Hermes capture setup](hermes-capture-setup.md).
+
+Claude Code, Codex, and Cursor use receipt-owned hooks that invoke the hidden
+`mimir _hook` adapter. Supported prompt/completion hooks reconstruct bounded
+exchanges and queue delivery when the Worker is unavailable. Different
+existing Claude Code or Cursor hook files remain conflicts, not merged or
+overwritten. Codex uses an isolated personal marketplace plugin under
+`~/.agents/plugins`; review and trust its `/hooks` declaration when prompted.
 
 ## Verify A Real Session
 
@@ -200,7 +232,8 @@ After doctor reports the deployment and active integration as healthy:
 3. Run `mimir list --json` and copy the resulting session ID.
 4. Inspect it with `mimir session get <id> --json`.
 5. Confirm persistence with `mimir session status <id> --json`.
-6. Open `mimir dashboard` and verify the same session is present.
+6. After configuring Cloudflare Access, open `mimir dashboard` and verify the
+   same session is present.
 
 The session should show the device registered by setup or login. Device names
 are labels; changing one does not alter the session's stable device association.

@@ -82,3 +82,35 @@ login do not reactivate the stable installation or its tokens; registration for
 that identity remains unusable and connection verification fails. To use the
 physical machine again, enroll it with a new installation identity. Dashboard
 renames remain available and change only the retained display label.
+
+## Local Development
+
+From the repository root, run the dashboard against the deterministic fixture
+dataset with:
+
+```bash
+npm --prefix worker ci
+bun --cwd=worker/web install --frozen-lockfile
+bun run dev
+```
+
+The fixture covers multi-model sessions, supporting runs, commits, diffs,
+errors, outcome history, and empty states. Vite serves it with HMR on
+`127.0.0.1:5173` without local Cloudflare bindings. Use `bun run dev:live`
+to apply local D1 migrations and run the dashboard against the Worker on
+`127.0.0.1:8787`. Vite proxies Access handoff, dashboard APIs, and log-object
+requests; local requests use a marked development identity rather than browser
+machine credentials.
+
+Validate the capture and installer surfaces from the repository root:
+
+```bash
+npm --prefix worker test -- src/config.test.ts src/session-titles.test.ts
+bun test plugins/pi/ plugins/opencode/
+python -m unittest discover -s plugins/hermes -p "test_*.py"
+go test ./internal/harness/hooks ./internal/install ./internal/doctor
+npm --prefix worker run typecheck
+```
+
+These are local tests, not deployment verification. Use `/whoami` and direct
+session APIs for deployment checks, never paid completion routes.
