@@ -26,6 +26,23 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
 ```
 
+Default integration locations on macOS and Linux:
+
+| Harness | Installed integration | Activate |
+| --- | --- | --- |
+| OpenCode | `~/.config/opencode/plugins/mimir.ts` | Restart OpenCode |
+| Pi | `~/.pi/agent/extensions/mimir.ts` | Restart Pi |
+| Oh My Pi | `~/.omp/agent/extensions/mimir.ts` | Restart Oh My Pi |
+| Hermes | `~/.hermes/plugins/mimir/` | Restart Hermes |
+| Claude Code | `~/.claude/skills/mimir/` (plugin manifest and hooks) | `/reload-plugins` or restart |
+| Codex | `~/.agents/plugins/plugins/mimir/` (marketplace plugin and hooks) | Restart Codex |
+| Cursor | `~/.cursor/hooks.json` | Open or continue an agent session |
+
+Configured agent homes and active profiles can change these paths; on Windows,
+Hermes defaults to `%LOCALAPPDATA%\hermes\plugins\mimir\`. Run `mimir harness`
+to inspect selected integrations. See [integration details](docs/installation.md#integration-details)
+for ownership and path variations.
+
 Want to look around first? `mimir demo` opens a local dashboard with synthetic
 sessions. It needs no Cloudflare account, connection, model credentials,
 Node.js, Bun, or Go. Demo changes reset on reload; it does not capture your work.
@@ -46,9 +63,8 @@ this machine, and stores the OpenRouter key as a Worker secret. It reads
 masked prompt. If the installer did not enroll your agent, run `mimir install`
 and select it; setup does not silently add integrations.
 
-Activate the integration: restart Pi, Oh My Pi, OpenCode, Hermes, or Codex;
-reload Claude Code with `/reload-plugins` or restart it; for Cursor, open or
-continue an agent session. Then check the deployment and active integration:
+Apply the activation action above, then check the deployment and active
+integration:
 
 ```bash
 mimir doctor --json
