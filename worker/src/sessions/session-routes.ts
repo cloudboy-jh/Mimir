@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../env";
-import { ingestReportedExchange } from "../exchanges/reported-exchange-routes";
+import { ingestReportedExchange, ingestReportedExchangeFailure } from "../exchanges/reported-exchange-routes";
 import { parseSessionEvent, SESSION_ID } from "./events";
 import { canMutateSession, expireSessions } from "./lifecycle";
 import {
@@ -214,6 +214,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
 
   app.post("/sessions/:id/end", (c) => endSession(c, "agent"));
   app.post("/sessions/:id/exchanges", ingestReportedExchange);
+  app.post("/sessions/:id/exchange-failures", ingestReportedExchangeFailure);
 
   app.post("/sessions/:id/git-artifacts", async (c) => {
     const parsed = await readGitArtifactBody(c.req.raw);

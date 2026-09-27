@@ -13,7 +13,6 @@ import __init__ as mimir_plugin  # noqa: E402
 parse_mimir_config = __testing["parse_mimir_config"]
 resolve_connection = __testing["resolve_connection"]
 repo_name = __testing["repo_name"]
-build_turn_event = __testing["build_turn_event"]
 build_simple_event = __testing["build_simple_event"]
 liveness_only = __testing["liveness_only"]
 turn_uses_proxy = __testing["turn_uses_proxy"]
@@ -55,24 +54,6 @@ class ResolveConnectionTest(unittest.TestCase):
 
 
 class BuildEventsTest(unittest.TestCase):
-    def test_turn_event(self):
-        event = build_turn_event("ses-1", "turn-1", "openai/gpt-5", "fix the bug", "mimir")
-        self.assertEqual(event["version"], 1)
-        self.assertEqual(event["kind"], "turn")
-        self.assertEqual(event["session_id"], "ses-1")
-        self.assertEqual(event["harness"], "hermes")
-        self.assertEqual(event["repo"], "mimir")
-        self.assertEqual(event["turn"]["exchange_id"], "turn-1")
-        self.assertEqual(event["turn"]["model"], "openai/gpt-5")
-        self.assertEqual(event["turn"]["request_kind"], "primary")
-        self.assertEqual(event["turn"]["excerpt"], "fix the bug")
-
-    def test_turn_event_caps_and_drops_fields(self):
-        event = build_turn_event("ses-1", None, None, "x" * 900, None)
-        self.assertIsNone(event["turn"]["model"])
-        self.assertIsNone(event["repo"])
-        self.assertEqual(len(event["turn"]["excerpt"]), 500)
-
     def test_simple_event(self):
         event = build_simple_event("end", "ses-1", "mimir", reason="harness exit")
         self.assertEqual(event["kind"], "end")
@@ -238,7 +219,7 @@ class ReporterLifecycleTest(unittest.TestCase):
 
         with patch.object(reporter, "post", side_effect=[False, True]) as post, \
              patch("threading.Timer", ImmediateTimer), patch("threading.Thread", ImmediateThread):
-            reporter.deliver(build_turn_event("ses-1", "1", "model", "hi", "repo"), key="turn:1")
+            reporter.deliver(build_simple_event("heartbeat", "ses-1", "repo"), key="heartbeat:ses-1")
         self.assertEqual(post.call_count, 2)
 
 
@@ -251,134 +232,225 @@ class HookContractTest(unittest.TestCase):
             self.hooks[name] = callback
 
     def setUp(self):
+        import tempfile
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
         self.ctx = self.Context()
-        self.delivered = []
+        self.events = []
         self.patches = [
             patch.object(mimir_plugin, "load_connection", return_value={"url": "https://mimir.example", "token": "tok"}),
             patch.object(mimir_plugin, "load_harness_load", return_value=None),
-            patch.object(
-                mimir_plugin._Reporter,
-                "deliver",
-                lambda _reporter, event, **kwargs: self.delivered.append((event, kwargs)),
-            ),
-            patch.object(
-                mimir_plugin._Reporter,
-                "post",
-                lambda _reporter, event: self.delivered.append((event, {})) or True,
-            ),
+            patch.object(mimir_plugin._Reporter, "deliver",
+                         lambda _reporter, event, **kw: self.events.append(event)),
+            patch.object(mimir_plugin._Reporter, "post",
+                         lambda _reporter, event: self.events.append(event) or True),
+            patch.object(mimir_plugin._ExchangeQueue, "replay", lambda _queue: None),
             patch("threading.Thread.start", return_value=None),
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, {"MIMIR_HOME": self.home.name}, clear=True),
         ]
         for active_patch in self.patches:
             active_patch.start()
             self.addCleanup(active_patch.stop)
         mimir_plugin.register(self.ctx)
 
-    def events(self):
-        return [event for event, _kwargs in self.delivered]
-
-    def kinds(self):
-        return [event["kind"] for event in self.events()]
-
-    def pre(self, session_id, turn_id, provider, base_url):
+    def pre(self, session="s", request_id="r", provider="codex", base_url="https://api.openai.com"):
         self.ctx.hooks["pre_api_request"](
-            session_id=session_id,
-            turn_id=turn_id,
-            provider=provider,
-            base_url=base_url,
+            session_id=session, turn_id="turn", api_request_id=request_id,
+            provider=provider, base_url=base_url, model="gpt-5-codex",
+            started_at=1760000000.0,
+            request={"method": "POST", "body": {"messages": [{"role": "user", "content": "fix bug"}]}},
         )
 
-    def post(self, session_id, turn_id):
-        self.ctx.hooks["post_llm_call"](
-            session_id=session_id,
-            turn_id=turn_id,
-            model="model",
-            user_message="hello",
+    def response(self, session="s", request_id="r"):
+        self.ctx.hooks["post_api_request"](
+            session_id=session, turn_id="turn", api_request_id=request_id,
+            model="gpt-5-codex", response_model="gpt-5-codex",
+            response={"assistant_message": {"role": "assistant", "content": "done"}},
+            usage={"input_tokens": 10, "output_tokens": 3, "cache_read_tokens": 2},
+            ended_at=1760000000.125,
         )
 
-    def finalize(self, session_id):
-        self.ctx.hooks["on_session_finalize"](session_id=session_id, reason="finalized")
+    def finish(self, session="s"):
+        self.ctx.hooks["post_llm_call"](session_id=session, turn_id="turn")
 
-    def test_registers_exact_hook_contract(self):
-        self.assertEqual(set(self.ctx.hooks), {
-            "pre_api_request",
-            "post_llm_call",
-            "on_session_start",
-            "on_session_finalize",
+    def queued(self):
+        directory = os.path.join(self.home.name, "hermes-exchanges")
+        result = []
+        for name in os.listdir(directory):
+            if name.endswith(".json"):
+                with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                    result.append(json.load(handle))
+        return result
+
+    def test_real_codex_exchange_includes_tool_activity_and_stable_identity(self):
+        self.assertEqual(set(self.ctx.hooks), {"pre_api_request", "post_api_request",
+                                                "post_tool_call", "post_llm_call",
+                                                "on_session_start", "on_session_finalize"})
+        self.pre()
+        self.response()
+        self.ctx.hooks["post_tool_call"](
+            session_id="s", turn_id="turn", api_request_id="r",
+            tool_call_id="tool-1", tool_name="bash", args={"command": "pwd"},
+            status="ok", result="C:/repo",
+        )
+        self.finish()
+        self.assertEqual([e["kind"] for e in self.events], ["heartbeat"])
+        item, = self.queued()
+        payload = item["payload"]
+        self.assertEqual(item["kind"], "exchanges")
+        self.assertEqual(payload["exchange_id"], mimir_plugin._exchange_id("s", "r"))
+        self.assertEqual(payload["request"]["body"]["messages"][0]["content"], "fix bug")
+        self.assertEqual(payload["response"]["assistant_message"]["content"], "done")
+        self.assertEqual(payload["usage"]["cache_read_tokens"], 2)
+        self.assertEqual(payload["latency_ms"], 125)
+        self.assertEqual(payload["tool_activity"], [
+            {"name": "bash", "input": {"command": "pwd"}, "status": "succeeded", "output": "C:/repo"}
+        ])
+        if os.name == "posix":
+            self.assertEqual(os.stat(os.path.join(self.home.name, "hermes-exchanges")).st_mode & 0o777, 0o700)
+        self.ctx.hooks["on_session_finalize"](session_id="s", reason="finalized")
+        self.assertEqual([e["kind"] for e in self.events], ["heartbeat", "end"])
+
+    def test_proxy_and_direct_in_same_turn_only_queue_direct(self):
+        self.pre(request_id="proxy", provider="openrouter",
+                 base_url="https://mimir.example/v1/hermes")
+        self.response(request_id="proxy")
+        self.pre(request_id="r")
+        self.response()
+        self.finish()
+        self.assertEqual(len(self.queued()), 1)
+        self.assertEqual([e["repo"] for e in self.events], [None, mimir_plugin.repo_name(os.getcwd())])
+
+    def test_repeated_hook_and_retry_remain_idempotent(self):
+        self.pre()
+        self.response()
+        self.response()
+        self.finish()
+        self.pre()
+        self.response()
+        self.finish()
+        self.assertEqual(len(self.queued()), 1)
+
+    def test_no_request_response_does_not_fabricate_exchange(self):
+        self.pre()
+        self.finish()
+        self.ctx.hooks["on_session_finalize"](session_id="s")
+        self.assertEqual(self.queued(), [])
+        self.assertEqual([e["kind"] for e in self.events], ["heartbeat", "end"])
+
+    def test_oversized_provider_request_retains_actual_user_and_assistant(self):
+        self.ctx.hooks["pre_api_request"](
+            session_id="s", turn_id="turn", api_request_id="large",
+            provider="openai-codex", base_url="https://api.openai.com",
+            model="gpt-5-codex", started_at=1760000000.0,
+            user_message="the actual user question",
+            request={"_truncated": True, "preview": "partial provider context"},
+        )
+        self.response(request_id="large")
+        self.finish()
+        item, = self.queued()
+        self.assertEqual(item["payload"]["request"], {
+            "messages": [{"role": "user", "content": "the actual user question"}],
+            "capture_scope": "user_turn",
         })
+        self.assertEqual(item["payload"]["response"]["assistant_message"]["content"], "done")
 
-    def test_proxy_registers_exact_session_before_each_request(self):
-        self.ctx.hooks["on_session_start"](session_id="proxy-session")
-        self.pre("proxy-session", "turn-1", "openrouter", "https://mimir.example/v1/hermes")
-        self.post("proxy-session", "turn-1")
-        self.finalize("proxy-session")
-        self.pre("proxy-session", "turn-2", "openrouter", "https://mimir.example/v1/hermes")
-        self.assertEqual(self.kinds(), ["heartbeat", "heartbeat"])
-        self.assertTrue(all(event["repo"] is None for event in self.events()))
+    def test_truncated_hook_reports_payload_invalid_not_empty_echo(self):
+        self.pre()
+        self.ctx.hooks["post_api_request"](
+            session_id="s", api_request_id="r", model="gpt-5-codex",
+            response={"_truncated": True, "preview": "partial"},
+        )
+        self.finish()
+        item, = self.queued()
+        self.assertEqual(item["kind"], "exchange-failures")
+        self.assertEqual(item["payload"]["failure_code"], "reported_payload_invalid")
 
-    def test_direct_only_emits_activation_turn_and_end(self):
-        self.ctx.hooks["on_session_start"](session_id="direct-session")
-        self.pre("direct-session", "turn-1", "anthropic", "https://api.anthropic.com")
-        self.post("direct-session", "turn-1")
-        self.finalize("direct-session")
-        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
-        self.assertEqual(self.events()[1]["turn"]["exchange_id"], "turn-1")
 
-    def test_mixed_ordering_keeps_direct_evidence_sticky(self):
-        self.pre("mixed", "proxy-first", "openrouter", "https://mimir.example/v1/hermes")
-        self.pre("mixed", "direct", "nous", "https://portal.nousresearch.com")
-        self.pre("mixed", "proxy-last", "openrouter", "https://mimir.example/v1/hermes")
-        self.post("mixed", "proxy-last")
-        self.post("mixed", "direct")
-        self.post("mixed", "proxy-first")
-        self.finalize("mixed")
-        self.assertEqual(self.kinds(), ["heartbeat", "heartbeat", "heartbeat", "turn", "end"])
-        self.assertEqual(self.events()[3]["turn"]["exchange_id"], "direct")
+class ExchangeDeliveryTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.queue = mimir_plugin._ExchangeQueue(
+            {"url": "https://mimir.example", "token": "tok"}, "repo", self.home.name,
+        )
+        self.payload = {
+            "exchange_id": "hermes-123", "model": "gpt-5-codex",
+            "ts": "2026-01-01T00:00:00Z", "request": {"body": {"input": "hello"}},
+            "response": {"assistant_message": {"content": "world"}},
+            "tool_activity": [], "usage": {"input_tokens": 1, "output_tokens": 1},
+            "latency_ms": 5, "request_kind": "primary",
+        }
 
-    def test_no_request_emits_nothing(self):
-        self.ctx.hooks["on_session_start"](session_id="idle")
-        self.finalize("idle")
-        self.assertEqual(self.events(), [])
+    def receipt(self, status):
+        import io
+        return io.BytesIO(json.dumps({
+            "exchange_id": "hermes-123", "session_id": "s",
+            "capture_status": status, "duplicate": False,
+        }).encode())
 
-    def test_missing_pre_hook_falls_back_to_direct_route(self):
-        self.post("missing-pre", "turn-1")
-        self.finalize("missing-pre")
-        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+    def test_saved_receipt_and_headers_remove_durable_payload(self):
+        with patch.object(self.queue, "replay"), patch("urllib.request.urlopen", return_value=self.receipt("saved")) as send:
+            self.assertTrue(self.queue.enqueue("s", self.payload))
+            self.queue._drain()
+        self.assertEqual(self.queue._files(), [])
+        request = send.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/sessions/s/exchanges"))
+        self.assertEqual(request.get_header("X-mimir-harness"), "hermes")
+        self.assertEqual(request.get_header("X-mimir-repo"), "repo")
 
-    def test_missing_pre_hook_on_managed_route_emits_nothing(self):
-        with patch.dict(
-            os.environ,
-            {"OPENROUTER_BASE_URL": "https://mimir.example/v1/hermes"},
-        ):
-            self.post("missing-pre-proxy", "turn-1")
-            self.finalize("missing-pre-proxy")
-        self.assertEqual(self.events(), [])
+    def test_transport_failure_stays_durable_until_next_registration(self):
+        import urllib.error
+        with patch.object(self.queue, "replay"), \
+             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")), \
+             patch("threading.Event.wait", return_value=None):
+            self.assertTrue(self.queue.enqueue("s", self.payload))
+            self.queue._drain()
+        self.assertEqual(len(self.queue._files()), 1)
+        resumed = mimir_plugin._ExchangeQueue(self.queue.connection, "repo", self.home.name)
+        with patch("urllib.request.urlopen", return_value=self.receipt("saved")):
+            resumed._drain()
+        self.assertEqual(resumed._files(), [])
 
-    def test_repeated_start_is_silent_and_does_not_reset_direct_state(self):
-        self.ctx.hooks["on_session_start"](session_id="repeated")
-        self.ctx.hooks["on_session_start"](session_id="repeated")
-        self.pre("repeated", "turn-1", "anthropic", "https://api.anthropic.com")
-        self.ctx.hooks["on_session_start"](session_id="repeated")
-        self.post("repeated", "turn-1")
-        self.finalize("repeated")
-        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
+    def test_skipped_policy_is_not_failure_or_retry(self):
+        with patch.object(self.queue, "replay"), \
+             patch("urllib.request.urlopen", return_value=self.receipt("skipped")) as send:
+            self.queue.enqueue("s", self.payload)
+            self.queue._drain()
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(self.queue._files(), [])
 
-    def test_finalize_cleans_activation_and_unconsumed_routes(self):
-        self.pre("reused", "old-direct", "anthropic", "https://api.anthropic.com")
-        self.pre("reused", "stale-proxy", "openrouter", "https://mimir.example/v1/hermes")
-        self.finalize("reused")
-        self.delivered.clear()
+    def test_invalid_exchange_becomes_durable_failure_report(self):
+        import urllib.error
+        with patch.object(self.queue, "replay"), \
+             patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+                 "https://mimir.example", 400, "invalid", {}, None,
+             )):
+            self.queue.enqueue("s", self.payload)
+            self.queue._drain()
+        path, = self.queue._files()
+        with open(path, encoding="utf-8") as handle:
+            failure = json.load(handle)
+        self.assertEqual(failure["kind"], "exchange-failures")
+        self.assertEqual(failure["payload"]["failure_code"], "reported_payload_invalid")
+        with patch("urllib.request.urlopen", return_value=self.receipt("failed")):
+            self.queue._drain()
+        self.assertEqual(self.queue._files(), [])
 
-        self.post("reused", "stale-proxy")
-        self.finalize("reused")
-        self.assertEqual(self.kinds(), ["heartbeat", "turn", "end"])
-
-    def test_turn_dedup_keys_are_session_scoped(self):
-        for session_id in ("session-a", "session-b"):
-            self.pre(session_id, "same-turn", "anthropic", "https://api.anthropic.com")
-            self.post(session_id, "same-turn")
-        turn_keys = [kwargs.get("key") for event, kwargs in self.delivered if event["kind"] == "turn"]
-        self.assertEqual(turn_keys, ["turn:session-a:same-turn", "turn:session-b:same-turn"])
+    def test_failure_notification_requires_durable_receipt(self):
+        failure = {"exchange_id": "hermes-123", "model": "gpt-5-codex",
+                   "ts": "2026-01-01T00:00:00Z",
+                   "failure_code": "reported_payload_invalid"}
+        with patch.object(self.queue, "replay"):
+            self.queue.enqueue("s", failure, kind="exchange-failures")
+        with patch("urllib.request.urlopen", return_value=self.receipt("accepted")), \
+             patch("threading.Event.wait", return_value=None):
+            self.queue._drain()
+        self.assertEqual(len(self.queue._files()), 1)
+        with patch("urllib.request.urlopen", return_value=self.receipt("saved")):
+            self.queue._drain()
+        self.assertEqual(self.queue._files(), [])
 
 
 if __name__ == "__main__":

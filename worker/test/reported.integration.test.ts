@@ -474,6 +474,175 @@ describe("Reported exchange integration", () => {
     ).toEqual({ request_count: 1, tokens_in: 3, tokens_out: 1 });
   });
 
+  it("records failed receipts without exposing payloads or changing work outcome", async () => {
+    await env.DB.prepare(
+      "INSERT INTO sessions(id, started_at, boundary, work_outcome) VALUES ('failed-receipt', '2026-07-26T12:00:00Z', 'header', 'landed')",
+    ).run();
+    const init = {
+      method: "POST",
+      headers: {
+        authorization: "Bearer machine-token",
+        "content-type": "application/json",
+        "x-mimir-harness": "hermes",
+      },
+      body: JSON.stringify({
+        exchange_id: "failed-receipt-turn",
+        model: "openai/gpt-5",
+        ts: "2026-07-26T12:00:01Z",
+        failure_code: "reported_payload_invalid",
+      }),
+    };
+    const receipt = await request("/sessions/failed-receipt/exchange-failures", init);
+    expect(receipt.status).toBe(201);
+    expect(await receipt.json()).toEqual({
+      exchange_id: "failed-receipt-turn",
+      session_id: "failed-receipt",
+      capture_status: "failed",
+      duplicate: false,
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT session_id, ts, model, endpoint, capture_status, capture_reason, failure_code, request_excerpt, response_excerpt, r2_key, saved_at, failed_at FROM exchanges WHERE id = 'failed-receipt-turn'",
+      ).first(),
+    ).toMatchObject({
+      session_id: "failed-receipt",
+      ts: "2026-07-26T12:00:01Z",
+      model: "openai/gpt-5",
+      endpoint: "harness",
+      capture_status: "failed",
+      capture_reason: "reported",
+      failure_code: "reported_payload_invalid",
+      request_excerpt: "",
+      response_excerpt: "",
+      r2_key: "",
+      saved_at: null,
+      failed_at: expect.any(String),
+    });
+    const status = await request("/sessions/failed-receipt/status", {
+      headers: { authorization: "Bearer machine-token" },
+    });
+    expect(await status.json()).toMatchObject({
+      outcome: "landed",
+      capture: { status: "failed", failed_exchanges: 1, saved_exchanges: 0 },
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, request_count, tokens_in, tokens_out FROM sessions WHERE id = 'failed-receipt'",
+      ).first(),
+    ).toEqual({ work_outcome: "landed", request_count: 0, tokens_in: 0, tokens_out: 0 });
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'failed-receipt'",
+      ).first(),
+    ).toEqual({ count: 0 });
+    const state = await request("/sessions/failed-receipt/object-state", {
+      headers: { authorization: "Bearer machine-token" },
+    });
+    expect(state.status).toBe(404);
+    const duplicate = await request("/sessions/failed-receipt/exchange-failures", init);
+    expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ capture_status: "failed", duplicate: true });
+  });
+
+  it("lets a delayed real exchange supersede failure, and ignores later failure receipts", async () => {
+    const headers = {
+      authorization: "Bearer machine-token",
+      "content-type": "application/json",
+      "x-mimir-harness": "hermes",
+    };
+    const failed = {
+      exchange_id: "delayed-real-turn",
+      model: "openai/gpt-5",
+      ts: "2026-07-26T12:04:00Z",
+      failure_code: "reported_delivery_exhausted",
+    };
+    const failureURL = "/sessions/delayed-real/exchange-failures";
+    expect((await request(failureURL, { method: "POST", headers, body: JSON.stringify(failed) })).status).toBe(201);
+    const actual = await request("/sessions/delayed-real/exchanges", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        exchange_id: failed.exchange_id,
+        model: failed.model,
+        ts: failed.ts,
+        request: { messages: [{ role: "user", content: "Delayed prompt" }] },
+        response: { output: "Delayed answer" },
+        tool_activity: [],
+        usage: { input_tokens: 4, output_tokens: 2 },
+        latency_ms: 20,
+        request_kind: "primary",
+      }),
+    });
+    expect(actual.status).toBe(201);
+    expect((await actual.json()) as Record<string, unknown>).toMatchObject({ capture_status: "saved" });
+    const late = await request(failureURL, { method: "POST", headers, body: JSON.stringify(failed) });
+    expect(late.status).toBe(200);
+    expect(await late.json()).toMatchObject({ capture_status: "saved", duplicate: true });
+    expect(
+      await env.DB.prepare(
+        "SELECT capture_status, failure_code, saved_at FROM exchanges WHERE id = 'delayed-real-turn'",
+      ).first(),
+    ).toMatchObject({ capture_status: "saved", failure_code: null, saved_at: expect.any(String) });
+    expect(
+      await env.DB.prepare("SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'delayed-real'").first(),
+    ).toEqual({ request_count: 1, tokens_in: 4, tokens_out: 2 });
+  });
+
+  it("does not overwrite an accepted or different-session exchange ID", async () => {
+    await env.DB.exec(
+      "INSERT INTO sessions(id, started_at, boundary) VALUES ('receipt-owner', '2026-07-26T12:00:00Z', 'header'); INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status) VALUES ('receipt-accepted', 'receipt-owner', '2026-07-26T12:00:01Z', 'harness', 'openai/gpt-5', 0, 'log/accepted.json', 'accepted');",
+    );
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const body = JSON.stringify({
+      exchange_id: "receipt-accepted",
+      model: "openai/gpt-5",
+      ts: "2026-07-26T12:00:01Z",
+      failure_code: "reported_upload_failed",
+    });
+    const accepted = await request("/sessions/receipt-owner/exchange-failures", {
+      method: "POST", headers, body,
+    });
+    expect(await accepted.json()).toMatchObject({ capture_status: "accepted", duplicate: true });
+    const conflict = await request("/sessions/another-owner/exchange-failures", {
+      method: "POST", headers, body,
+    });
+    expect(conflict.status).toBe(409);
+    expect(
+      await env.DB.prepare("SELECT capture_status, failure_code, session_id FROM exchanges WHERE id = 'receipt-accepted'").first(),
+    ).toEqual({ capture_status: "accepted", failure_code: null, session_id: "receipt-owner" });
+  });
+
+  it("authenticates and bounds failure receipts before creating metadata", async () => {
+    const path = "/sessions/failure-validation/exchange-failures";
+    const payload = {
+      exchange_id: "failure-validation-turn",
+      model: "openai/gpt-5",
+      ts: "2026-07-26T12:00:00Z",
+      failure_code: "reported_upload_failed",
+    };
+    expect((await request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    })).status).toBe(401);
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    for (const invalid of [
+      { ...payload, exchange_id: "bad!id" },
+      { ...payload, model: "" },
+      { ...payload, ts: "not-a-date" },
+      { ...payload, failure_code: "__proto__" },
+      { ...payload, request: { content: "private" } },
+    ]) {
+      expect((await request(path, { method: "POST", headers, body: JSON.stringify(invalid) })).status).toBe(400);
+    }
+    expect((await request(path, {
+      method: "POST", headers, body: JSON.stringify({ ...payload, padding: "x".repeat(4096) }),
+    })).status).toBe(413);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS count FROM exchanges").first(),
+    ).toEqual({ count: 0 });
+  });
+
   it("requires machine authentication for canonical harness exchanges", async () => {
     const response = await request("/sessions/reported-auth/exchanges", {
       method: "POST",

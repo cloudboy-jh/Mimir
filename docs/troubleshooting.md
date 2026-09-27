@@ -91,8 +91,11 @@ authentication, and restart Hermes after route or plugin changes. A stale Worker
 missing Hermes endpoints requires `mimir deploy`. Do not create a custom Hermes
 provider.
 
-Hermes direct-provider turns are event-only. They keep session lifecycle current
-but do not create searchable request/response exchange objects.
+For direct providers, check the session's capture receipt and exchanges, not
+just plugin health or lifecycle activity. `Saved` requires a persisted exchange;
+an outcome such as `landed` can coexist with `Not captured`. Delivery failures
+reported to Mimir appear in capture status, while an offline plugin cannot make
+its local failure visible to the Worker until it reconnects.
 
 ## Session Is Disconnected
 

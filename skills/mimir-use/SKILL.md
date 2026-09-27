@@ -145,6 +145,10 @@ Import only the exact sessions the user identified:
 mimir import <opencode|pi> <session-id>... --yes --json
 ```
 
+Hermes history is not an `import` or `backfill` source today. Do not promise
+automatic recovery of older uncaptured Hermes sessions. Retained local Hermes
+history would need a separate opt-in importer.
+
 Use broad backfill only when the user explicitly requests gap repair. Always
 scope automation and acknowledge the bulk operation explicitly:
 

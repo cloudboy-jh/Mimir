@@ -1,12 +1,12 @@
 # Session Lifecycle And Harness Capture
 
 Mimir combines capture paths around one lifecycle owner. The Worker proxy
-persists full redacted OpenRouter exchanges. Pi, OpenCode, and the Claude Code,
-Codex, and Cursor hook adapter can persist bounded exchanges reconstructed from
-harness-visible prompts and responses. Harness integrations also report
+persists full redacted OpenRouter exchanges. Pi, OpenCode, Hermes, and the Claude
+Code, Codex, and Cursor hook adapter can persist bounded exchanges reconstructed
+from harness-visible requests and responses. Harness integrations also report
 lifecycle events; Hermes activates plugin lifecycle reporting only after direct
-provider evidence and suppresses turns known to have traversed the proxy. One
-Session Durable Object coordinates each exact session ID.
+provider evidence and suppresses requests known to have traversed the proxy.
+One Session Durable Object coordinates each exact session ID.
 
 ```mermaid
 stateDiagram-v2
@@ -76,10 +76,10 @@ finalized.
 Finalization is not a tombstone. New activity carrying the same exact session
 ID wakes the same object, preserves its history, and starts another active
 generation. The next finalization rewrites the transcript manifest with every
-saved proxy exchange still indexed for that session and aggregate plugin-turn
-counters. Plugin turn payloads remain only in the bounded Durable Object live
-buffer. A genuinely new harness session receives a new ID and therefore a new
-object.
+saved proxy or reconstructed harness exchange still indexed for that session
+and aggregate event-turn counters. Event-only payloads remain only in the
+bounded Durable Object live buffer. A genuinely new harness session receives
+a new ID and therefore a new object.
 
 This is intentional: a user can resume the same harness conversation after a
 clean end, a silence timeout, sleep, or disconnection.
@@ -118,7 +118,7 @@ The ten-minute timer is a durability backstop, not a liveness promise.
 | Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; classify saved primary turns as completed, pending, or failed |
 | Pi extension | Route OpenRouter through Mimir with exact session headers; persist bounded reconstructed direct-provider turns; report heartbeats, titles, and lifecycle events |
 | OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
-| Hermes plugin | After sticky direct-provider evidence, report an activation heartbeat, successful direct turns, and an end; emit no exact-ID lifecycle for proxy-only, no-turn, or unclassified managed-route sessions; suppress proxied turns in mixed sessions |
+| Hermes plugin | For direct providers, report bounded request/response reconstructions with supported tool activity, activation heartbeat, and end; leave proxied requests to the Worker and suppress plugin lifecycle for proxy-only sessions |
 | Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges, report completion failures when exposed, and report start/end lifecycle events; Codex also reads matching transcript usage records |
 | Session Durable Object | Coordinate liveness, outcome generations, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
 | CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |

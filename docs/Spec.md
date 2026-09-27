@@ -148,6 +148,7 @@ personal single-owner trust model.
 | `POST` | `/sessions/:id/end` | Idempotently end the current active generation and optionally record its outcome. Also notifies the session object, which finalizes. |
 | `POST` | `/sessions/:id/events` | Append a validated session event (`turn`, `heartbeat`, `failure`, `end`) to the session object. Turns classify their terminal result as `completed`, `pending`, or `failed`; the path session ID is authoritative. |
 | `POST` | `/sessions/:id/exchanges` | Validate, redact, and persist a bounded exchange reconstructed by a trusted harness integration. |
+| `POST` | `/sessions/:id/exchange-failures` | Record a bounded, idempotent failed exchange attempt when the harness could not deliver its content; a saved exchange retains precedence. Does not change work outcome. |
 | `GET` | `/sessions/:id/live` | WebSocket live feed from the session object: snapshot plus event broadcast. |
 | `GET` | `/sessions/:id/object-state` | Read the session object's liveness projection and counters. |
 | `POST` | `/sessions/:id/outcome` | Append an evidenced work-outcome event. |
@@ -339,9 +340,11 @@ The Claude Code, Codex, and Cursor command-hook adapter pairs supported prompt
 and completion events. It caps each prompt and response at 512 KiB and reports
 zero token counts and latency when the hook payload does not expose them. These
 records are not byte-for-byte provider traffic and generally omit tool traces.
-Hermes direct-provider capture remains event-only: its completed-turn summary is
-kept in the bounded Session Durable Object buffer and does not produce an R2
-exchange or searchable D1 exchange row.
+Hermes captures direct-provider requests from its request/response hooks and
+supported tool interactions from its tool hooks. It uploads bounded reconstructed
+exchanges to the reported-exchange API; OpenRouter requests routed through Mimir
+remain proxy-owned. Hermes session activity and outcome are not proof of exchange
+persistence.
 
 A response larger than the capture limit can still reach the caller even when
 archive persistence fails. A D1 finalization failure after the R2 write leaves
@@ -424,7 +427,9 @@ forms are `mimir import` and `mimir import <opencode|pi>`; explicit mutation is
 with `mimir import inspect <opencode|pi> <id> [--json]`.
 
 `mimir backfill [opencode|pi] [--since 7d]` repairs gaps from local history. If
-the harness is omitted, both supported sources are scanned. `--since` accepts a
+the harness is omitted, both supported sources are scanned. Hermes is not yet an
+import source: retained older Hermes sessions are not imported automatically,
+and importing them requires a separate, explicit opt-in adapter. `--since` accepts a
 positive Go duration, positive day shorthand, or RFC3339 timestamp. Interactive
 import and backfill use a bounded selector of at most 20 candidates. In any
 non-TTY context, including `--json`, import requires an explicit harness, one or
@@ -734,11 +739,11 @@ bounded settle/poll while capture is pending and returns the authoritative
 receipt without upgrading a still-pending final read optimistically.
 
 Pi, OpenCode, Hermes, Claude Code, Codex, and Cursor integrations are capture
-and lifecycle adapters, not alternate memory servers. Pi, OpenCode, and the command-hook
-adapter can report reconstructed exchanges; Hermes direct providers report only
-turn summaries and lifecycle events. Future harness-native search or control
-access must call the canonical Worker API through the harness's supported
-extension surface; Mimir does not spawn a local protocol server.
+and lifecycle adapters, not alternate memory servers. Direct-provider adapters
+report reconstructed exchanges when their harness exposes the content; proxied
+requests remain proxy-owned. Future harness-native search or control access must
+call the canonical Worker API through the harness's supported extension surface;
+Mimir does not spawn a local protocol server.
 
 Ending a session sets it inactive and records the explicit end timestamp for
 the current active generation. It does not alter capture state. A genuinely
@@ -816,10 +821,10 @@ credential. Migration `0016` preserves credentials already associated with an
 installation and retires unassociated legacy credential rows rather than
 keeping an indefinitely valid unscoped credential. Hermes requests are
 forwarded with the same OpenRouter credential they presented rather than
-charging the Worker's default key. Direct Hermes
-providers remain outside the Worker proxy because their requests do not reach
-it; the bundled Hermes plugin captures their completed-turn summaries and
-lifecycle events from inside the harness.
+charging the Worker's default key. Direct Hermes providers remain outside the
+Worker proxy because their requests do not reach it; the bundled Hermes plugin
+uploads bounded request/response reconstructions and supported tool results
+from inside the harness, alongside lifecycle events.
 
 Explicit `mimir update` enrolls safe absent or byte-identical bundled harness
 files and refreshes the Hermes integration. `mimir doctor` validates its route,

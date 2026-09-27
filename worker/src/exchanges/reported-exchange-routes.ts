@@ -21,6 +21,7 @@ import {
   extractProvider,
 } from "./evidence";
 import {
+  EXCHANGE_ID,
   MAX_REPORTED_EXCHANGE_BYTES,
   parseReportedExchange,
   type NormalizedToolActivity,
@@ -268,6 +269,107 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       exchange_id: parsed.exchange_id,
       session_id: sessionId,
       capture_status: "saved",
+      duplicate: false,
+    },
+    201,
+  );
+}
+
+const MAX_REPORTED_FAILURE_BYTES = 4096;
+const FAILURE_FIELDS: Record<string, true> = {
+  exchange_id: true,
+  model: true,
+  ts: true,
+  failure_code: true,
+};
+const FAILURE_CODES: Record<string, true> = {
+  reported_upload_failed: true,
+  reported_payload_invalid: true,
+  reported_delivery_exhausted: true,
+};
+
+export async function ingestReportedExchangeFailure(c: Context<AppEnv>) {
+  const sessionId = c.req.param("id") ?? "";
+  if (!SESSION_ID.test(sessionId))
+    return c.json({ error: "invalid session id" }, 400);
+
+  const declaredLength = Number(c.req.header("content-length") ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REPORTED_FAILURE_BYTES)
+    return c.json({ error: "failure body too large" }, 413);
+  let bodyText: string;
+  try {
+    bodyText = await readBoundedText(c.req.raw.body, MAX_REPORTED_FAILURE_BYTES);
+  } catch {
+    return c.json({ error: "failure body too large" }, 413);
+  }
+
+  let input: unknown;
+  try {
+    input = JSON.parse(bodyText);
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return c.json({ error: "failure must be an object" }, 400);
+  const body = input as Record<string, unknown>;
+  if (Object.keys(body).some((key) => !Object.prototype.hasOwnProperty.call(FAILURE_FIELDS, key)))
+    return c.json({ error: "failure contains unknown fields" }, 400);
+  if (
+    typeof body.exchange_id !== "string" ||
+    !EXCHANGE_ID.test(body.exchange_id)
+  )
+    return c.json({ error: "invalid exchange_id" }, 400);
+  if (typeof body.ts !== "string" || Number.isNaN(Date.parse(body.ts)))
+    return c.json({ error: "invalid ts" }, 400);
+  if (typeof body.model !== "string" || !body.model.length || body.model.length > 256)
+    return c.json({ error: "invalid model" }, 400);
+  if (
+    typeof body.failure_code !== "string" ||
+    !Object.prototype.hasOwnProperty.call(FAILURE_CODES, body.failure_code)
+  )
+    return c.json({ error: "invalid failure_code" }, 400);
+
+  const prior = await existingExchange(c.env.DB, body.exchange_id);
+  if (prior) return duplicateResponse(c, prior, sessionId);
+
+  const repo = metadata(c.req.header("x-mimir-repo"));
+  const harness = metadata(c.req.header("x-mimir-harness"));
+  const sourceRef = metadata(c.req.header("x-mimir-git-ref"));
+  await resolveSession(
+    c.env.DB,
+    sessionId,
+    repo,
+    harness,
+    sourceRef,
+    body.model,
+    body.ts,
+    c.get("installationID"),
+  );
+  const inserted = await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, repo, harness, r2_key, access_token_label, capture_status, capture_reason, failed_at, failure_code, schema_version) VALUES (?, ?, ?, 'harness', ?, 0, ?, ?, '', ?, 'failed', 'reported', ?, ?, 1)",
+  )
+    .bind(
+      body.exchange_id,
+      sessionId,
+      body.ts,
+      body.model,
+      repo,
+      harness,
+      c.get("tokenLabel"),
+      new Date().toISOString(),
+      body.failure_code,
+    )
+    .run();
+  if (inserted.meta.changes === 0) {
+    const raced = await existingExchange(c.env.DB, body.exchange_id);
+    if (raced) return duplicateResponse(c, raced, sessionId);
+    throw new Error("reported failure insert was ignored without an existing row");
+  }
+  return c.json(
+    {
+      exchange_id: body.exchange_id,
+      session_id: sessionId,
+      capture_status: "failed",
       duplicate: false,
     },
     201,

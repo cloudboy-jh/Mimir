@@ -5,7 +5,7 @@ const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const MAX_JSON_DEPTH = 64;
 const MAX_JSON_VALUES = 100_000;
 const MAX_STRING_CHARS = 2 * 1024 * 1024;
-const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const REQUEST_KINDS: Record<RequestKind, true> = {
   primary: true,
   title: true,

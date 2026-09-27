@@ -348,6 +348,8 @@ export function extractFinishReason(response: unknown) {
           typeof (choice as Record<string, unknown>).finish_reason === "string"
         )
           return (choice as Record<string, unknown>).finish_reason as string;
+      if (typeof candidate.finish_reason === "string")
+        return candidate.finish_reason;
       if (typeof candidate.stop_reason === "string")
         return candidate.stop_reason;
       if (typeof candidate.stopReason === "string")

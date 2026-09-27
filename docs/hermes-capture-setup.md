@@ -1,38 +1,45 @@
 # Hermes Session Capture Setup
 
-Date: 2026-07-22
-Status: Implemented; pending first deployed desktop/TUI verification.
+Date: 2026-09-27
+Status: Implemented; verified with a fresh Hermes Desktop session on direct OpenAI Codex, including an archived terminal tool result and a saved receipt.
 
 ## Two capture paths
 
 Hermes capture has two cooperating paths:
 
-1. **Proxy path** (this document) — redirects Hermes' built-in OpenRouter
-   provider through the Worker. Richest capture: token usage, full redacted
-   exchange archives.
-2. **Plugin path** — [`plugins/hermes/`](../plugins/hermes/) is a Hermes
-   plugin (Hermes' own plugin system, no upstream changes) that reports
-   turns, heartbeats, and session ends to `/sessions/:id/events` after direct
-   provider activity is detected. It covers
-   the providers the proxy cannot reach: Nous portal account, direct
-   providers, and anything not routed through the Worker. These are bounded
-   event summaries, not persisted request/response exchange objects.
+1. **Proxy path** — redirects Hermes' built-in OpenRouter provider through
+   the Worker. This archives the full redacted provider exchange.
+2. **Plugin path** — [`plugins/hermes/`](../plugins/hermes/) uses Hermes'
+   request, response, and tool hooks for Codex, Nous portal, OAuth, and
+   other providers whose traffic does not traverse the proxy. It sends bounded
+   reconstructed exchanges to `/sessions/:id/exchanges`; supported tool
+   interactions are attached to their provider request. These are not
+   byte-for-byte provider transport archives.
 
-The plugin classifies each turn from `pre_api_request` provider and base-URL
-metadata. A session using only the managed OpenRouter redirect emits no plugin
-heartbeat, turn, or end events because the proxy owns that session lifecycle.
-`on_session_start` intentionally emits nothing. The first direct-provider
-classification is sticky for that session and emits an activation heartbeat;
-completed direct turns follow through `post_llm_call`, and
-`on_session_finalize` emits an end only after direct evidence. If Hermes misses
-the pre-request hook, the completed turn falls back to the configured route.
-Mixed sessions continue to suppress their proxied turns while retaining the
-direct lifecycle. Finalize always clears classification state, including
-unconsumed turn routes. Turn deduplication is scoped by session ID and turn ID.
+Classification is per API request using `pre_api_request` provider/base-URL
+metadata, not a session-wide provider setting. Requests through the managed
+OpenRouter redirect remain proxy-owned. A session can use both paths without
+the plugin uploading duplicates of proxied calls. Direct activity activates
+the plugin's heartbeat and session-end lifecycle reporting; a session using
+only the proxy leaves lifecycle ownership with the proxy. `on_session_start`
+intentionally emits nothing.
 
-The plugin registers exactly `pre_api_request`, `post_llm_call`,
-`on_session_start`, and `on_session_finalize`. It does not register
-`on_session_end` or `on_session_reset`.
+Hermes hook payloads are sanitized and bounded by Hermes before the plugin
+receives them. When Hermes truncates a large provider request, the plugin
+records the actual user message as a `user_turn` reconstruction rather than
+claiming it saved the complete provider prompt. It cannot reconstruct content
+absent from the hooks. The Worker redacts reconstructed request, response, and
+tool data before writing R2 and indexing D1. The capture receipt comes from
+persisted exchange state, never from plugin-load health, a heartbeat, or work
+outcome. Failed uploads reported to the Worker are failures, not successful
+turns; a plugin that is offline cannot tell the Worker about a local failure
+until reconnect.
+
+Historical Hermes sessions are **not** imported automatically. Hermes may
+retain message and tool history in its local `state.db`, but the current
+`mimir import` and `mimir backfill` commands support only Pi and OpenCode.
+Recovering retained older Hermes sessions would require a separate, explicit
+opt-in importer; deleted history cannot be recovered.
 
 The canonical installer embeds the plugin and enrolls its exact files under
 the detected Hermes home (`~/.hermes/plugins/mimir/` or the active Windows
@@ -44,9 +51,9 @@ plugin and skill files, preserves conflicts, and leaves the local Mimir
 connection and Cloudflare deployment intact.
 The plugin carries no credentials; it resolves the Worker URL and machine
 token from `MIMIR_URL`/`MIMIR_TOKEN`, `$MIMIR_HOME`, or `~/.mimir/` exactly
-like the CLI. Delivery is best-effort and never blocks Hermes; the
-server-side silence timer finalizes sessions even when the process dies
-before an end event lands.
+like the CLI. Delivery must not block or raise into Hermes. The server-side
+silence timer finalizes sessions even when the process dies before an end
+event arrives; finalization does not prove that any exchange was saved.
 
 ## Design
 
@@ -101,31 +108,31 @@ installation if a retired legacy credential is still needed.
 
 ## Supported boundary
 
-Capture applies whenever Hermes' effective provider is `openrouter`, including
-mid-session switches between OpenRouter models.
+The proxy captures Hermes' effective OpenRouter provider, including
+mid-session model changes. Direct Nous, Anthropic OAuth, OpenAI Codex, Gemini,
+and other transports bypass the proxy and are captured through Hermes'
+plugin hooks where they expose request/response content. Mimir does not
+intercept TLS traffic. A direct-provider request with unavailable hook content
+cannot be represented as a saved exchange.
 
-Direct Nous, Anthropic OAuth, Codex, Gemini, and other provider transports bypass
-the Worker and are not captured **by the proxy** — install the Hermes plugin
-(above) to retain completed-turn event summaries from inside the harness. Their
-request and response bodies are not written to R2 or indexed as searchable
-exchanges. Mimir does not intercept TLS traffic.
-
-Hermes auxiliary tools that hard-code OpenRouter's URL also remain direct and
-uncaptured. They retain the real OpenRouter credential, so they continue working
-without exposing a Mimir machine token.
+Hermes auxiliary tools that hard-code OpenRouter's URL remain outside the
+managed redirect. The plugin captures only calls exposed by Hermes' supported
+hooks; it does not claim to archive unobserved auxiliary traffic.
 
 Desktop and TUI use the same Hermes profile, so a static installation cannot
-reliably distinguish them. Both are grouped under the `hermes` harness. Hermes
-does not send an exact Mimir session ID, so session boundaries use the inactivity
-fallback. Run `mimir update` after changing Hermes profiles so the new profile's
-credential and base URL are registered.
+reliably distinguish them. Both are grouped under the `hermes` harness. The
+plugin supplies Hermes' session ID for reconstructed exchanges; proxy traffic
+without an exact ID still uses the inactivity fallback. Run `mimir update`
+after changing Hermes profiles to refresh managed artifacts and credentials.
 
 ## Verification
 
-1. Run `mimir doctor`; it checks the managed dotenv route and the Hermes models,
-   key, and credits endpoints without invoking a model.
-2. Restart Hermes because it does not hot-reload its environment.
-3. Start a fresh session on an OpenRouter model and switch to another OpenRouter
-   model mid-session.
-4. Confirm the exchanges appear under the `hermes` harness. Durable session
-   status, not transport activity alone, is proof of persistence.
+1. Run `mimir doctor` to check installation and proxy connectivity; this
+   does not verify that a direct conversation was saved.
+2. Restart Hermes after a plugin or route change.
+3. Start a fresh Hermes Desktop session on a direct Codex model. Ask it to
+   use a tool and answer; check `mimir session status <id> --json` for a saved
+   receipt, `mimir session get <id> --json` for indexed exchanges, and the
+   redacted archive for user, assistant, and supported tool content.
+4. Check a session that switches between direct and proxied requests for
+   duplicate exchanges. Work outcome remains independent from capture.

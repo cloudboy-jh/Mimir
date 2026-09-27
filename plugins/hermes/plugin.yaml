@@ -1,5 +1,5 @@
 name: mimir
 version: "1.0.0"
-description: "Reports event-only lifecycle for direct providers. Proxied OpenRouter traffic emits no plugin session events."
+description: "Reports direct-provider exchanges for Worker redaction; proxied OpenRouter traffic remains proxy-owned."
 author: Mimir
 kind: standalone

@@ -124,9 +124,9 @@ A saved exchange does not mean the work landed. Sessions can retain independent
 Git patches across commits even when work was discarded or abandoned.
 
 To recover supported local Pi or OpenCode history, run `mimir import` in a
-terminal. Use `mimir backfill` to repair gaps. See [import and backfill
-commands](docs/cli.md#local-import-and-backfill) for inspection, confirmation,
-and noninteractive forms.
+terminal. Use `mimir backfill` to repair gaps. Hermes history is not imported
+automatically, and the current import command does not support Hermes. See
+[import and backfill commands](docs/cli.md#local-import-and-backfill).
 
 ## What gets captured
 
@@ -138,7 +138,7 @@ you can inspect the task, repository, models, files, errors, and result.
 | --- | --- |
 | OpenRouter traffic routed through Mimir | Full redacted request and response, including streamed responses |
 | Pi, Oh My Pi, OpenCode, Claude Code, Codex, and Cursor direct or subscription paths | Bounded prompt and response reconstructions where supported; not provider transport archives |
-| Hermes direct providers | Event-only turn summaries; no searchable exchange bodies |
+| Hermes direct providers (including Codex and Nous) | Bounded request/response reconstructions and supported tool interactions from Hermes hooks; not provider transport archives |
 
 `x-mimir-session` is the authoritative session boundary when available. Traffic
 without an exact ID uses bounded inactivity grouping. The Worker redacts before

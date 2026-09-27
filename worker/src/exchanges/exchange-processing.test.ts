@@ -58,6 +58,14 @@ describe("capture", () => {
     expect(
       completionResult(
         extractFinishReason({
+          assistant_message: { role: "assistant", tool_calls: [{ name: "terminal" }] },
+          finish_reason: "tool_calls",
+        }),
+      ),
+    ).toBe("pending");
+    expect(
+      completionResult(
+        extractFinishReason({
           message: { stopReason: "aborted", errorMessage: "cancelled" },
         }),
       ),

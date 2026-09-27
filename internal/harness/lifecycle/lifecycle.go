@@ -222,7 +222,7 @@ func (s Service) InstallSelected(ctx context.Context, explicitDir string, select
 				if !installed {
 					return InstallReport{}, s.rollbackHermesSelection(ctx, paths, prior, selected, true, fmt.Errorf("Hermes disappeared during installation"))
 				}
-				report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture staged; activation is unverified until a load is reported"}
+				report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider exchange capture staged; activation is unverified until a load is reported"}
 			}
 		}
 	} else {
@@ -505,7 +505,7 @@ func (s Service) InstallCurrent(ctx context.Context, pointer mimirapi.Pointer, a
 		report.Hermes = harness.IntegrationState{State: "failed", Provider: "openrouter", Scope: "openrouter", Detail: configureErr.Error()}
 		failures = append(failures, configureErr.Error())
 	} else if installed {
-		report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider lifecycle capture staged; activation is unverified until a load is reported"}
+		report.Hermes = harness.IntegrationState{State: "staged", Provider: "openrouter", Scope: "all-providers", RestartRequired: true, Detail: "OpenRouter proxy and direct-provider exchange capture staged; activation is unverified until a load is reported"}
 	} else {
 		report.Hermes = harness.IntegrationState{State: "skipped", Detail: "Hermes is not installed"}
 	}

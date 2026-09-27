@@ -211,10 +211,10 @@ canonical. It does not rewrite general OpenCode JSON or JSONC. See
 [OpenCode capture setup](opencode-capture-setup.md).
 
 Hermes redirects its built-in OpenRouter provider through the
-installation-scoped `/v1/hermes/<installation-id>` route. Its plugin reports
-direct-provider completed-turn summaries and lifecycle events, but those
-event-only summaries contain no request/response bodies and create no
-searchable exchange objects. See [Hermes capture setup](hermes-capture-setup.md).
+installation-scoped `/v1/hermes/<installation-id>` route. For Codex, Nous,
+OAuth, and other direct providers, its plugin uploads bounded reconstructed
+request/response exchanges and supported tool results, alongside lifecycle
+events. See [Hermes capture setup](hermes-capture-setup.md).
 
 Claude Code, Codex, and Cursor use receipt-owned hooks that invoke the hidden
 `mimir _hook` adapter. Supported prompt/completion hooks reconstruct bounded
@@ -252,12 +252,13 @@ endpoint.
 | OpenCode OAuth, subscription, or direct providers | Bounded reconstruction from OpenCode's session store; not byte-for-byte provider transport |
 | Claude Code and Cursor supported hooks | Bounded prompt/assistant reconstruction; tool traces and usage may be unavailable |
 | Codex supported hooks | Bounded prompt/assistant reconstruction plus transcript token usage when Codex emits a matching turn usage record |
-| Hermes Nous portal, OAuth, and direct providers | Event-only completed-turn summary; no searchable exchange object |
+| Hermes Nous portal, OAuth, Codex, and other direct providers | Bounded reconstruction of Hermes-observed requests, responses, and supported tool results; not byte-for-byte provider transport |
 
 OpenRouter plugin uploads are suppressed when proxy capture is canonical.
 Reconstructed exchanges are redacted and persisted like proxy exchanges when
-delivery succeeds. Event-only summaries keep session lifecycle current but do
-not create R2 exchange objects or searchable D1 exchange rows.
+delivery succeeds. A heartbeat, outcome, or plugin-load diagnostic does not
+prove that any exchange was saved. Hermes historical sessions are not imported
+automatically; `mimir import` currently supports only Pi and OpenCode.
 
 ## Cloudflare Free Plan Units
 
