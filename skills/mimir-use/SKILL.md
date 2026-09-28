@@ -84,9 +84,11 @@ not. Record `abandoned` for an evidenced stop without a result. Use
 `unresolved` only when the result genuinely cannot be established.
 
 Explicit evidence is stronger than automatic lifecycle inference. If a harness
-cannot expose an exact identity, the Worker resolves the generation
-deterministically at finalization: a clean completed primary turn becomes
-`landed`; a failed, pending, or absent terminal signal becomes `abandoned`.
+cannot expose an exact identity, the Worker projects the generation
+deterministically at finalization: a clean completed primary turn remains
+`unresolved` without work-result evidence; a failed, pending, or absent terminal
+signal becomes `abandoned`. A stale unresolved root may later become `landed`
+only with saved Git commit evidence and a retrievable patch.
 Resuming a finalized exact session starts a new `unresolved` generation while
 preserving the prior outcome history.
 

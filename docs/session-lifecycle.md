@@ -87,10 +87,12 @@ clean end, a silence timeout, sleep, or disconnection.
 ### Outcome generations
 
 Each active period has its own outcome projection. A clean completed primary
-turn followed by whole-tree finalization becomes `landed`. A failure signal,
-pending tool continuation, or finalization without a clean completion becomes
-`abandoned`. Explicit agent and user outcomes take precedence within the active
-generation.
+turn followed by whole-tree finalization remains `unresolved`: completion alone
+does not establish that the work landed. A failure signal, pending tool
+continuation, or finalization without a clean completion becomes `abandoned`.
+Explicit agent and user outcomes take precedence within the active generation.
+After 48 hours of inactivity, an unresolved root can be promoted to `landed`
+only with saved Git commit evidence and a retrievable patch.
 
 When a finalized exact session resumes, Mimir appends an automatic
 `unresolved` event before accepting the new work. Prior outcomes remain in the

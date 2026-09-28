@@ -97,3 +97,73 @@ func TestNormalizeGitOriginRejectsCredentialsAndLocalPaths(t *testing.T) {
 		t.Fatalf("local origin = %q", got)
 	}
 }
+
+func TestCollectCommitRequiresExactObjectAndBoundsPatch(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	other := strings.Repeat("b", 40)
+	var commands []string
+	collector := CheckoutArtifactCollector{MaxPatchBytes: 32, Command: func(_ context.Context, directory string, args ...string) ([]byte, error) {
+		commands = append(commands, args[0])
+		switch args[0] {
+		case "rev-parse":
+			if len(args) == 2 {
+				return []byte("/repo\n"), nil
+			}
+			if directory != "/repo" || args[2] != sha+"^{commit}" {
+				t.Fatalf("wrong commit lookup: %s %v", directory, args)
+			}
+			return []byte(other + "\n"), nil
+		default:
+			t.Fatalf("unexpected command %v", args)
+			return nil, nil
+		}
+	}}
+	if _, err := collector.CollectCommit(context.Background(), ".", "HEAD"); err == nil || len(commands) != 0 {
+		t.Fatalf("invalid revision ran git: %v, %v", err, commands)
+	}
+	if _, err := collector.CollectCommit(context.Background(), ".", sha); err == nil || strings.Join(commands, ",") != "rev-parse,rev-parse" {
+		t.Fatalf("resolved different commit: %v, %v", err, commands)
+	}
+	collector.Command = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "rev-parse":
+			if len(args) == 2 {
+				return []byte("/repo"), nil
+			}
+			return []byte(sha), nil
+		case "show":
+			if args[1] == "-s" {
+				return []byte(fmt.Sprintf("%s\x00\x002026-08-20T10:01:00Z\x00secret=supersecretvalue\x00main\x1e", sha)), nil
+			}
+			return []byte(strings.Repeat("x", 33)), nil
+		case "remote":
+			return nil, fmt.Errorf("no origin")
+		}
+		return nil, fmt.Errorf("unexpected command")
+	}
+	if _, err := collector.CollectCommit(context.Background(), ".", sha); err == nil || strings.Contains(err.Error(), "supersecretvalue") {
+		t.Fatalf("oversized patch error: %v", err)
+	}
+	collector.MaxPatchBytes = 128
+	collector.Command = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "rev-parse":
+			if len(args) == 2 {
+				return []byte("/repo"), nil
+			}
+			return []byte(sha), nil
+		case "show":
+			if args[1] == "-s" {
+				return []byte(fmt.Sprintf("%s\x00\x002026-08-20T10:01:00Z\x00secret=supersecretvalue\x00main\x1e", sha)), nil
+			}
+			return []byte("+token=supersecretvalue\n"), nil
+		case "remote":
+			return nil, fmt.Errorf("no origin")
+		}
+		return nil, fmt.Errorf("unexpected command")
+	}
+	artifact, err := collector.CollectCommit(context.Background(), ".", sha)
+	if err != nil || strings.Contains(artifact.Subject+artifact.Patch, "supersecretvalue") || !strings.Contains(artifact.Subject, "[REDACTED]") {
+		t.Fatalf("redaction failed: %v", err)
+	}
+}

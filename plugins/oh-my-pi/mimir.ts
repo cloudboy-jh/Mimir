@@ -32,13 +32,18 @@ type TurnEnd = {
 type SessionShutdown = { reason?: unknown };
 
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const HEARTBEAT_MS = 60_000;
 const MAX_EXCHANGE_BYTES = 512 * 1024;
+const MAX_PATCH_BYTES = 4 * 1024 * 1024;
+const gitExec = promisify(execFile);
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 type Connection = { url: string; token: string };
 type Session = { id: string; parentId: string | null; cwd: string; repo: string | null; gitRef: string | null; active: boolean };
@@ -181,6 +186,64 @@ function deliveryQueue(config: Connection) {
   };
 }
 
+// Use a subprocess buffer limit: the host's exec API does not promise bounded stdout.
+async function git(cwd: string, args: string[], maxBuffer = 64 * 1024): Promise<string | null> {
+  try {
+    const { stdout } = await gitExec("git", ["-C", cwd, ...args], { timeout: 5_000, maxBuffer, encoding: "utf8" });
+    return stdout;
+  } catch { return null; }
+}
+
+async function head(cwd: string): Promise<string | null> {
+  const value = (await git(cwd, ["rev-parse", "--verify", "HEAD"]))?.trim();
+  return value && COMMIT_SHA.test(value) ? value : null;
+}
+
+function commitHints(message: unknown, results: unknown): string[] {
+  const activities = normalizeToolActivity(message, results);
+  const hints = new Set<string>();
+  for (const activity of activities) {
+    if (activity.status !== "succeeded" || !activity.output || !/(?:^|[^\w])git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(JSON.stringify(activity.input))) continue;
+    // Standard git commit output identifies the actual commit (not arbitrary hashes in a tool result).
+    for (const match of activity.output.matchAll(/\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|\\n|"|$)/g)) hints.add(match[1]);
+  }
+  return [...hints];
+}
+
+function redactPatch(patch: string): string {
+  return patch
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
+    .replace(/\b(Bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*["']?)[^\s"']+/gi, "$1[REDACTED]");
+}
+
+async function collectCommits(cwd: string, baseline: string, hints: string[]) {
+  if (!hints.length) return [];
+  const tip = await head(cwd);
+  if (!tip || tip === baseline || (await git(cwd, ["merge-base", "--is-ancestor", baseline, tip])) === null) return [];
+  const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
+  if (!range) return [];
+  const commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  if (commits.length > 16) return [];
+  const artifacts = [];
+  for (const sha of commits) {
+    if (!hints.some((hint) => sha.startsWith(hint) && commits.filter((candidate) => candidate.startsWith(hint)).length === 1)) continue;
+    const details = await git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", sha]);
+    const lines = details?.trimEnd().split("\n");
+    if (!lines || lines.length < 3) continue;
+    const [parents, committedAt, ...subjectParts] = lines;
+    const subject = subjectParts.join(" ");
+    const patch = await git(cwd, ["-c", "diff.external=", "show", "--format=", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", sha, "--"], MAX_PATCH_BYTES + 1);
+    if (!patch || Buffer.byteLength(patch, "utf8") > MAX_PATCH_BYTES) continue;
+    const cleaned = redactPatch(patch);
+    if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_PATCH_BYTES) continue;
+    const committed = new Date(committedAt);
+    if (Number.isNaN(committed.getTime())) continue;
+    artifacts.push({ commit_sha: sha, parent_commit_sha: parents.split(" ")[0] || null, committed_at: committed.toISOString(), subject: redactPatch(subject).slice(0, 500).replace(/[\p{Cc}]/gu, " "), repository_url: null, ref: null, provenance: "oh-my-pi", patch: cleaned });
+  }
+  return artifacts;
+}
+
 async function gitMetadata(pi: ExtensionAPI, cwd: string) {
   let repo: string | null = basename(cwd) || null;
   let gitRef: string | null = null;
@@ -201,7 +264,17 @@ export default function (pi: ExtensionAPI) {
   const config = connection();
   if (!config) return;
   const deliver = deliveryQueue(config);
-  const snapshots = new Map<number, { startedAt: number; messages: unknown[] }>();
+  const snapshots = new Map<number, { startedAt: number; messages: unknown[]; session: Session; baseline: string | null }>();
+  const artifactJobs = new Set<Promise<void>>();
+  const flushArtifacts = async () => { await Promise.all([...artifactJobs]); };
+  const sendArtifacts = async (session: Session, commits: Awaited<ReturnType<typeof collectCommits>>) => {
+    await Promise.all(commits.map(async (commit) => {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (await post(config, `/sessions/${encodeURIComponent(session.id)}/git-artifacts`, { version: 1, commits: [commit] }, headersFor(session))) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+        }
+    }));
+  };
   let current: Session | null = null;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let requestKind: RequestKind = "primary";
@@ -254,7 +327,9 @@ export default function (pi: ExtensionAPI) {
     const generation = ++initialization;
     clearInterval(heartbeat);
     heartbeat = undefined;
+    await flushArtifacts();
     snapshots.clear();
+    if (generation !== initialization) return;
     const cwd = ctx?.cwd || process.cwd();
     const rawID = ctx?.sessionManager?.getSessionId?.();
     if (!rawID) return;
@@ -302,15 +377,27 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_tree", () => { requestKind = "summary"; configureProvider(); });
   pi.on("session_tree", () => { requestKind = "primary"; configureProvider(); });
 
-  pi.on("turn_start", (turn: TurnStart, ctx: SessionContext) => {
+  pi.on("turn_start", async (turn: TurnStart, ctx: SessionContext) => {
     activate();
+    const session = current;
+    if (!session) return;
     const messages = ctx.sessionManager?.buildSessionContext?.().messages;
-    snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [] });
+    const baseline = await head(session.cwd);
+    if (current !== session) return;
+    snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [], session, baseline });
   });
 
-  pi.on("turn_end", (turn: TurnEnd) => {
+  pi.on("turn_end", async (turn: TurnEnd) => {
     const snapshot = snapshots.get(turn.turnIndex);
     snapshots.delete(turn.turnIndex);
+    if (snapshot && current === snapshot.session && snapshot.baseline) {
+      const hints = commitHints(turn.message, turn.toolResults);
+      if (hints.length) {
+        const job = (async () => sendArtifacts(snapshot.session, await collectCommits(snapshot.session.cwd, snapshot.baseline!, hints)))();
+        artifactJobs.add(job);
+        try { await job; } finally { artifactJobs.delete(job); }
+      }
+    }
     if (!current || turn.message?.role !== "assistant" || typeof turn.message.provider !== "string" || turn.message.provider === "openrouter" || typeof turn.message.model !== "string") return;
     const timestamp = Number(turn.message.timestamp) || Date.now();
     const payload: Record<string, unknown> = {
@@ -329,6 +416,7 @@ export default function (pi: ExtensionAPI) {
     initialization++;
     clearInterval(heartbeat);
     heartbeat = undefined;
+    await flushArtifacts();
     const reason = typeof shutdown?.reason === "string" ? shutdown.reason : "shutdown";
     const session = current;
     if (reason !== "reload" && session?.active) {

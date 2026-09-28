@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import extension, { __testing } from "./mimir";
 
 const originalFetch = globalThis.fetch;
@@ -15,7 +18,7 @@ afterEach(() => {
 });
 
 type Handler = (...args: never[]) => unknown;
-type CapturedRequest = { url: string; body: unknown };
+type CapturedRequest = { url: string; body: unknown; headers: Headers };
 type Exec = (command: string, args: string[]) => Promise<{ code: number; stdout: string }>;
 
 function createHarness(exec: Exec = async () => ({ code: 1, stdout: "" })) {
@@ -23,7 +26,7 @@ function createHarness(exec: Exec = async () => ({ code: 1, stdout: "" })) {
   process.env.MIMIR_TOKEN = "token";
   const requests: CapturedRequest[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) as unknown : null });
+    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) as unknown : null, headers: new Headers(init?.headers) });
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
   const handlers = new Map<string, Handler>();
@@ -47,6 +50,33 @@ function createHarness(exec: Exec = async () => ({ code: 1, stdout: "" })) {
       return event.headers;
     },
   };
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function repository() {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-artifact-"));
+  git(cwd, "init", "-q");
+  git(cwd, "config", "user.name", "Pi Test");
+  git(cwd, "config", "user.email", "pi@example.test");
+  writeFileSync(join(cwd, "first.txt"), "initial\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-qm", "initial");
+  return cwd;
+}
+
+function commit(cwd: string, content: string) {
+  writeFileSync(join(cwd, "change.txt"), content);
+  git(cwd, "add", ".");
+  const output = git(cwd, "commit", "-m", "capture change");
+  return { sha: git(cwd, "rev-parse", "HEAD"), output };
+}
+
+const turnContext = { sessionManager: { buildSessionContext: () => ({ messages: [] }) } };
+function result(shaOutput: string, command = "git add . && git commit -m 'capture change'", isError = false) {
+  return { message: { role: "assistant", provider: "openrouter", model: "test", content: [{ type: "toolCall", id: "exec-1", name: "bash", arguments: { command } }] }, toolResults: [{ role: "toolResult", toolCallId: "exec-1", toolName: "bash", isError, content: [{ type: "text", text: shaOutput }] }] };
 }
 
 function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
@@ -259,5 +289,88 @@ describe("Pi Mimir extension", () => {
     expect(eventKinds(harness.requests, "current-session")).toEqual([]);
 
     await harness.invoke("session_shutdown", { reason: "shutdown" });
+  });
+
+  test("captures a successful Pi commit with redacted bounded patch, ISO date and exact session", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "pi-exact" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { sha, output } = commit(cwd, "api_key=supersecret\nBearer supersecret\n");
+      await harness.invoke("turn_end", { turnIndex: 0, ...result(output) });
+      const uploads = harness.requests.filter((item) => item.url.endsWith("/sessions/pi-exact/git-artifacts"));
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0]!.headers.get("authorization")).toBe("Bearer token");
+      expect(uploads[0]!.headers.get("x-mimir-session")).toBe("pi-exact");
+      const body = uploads[0]!.body as { version: number; commits: Array<{ commit_sha: string; committed_at: string; patch: string; provenance: string }> };
+      expect(body.version).toBe(1);
+      expect(body.commits[0]!.commit_sha).toBe(sha);
+      expect(body.commits[0]!.provenance).toBe("pi");
+      expect(body.commits[0]!.committed_at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+      expect(body.commits[0]!.patch).toContain("api_key=[REDACTED]");
+      expect(body.commits[0]!.patch).not.toContain("supersecret");
+      expect(Buffer.byteLength(body.commits[0]!.patch)).toBeLessThanOrEqual(4 * 1024 * 1024);
+      await harness.invoke("session_shutdown", { reason: "shutdown" });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("rejects failed, unrelated and unmatched commit output and oversized patches", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "negative" } });
+      for (const [index, kind] of ["failed", "unrelated", "unmatched", "large"].entries()) {
+        await harness.invoke("turn_start", { turnIndex: index, timestamp: Date.now() }, turnContext);
+        const { output } = commit(cwd, kind === "large" ? "x".repeat(5 * 1024 * 1024) : kind);
+        const turn = result(output, kind === "unrelated" ? "git status" : undefined, kind === "failed");
+        if (kind === "unmatched") turn.toolResults[0]!.content = [{ type: "text", text: "[main deadbee] other commit" }];
+        await harness.invoke("turn_end", { turnIndex: index, ...turn });
+      }
+      expect(harness.requests.filter((item) => item.url.includes("/git-artifacts"))).toHaveLength(0);
+      await harness.invoke("session_shutdown", { reason: "shutdown" });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("retries artifact upload and finishes it before switching or shutting down", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      const recordedFetch = globalThis.fetch;
+      let attempts = 0;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const response = await recordedFetch(input, init);
+        if (String(input).endsWith("/git-artifacts") && ++attempts === 1) return new Response("retry", { status: 503 });
+        return response;
+      }) as typeof fetch;
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "old-session" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { output } = commit(cwd, "retry");
+      const ending = harness.invoke("turn_end", { turnIndex: 0, ...result(output) });
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "new-session" } });
+      await ending;
+      expect(harness.requests.filter((item) => item.url.endsWith("/sessions/old-session/git-artifacts"))).toHaveLength(2);
+      expect(harness.requests.filter((item) => item.url.endsWith("/sessions/new-session/git-artifacts"))).toHaveLength(0);
+      expect(harness.requests.findIndex((item) => item.url.endsWith("/sessions/old-session/events") && (item.body as { kind?: string }).kind === "end"))
+        .toBeGreaterThan(harness.requests.findLastIndex((item) => item.url.endsWith("/sessions/old-session/git-artifacts")));
+      await harness.invoke("session_shutdown", { reason: "shutdown" });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("shutdown waits for in-flight artifact delivery", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "closing" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { output } = commit(cwd, "closing");
+      const ending = harness.invoke("turn_end", { turnIndex: 0, ...result(output) });
+      await harness.invoke("session_shutdown", { reason: "shutdown" });
+      await ending;
+      const artifact = harness.requests.findIndex((item) => item.url.endsWith("/sessions/closing/git-artifacts"));
+      const end = harness.requests.findIndex((item) => item.url.endsWith("/sessions/closing/events") && (item.body as { kind?: string }).kind === "end");
+      expect(artifact).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(artifact);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });

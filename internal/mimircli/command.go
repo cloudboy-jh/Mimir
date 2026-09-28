@@ -352,6 +352,9 @@ func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func cmdSession(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "git" {
+		return cmdSessionGit(ctx, args[1:], out)
+	}
 	if len(args) > 0 && args[0] == "get" {
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") || len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
 			return fmt.Errorf("usage: mimir session get <id> [--json]")
@@ -411,7 +414,7 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return printRemoteData(out, data)
 	}
-	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
+	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session git capture <id> <full-commit-sha> [--json] | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
 }
 
 func parseSessionEndArgs(args []string) (string, sessions.EndOptions, error) {
@@ -666,6 +669,7 @@ func advancedUsage(out io.Writer) error {
 		{Usage: "mimir session <id>", Description: "Fetch one canonical session record."},
 		{Usage: "mimir session get <id> [--json]", Description: "Fetch the complete canonical session record."},
 		{Usage: "mimir session outcome <id> <outcome> [options]", Description: "Record an evidenced work outcome."},
+		{Usage: "mimir session git capture <id> <full-commit-sha> [--json]", Description: "Upload one commit from the current checkout to an existing session."},
 		{Usage: "mimir reconcile", Description: "Reconcile pending session state."},
 		{Usage: "mimir mark <session> <outcome>", Description: "Compatibility alias for recording an outcome."},
 		{Usage: "mimir outcome git <session>", Description: "Infer an outcome from repository evidence."},

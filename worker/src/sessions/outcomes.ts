@@ -141,10 +141,10 @@ export async function finalizeOutcomeGeneration(
 ) {
   const root = await rootSessionID(db, sessionID);
   if (await treeHasActiveSession(db, root)) return false;
-  const outcome: WorkOutcome = result === "completed" ? "landed" : "abandoned";
+  const outcome: WorkOutcome = result === "completed" ? "unresolved" : "abandoned";
   const reason =
     result === "completed"
-      ? "Automatically marked landed after a clean completed assistant turn"
+      ? "Automatically left unresolved after a clean completed assistant turn without work-result evidence"
       : "Automatically marked abandoned after the generation ended without a clean completed assistant turn";
   return applyAutomaticGenerationOutcome(
     db,
@@ -296,6 +296,8 @@ export async function autoResolveStaleOutcomes(
       AND (root.outcome_src IS NULL OR root.outcome_src <> 'user')
       AND root_activity.activity_at <= ?
       AND artifact.capture_status = 'saved'
+      AND artifact.patch_bytes > 0
+      AND artifact.patch_files > 0
       AND length(artifact.commit_sha) = 40
       AND artifact.commit_sha NOT GLOB '*[^0-9a-f]*'
     ORDER BY root.id, COALESCE(artifact.committed_at, artifact.created_at) DESC

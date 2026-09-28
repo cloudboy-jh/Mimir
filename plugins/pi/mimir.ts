@@ -14,10 +14,12 @@
 type ExtensionAPI = any;
 
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const HEARTBEAT_MS = 60_000;
 const MAX_STRING_BYTES = 64 * 1024;
@@ -26,6 +28,9 @@ const MAX_JSON_DEPTH = 8;
 const MAX_JSON_ENTRIES = 512;
 const MAX_MESSAGES = 128;
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+const MAX_PATCH_BYTES = 4 * 1024 * 1024;
+const gitExec = promisify(execFile);
 
 type Connection = { url: string; token: string };
 type RequestKind = "primary" | "summary" | "compaction";
@@ -62,6 +67,74 @@ type AssistantMessage = {
 };
 type TurnSnapshot = { startedAt: number; request: { messages: unknown[] } };
 type NormalizedToolActivity = { name: string; input: Record<string, unknown>; status: "succeeded" | "failed"; output?: string };
+
+// Use a subprocess buffer limit: Pi's exec API does not promise bounded stdout.
+async function git(cwd: string, args: string[], maxBuffer = 64 * 1024): Promise<string | null> {
+  try {
+    return (await gitExec("git", ["-C", cwd, ...args], { timeout: 5_000, maxBuffer, encoding: "utf8" })).stdout;
+  } catch { return null; }
+}
+
+async function head(cwd: string): Promise<string | null> {
+  const value = (await git(cwd, ["rev-parse", "--verify", "HEAD"]))?.trim();
+  return value && COMMIT_SHA.test(value) ? value : null;
+}
+
+function commitHints(message: unknown, rawResults: unknown): string[] {
+  const blocks = message && typeof message === "object" && Array.isArray((message as { content?: unknown }).content)
+    ? (message as { content: unknown[] }).content : [];
+  const results: Record<string, unknown>[] = Array.isArray(rawResults) ? rawResults.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
+  const hints = new Set<string>();
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const call = block as Record<string, unknown>;
+    if (call.type !== "toolCall" || typeof call.id !== "string") continue;
+    const input = call.arguments;
+    const args = typeof input === "string" ? (() => { try { return JSON.parse(input); } catch { return null; } })() : input;
+    if (!args || typeof args !== "object") continue;
+    const command = (args as Record<string, unknown>).command;
+    if (typeof command !== "string" || !/(?:^|[;&|\n]\s*|\s)git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(command)) continue;
+    const result = results.find((item) => item.toolCallId === call.id);
+    if (!result || result.isError === true || result.is_error === true || result.status === "error" || typeof result.exitCode === "number" && result.exitCode !== 0) continue;
+    const content = result.content;
+    const output = typeof content === "string" ? content : Array.isArray(content)
+      ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : "";
+    for (const match of output.matchAll(/\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)/gm)) hints.add(match[1]!);
+  }
+  return [...hints];
+}
+
+function redactPatch(patch: string): string {
+  return patch
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
+    .replace(/\b(Bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*["']?)[^\s"']+/gi, "$1[REDACTED]");
+}
+
+async function collectCommits(cwd: string, baseline: string, hints: string[]) {
+  if (!hints.length) return [];
+  const tip = await head(cwd);
+  if (!tip || tip === baseline || await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return [];
+  const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
+  if (!range) return [];
+  const commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  if (commits.length > 16) return [];
+  const artifacts = [];
+  for (const sha of commits) {
+    if (!hints.some((hint) => sha.startsWith(hint) && commits.filter((candidate) => candidate.startsWith(hint)).length === 1)) continue;
+    const details = await git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", sha]);
+    const lines = details?.trimEnd().split("\n");
+    if (!lines || lines.length < 3) continue;
+    const [parents, committedAt, ...subjectParts] = lines;
+    const patch = await git(cwd, ["-c", "diff.external=", "show", "--format=", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", sha, "--"], MAX_PATCH_BYTES + 1);
+    if (!patch || Buffer.byteLength(patch, "utf8") > MAX_PATCH_BYTES) continue;
+    const cleaned = redactPatch(patch);
+    const committed = new Date(committedAt!);
+    if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_PATCH_BYTES || Number.isNaN(committed.getTime())) continue;
+    artifacts.push({ commit_sha: sha, parent_commit_sha: parents!.split(" ")[0] || null, committed_at: committed.toISOString(), subject: redactPatch(subjectParts.join(" ")).slice(0, 500).replace(/[\p{Cc}]/gu, " "), repository_url: null, ref: null, provenance: "pi", patch: cleaned });
+  }
+  return artifacts;
+}
 
 function parseMimirConfig(text: string): { url?: string } {
   const match = text.match(/^\s*url\s*=\s*"?([^"\n]+?)"?\s*$/m);
@@ -345,7 +418,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   const delivery = createDeliveryQueue((path, body, metadata) => request(connection, path, body, metadata));
-  const snapshots = new Map<number, TurnSnapshot>();
+  const snapshots = new Map<number, TurnSnapshot & { session: SessionState; baseline: string | null }>();
+  const artifactJobs = new Set<Promise<void>>();
+  const flushArtifacts = async () => { await Promise.all([...artifactJobs]); };
+  const sendArtifacts = async (owner: SessionState, commits: Awaited<ReturnType<typeof collectCommits>>) => {
+    await Promise.all(commits.map(async (commit) => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        if (await request(connection, `/sessions/${encodeURIComponent(owner.id)}/git-artifacts`, { version: 1, commits: [commit] }, { ...captureHeaders(owner), "x-mimir-session": owner.id })) return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+      }
+    }));
+  };
   let session: SessionState | null = null;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let nextRequestKind: RequestKind = "primary";
@@ -409,6 +492,8 @@ export default function (pi: ExtensionAPI) {
     const generation = ++initialization;
     clearInterval(heartbeat);
     heartbeat = undefined;
+    await flushArtifacts();
+    if (generation !== initialization) return;
     snapshots.clear();
     const rawID = ctx?.sessionManager?.getSessionId?.();
     if (!rawID) return;
@@ -461,17 +546,31 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_tree", () => { nextRequestKind = "summary"; });
   pi.on("session_tree", () => { nextRequestKind = "primary"; });
 
-  pi.on("turn_start", (event, ctx) => {
+  pi.on("turn_start", async (event, ctx) => {
     activate();
+    const owner = session;
+    if (!owner) return;
     const context = ctx.sessionManager.buildSessionContext();
-    snapshots.set(event.turnIndex, { startedAt: event.timestamp, request: { messages: normalizeMessages(context.messages) } });
+    const messages = normalizeMessages(context.messages);
+    const baseline = await head(owner.cwd);
+    if (session !== owner) return;
+    snapshots.set(event.turnIndex, { startedAt: event.timestamp, request: { messages }, session: owner, baseline });
   });
 
-  pi.on("turn_end", (event) => {
+  pi.on("turn_end", async (event) => {
     const current = session;
     if (!current) return;
     const snapshot = snapshots.get(event.turnIndex);
     snapshots.delete(event.turnIndex);
+    if (snapshot?.session === current && snapshot.baseline) {
+      const hints = commitHints(event.message, event.toolResults);
+      if (hints.length) {
+        const job = (async () => sendArtifacts(current, await collectCommits(current.cwd, snapshot.baseline!, hints)))();
+        artifactJobs.add(job);
+        try { await job; } finally { artifactJobs.delete(job); }
+      }
+    }
+    if (session !== current) return;
     const exchange = buildExchange(current.id, event.turnIndex, snapshot, event.message, event.toolResults, pi.getSessionName());
     if (!exchange) return;
     const exchangeID = String(exchange.exchange_id);
@@ -489,6 +588,7 @@ export default function (pi: ExtensionAPI) {
     initialization++;
     clearInterval(heartbeat);
     heartbeat = undefined;
+    await flushArtifacts();
     snapshots.clear();
     const current = session;
     const reason = typeof event?.reason === "string" ? event.reason : "shutdown";

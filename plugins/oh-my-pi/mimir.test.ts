@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,16 +18,16 @@ afterEach(() => {
 });
 
 type Handler = (...args: never[]) => unknown;
-type CapturedRequest = { url: string; body: unknown };
+type CapturedRequest = { url: string; body: unknown; authorization?: string };
 type RegisteredProvider = { headers: Record<string, string> };
 
-function createHarness() {
+function createHarness(respond?: (url: string) => number) {
   process.env.MIMIR_URL = "https://mimir.test";
   process.env.MIMIR_TOKEN = "token";
   const requests: CapturedRequest[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) as unknown : null });
-    return new Response("{}", { status: 200 });
+    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) as unknown : null, authorization: new Headers(init?.headers).get("authorization") ?? undefined });
+    return new Response("{}", { status: respond?.(String(input)) ?? 200 });
   }) as typeof fetch;
   const handlers = new Map<string, Handler>();
   const providers: RegisteredProvider[] = [];
@@ -48,6 +49,26 @@ function createHarness() {
   };
 }
 
+function repository() {
+  const cwd = mkdtempSync(join(tmpdir(), "mimir-omp-git-"));
+  const run = (...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  run("init", "-q");
+  run("config", "user.email", "test@example.com");
+  run("config", "user.name", "Test");
+  run("config", "core.autocrlf", "false");
+  const commit = (content: string) => {
+    writeFileSync(join(cwd, "file.txt"), content);
+    run("add", "file.txt");
+    run("commit", "-qm", "test commit");
+    return run("rev-parse", "HEAD");
+  };
+  commit("initial\n");
+  return { cwd, commit, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
+}
+
+const turnMessage = { role: "assistant", provider: "openrouter", model: "test", content: [{ type: "toolCall", id: "1", name: "bash", arguments: { command: "git commit -m 'test commit'" } }] };
+function result(sha: string) { return [{ toolCallId: "1", toolName: "bash", content: `[main ${sha.slice(0, 7)}] test commit\n 1 file changed` }]; }
+
 function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
   return requests
     .filter((request) => request.url.endsWith(`/sessions/${sessionID}/events`))
@@ -59,6 +80,88 @@ function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
 
 
 describe("Oh My Pi extension", () => {
+  test("captures only a newly committed SHA named by successful tool output, with redaction and exact delivery", async () => {
+    const repo = repository();
+    try {
+      const harness = createHarness();
+      const ctx = { cwd: repo.cwd, sessionManager: { getSessionId: () => "exact-git", buildSessionContext: () => ({ messages: [] }) } };
+      await harness.invoke("session_start", {}, ctx);
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, ctx);
+      const sha = repo.commit("api_key=supersecret\n");
+      await harness.invoke("turn_end", { turnIndex: 0, message: turnMessage, toolResults: [{ toolCallId: "1", toolName: "bash", content: [{ type: "text", text: `[main ${sha.slice(0, 7)}] test commit\n 1 file changed` }] }] });
+      await harness.invoke("session_shutdown", {});
+      const artifacts = harness.requests.filter((request) => request.url.endsWith("/sessions/exact-git/git-artifacts"));
+      expect(artifacts).toHaveLength(1);
+      expect(artifacts[0].authorization).toBe("Bearer token");
+      expect(artifacts[0].body).toMatchObject({ version: 1, commits: [{ commit_sha: sha, provenance: "oh-my-pi", repository_url: null }] });
+      expect((artifacts[0].body as { commits: Array<{ committed_at: string }> }).commits[0].committed_at).toMatch(/\.\d{3}Z$/);
+      expect(JSON.stringify(artifacts[0].body)).not.toContain("supersecret");
+    } finally { repo.cleanup(); }
+  });
+
+  test("does not attribute a background commit or one from an earlier turn", async () => {
+    const repo = repository();
+    try {
+      const harness = createHarness();
+      const ctx = { cwd: repo.cwd, sessionManager: { getSessionId: () => "git-session", buildSessionContext: () => ({ messages: [] }) } };
+      await harness.invoke("session_start", {}, ctx);
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, ctx);
+      const sha = repo.commit("changed\n");
+      await harness.invoke("turn_end", { turnIndex: 0, message: turnMessage, toolResults: [{ ...result(sha)[0], isError: true }] });
+      await harness.invoke("turn_start", { turnIndex: 1, timestamp: Date.now() }, ctx);
+      await harness.invoke("turn_end", { turnIndex: 1, message: turnMessage, toolResults: result(sha) });
+      await harness.invoke("session_shutdown", {});
+      expect(harness.requests.filter((request) => request.url.endsWith("/git-artifacts"))).toHaveLength(0);
+    } finally { repo.cleanup(); }
+  });
+
+  test("retries artifact delivery through shutdown", async () => {
+    const repo = repository();
+    try {
+      let failures = 0;
+      const harness = createHarness((url) => url.endsWith("/git-artifacts") && failures++ < 2 ? 503 : 200);
+      const ctx = { cwd: repo.cwd, sessionManager: { getSessionId: () => "retry-git", buildSessionContext: () => ({ messages: [] }) } };
+      await harness.invoke("session_start", {}, ctx);
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, ctx);
+      const sha = repo.commit("changed\n");
+      await harness.invoke("turn_end", { turnIndex: 0, message: turnMessage, toolResults: result(sha) });
+      await harness.invoke("session_shutdown", {});
+      expect(harness.requests.filter((request) => request.url.endsWith("/git-artifacts"))).toHaveLength(3);
+    } finally { repo.cleanup(); }
+  });
+
+  test("keeps commit attribution across a switch while a retry is pending", async () => {
+    const repo = repository();
+    try {
+      let failures = 0;
+      const harness = createHarness((url) => url.endsWith("/git-artifacts") && failures++ === 0 ? 503 : 200);
+      const ctx = (id: string) => ({ cwd: repo.cwd, sessionManager: { getSessionId: () => id, buildSessionContext: () => ({ messages: [] }) } });
+      await harness.invoke("session_start", {}, ctx("first"));
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, ctx("first"));
+      const sha = repo.commit("changed\n");
+      const ending = harness.invoke("turn_end", { turnIndex: 0, message: turnMessage, toolResults: result(sha) });
+      await harness.invoke("session_switch", {}, ctx("second"));
+      await ending;
+      expect(harness.requests.filter((request) => request.url.endsWith("/git-artifacts")).map((request) => request.url)).toEqual([
+        "https://mimir.test/sessions/first/git-artifacts", "https://mimir.test/sessions/first/git-artifacts",
+      ]);
+      await harness.invoke("session_shutdown", {});
+    } finally { repo.cleanup(); }
+  });
+
+  test("skips patches larger than the collection cap", async () => {
+    const repo = repository();
+    try {
+      const harness = createHarness();
+      const ctx = { cwd: repo.cwd, sessionManager: { getSessionId: () => "large", buildSessionContext: () => ({ messages: [] }) } };
+      await harness.invoke("session_start", {}, ctx);
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, ctx);
+      const sha = repo.commit("x".repeat(5 * 1024 * 1024));
+      await harness.invoke("turn_end", { turnIndex: 0, message: turnMessage, toolResults: result(sha) });
+      await harness.invoke("session_shutdown", {});
+      expect(harness.requests.filter((request) => request.url.endsWith("/git-artifacts"))).toHaveLength(0);
+    } finally { repo.cleanup(); }
+  });
   test("canonicalizes unsafe session IDs with an OMP-specific prefix", () => {
     expect(__testing.sessionID("valid-session")).toBe("valid-session");
     expect(__testing.sessionID("unsafe session")).toMatch(/^oh-my-pi-[0-9a-f]{32}$/);

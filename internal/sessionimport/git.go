@@ -123,6 +123,49 @@ func (c CheckoutArtifactCollector) Collect(ctx context.Context, session Session)
 	return artifacts, nil
 }
 
+// CollectCommit reads one exact commit from a checkout, independent of session
+// timestamps, branch reachability, or recorded tool paths.
+func (c CheckoutArtifactCollector) CollectCommit(ctx context.Context, directory, sha string) (GitArtifact, error) {
+	if !fullGitSHA.MatchString(sha) {
+		return GitArtifact{}, errors.New("commit must be a lowercase full 40-character SHA")
+	}
+	rootData, err := c.run(ctx, directory, 64<<10, "rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(string(rootData)) == "" {
+		return GitArtifact{}, errors.New("cannot locate local Git checkout")
+	}
+	root := strings.TrimSpace(string(rootData))
+	resolved, err := c.run(ctx, root, 64<<10, "rev-parse", "--verify", sha+"^{commit}")
+	if err != nil || strings.TrimSpace(string(resolved)) != sha {
+		return GitArtifact{}, errors.New("exact commit not found in local checkout")
+	}
+	data, err := c.run(ctx, root, 64<<10, "show", "-s", "--format=%H%x00%P%x00%cI%x00%s%x00%D%x1e", sha)
+	if err != nil {
+		return GitArtifact{}, errors.New("cannot read commit metadata")
+	}
+	candidates := parseGitCandidates(data)
+	if len(candidates) != 1 || candidates[0].SHA != sha {
+		return GitArtifact{}, errors.New("invalid commit metadata")
+	}
+	patchData, err := c.run(ctx, root, c.patchLimit(), "show", "--format=", "--patch", "--unified=3", "--no-ext-diff", sha)
+	if err != nil {
+		return GitArtifact{}, errors.New("cannot read commit patch within size limit")
+	}
+	patch := redactGitPatch(string(patchData))
+	if strings.TrimSpace(patch) == "" {
+		return GitArtifact{}, errors.New("commit has no patch to capture")
+	}
+	candidate := candidates[0]
+	artifact := GitArtifact{CommitSHA: sha, CommittedAt: jsTimestamp(candidate.Committed), Subject: redactGitPatch(sanitizeSubject(candidate.Subject)), Patch: patch, Ref: redactGitPatch(candidate.Ref)}
+	if candidate.Parent != "" {
+		parent := candidate.Parent
+		artifact.ParentCommitSHA = &parent
+	}
+	if origin, err := c.run(ctx, root, 64<<10, "remote", "get-url", "origin"); err == nil {
+		artifact.RepositoryURL = normalizeGitOrigin(string(origin))
+	}
+	return artifact, nil
+}
+
 func (c CheckoutArtifactCollector) run(ctx context.Context, directory string, maxBytes int, args ...string) ([]byte, error) {
 	if c.Command != nil {
 		data, err := c.Command(ctx, directory, args...)

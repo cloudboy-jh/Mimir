@@ -404,9 +404,10 @@ Canonical work outcomes are `landed`, `discarded`, `abandoned`, and
 kept, while `saved` says an exchange is durably represented in both R2 and D1.
 
 Each active period of an exact session is an outcome generation. Finalization
-projects `landed` when the latest primary terminal signal is a clean completion,
-or `abandoned` when it is failed, pending, or absent. An explicit agent or user
-outcome recorded during the generation prevents automatic replacement.
+projects `unresolved` when the latest primary terminal signal is a clean
+completion without work-result evidence, or `abandoned` when it is failed,
+pending, or absent. An explicit agent or user outcome recorded during the
+generation prevents automatic replacement.
 Supporting sessions never resolve a root while another member of the tree
 remains active.
 
@@ -684,6 +685,15 @@ failures for a partial persistence result. Canonical session detail includes
 the ordered `git_artifacts` metadata array. The Access-protected dashboard reads
 patch content from `GET /dashboard/api/sessions/:id/git-artifacts/:commit/patch`;
 machine session detail never embeds patch bodies.
+
+The Pi and Oh My Pi extensions collect commits named in successful Git commit
+tool output between turn start and turn end. They upload redacted, size-bounded
+patches under the exact session ID; a transient upload failure is retried during
+the current process, including on a session switch or shutdown. Commits without
+recognizable tool evidence, oversized patches, and crashes before turn end are
+not captured automatically. `mimir session git capture <session-id>
+<full-commit-sha> --json` backfills one exact checkout commit without replaying
+exchanges or changing the recorded outcome.
 
 ### 9.3 Device Identity And Association
 

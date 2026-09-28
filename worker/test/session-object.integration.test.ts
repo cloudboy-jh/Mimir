@@ -1,5 +1,6 @@
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import { autoResolveStaleOutcomes } from "../src/sessions/outcomes";
 import {
   addMachineToken,
   createExecutionContext,
@@ -556,7 +557,19 @@ describe("Session object", () => {
       )
         .bind(id)
         .first(),
-    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+    ).toEqual({ work_outcome: "unresolved", outcome_src: "auto" });
+    expect(
+      await env.DB.prepare(
+        "SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toMatchObject({
+      outcome: "unresolved",
+      source: "auto",
+      reason: expect.stringContaining("without work-result evidence"),
+      evidence_json: expect.stringContaining('"signal":"clean_assistant_completion"'),
+    });
 
     await postEvent(id, {
       version: 1,
@@ -597,7 +610,7 @@ describe("Session object", () => {
         .all(),
     ).toMatchObject({
       results: [
-        { outcome: "landed" },
+        { outcome: "unresolved" },
         { outcome: "unresolved" },
         { outcome: "abandoned" },
       ],
@@ -644,6 +657,90 @@ describe("Session object", () => {
     });
   });
 
+  it("promotes a clean-completion generation only after stale Git evidence is retrievable", async () => {
+    const id = "object-stale-git-outcome";
+    const patchKey = `sessions/${id}/git/patch.patch`;
+    await postEvent(id, {
+      version: 1,
+      kind: "turn",
+      ts: "2026-08-14T10:00:00Z",
+      turn: { result: "completed" },
+    });
+    await postEvent(id, {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T10:01:00Z",
+    });
+    expect(
+      await env.DB.prepare("SELECT work_outcome, outcome_src FROM sessions WHERE id = ?")
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "unresolved", outcome_src: "auto" });
+    const now = "2026-08-17T10:00:00Z";
+    await expect(autoResolveStaleOutcomes(env, now)).resolves.toEqual({
+      count: 0,
+      session_ids: [],
+    });
+    await env.DB.prepare(
+      "INSERT INTO session_git_artifacts(session_id, commit_sha, provenance, patch_r2_key, patch_sha256, patch_bytes, patch_files, patch_additions, patch_deletions, capture_status, accepted_at, saved_at, created_at) VALUES (?, ?, 'git', ?, ?, 10, 1, 1, 0, 'saved', ?, ?, ?)",
+    )
+      .bind(id, "a".repeat(40), patchKey, "f".repeat(64), now, now, now)
+      .run();
+    await expect(autoResolveStaleOutcomes(env, now)).resolves.toEqual({
+      count: 0,
+      session_ids: [],
+    });
+    await env.LOGS.put(patchKey, "diff --git a/a b/a\n+change\n");
+    await expect(autoResolveStaleOutcomes(env, now)).resolves.toEqual({
+      count: 1,
+      session_ids: [id],
+    });
+    expect(
+      await env.DB.prepare("SELECT work_outcome, outcome_src FROM sessions WHERE id = ?")
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+  });
+
+  it("preserves an explicitly evidenced landed outcome after clean completion", async () => {
+    const id = "object-explicit-landed";
+    await postEvent(id, {
+      version: 1,
+      kind: "turn",
+      ts: "2026-08-14T12:10:00Z",
+      turn: { result: "completed" },
+    });
+    const explicit = await request(`/sessions/${id}/outcome`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        outcome: "landed",
+        reason: "Verified and retained the change",
+        evidence: { check: "passing integration test" },
+      }),
+    });
+    expect(explicit.status).toBe(200);
+    await postEvent(id, {
+      version: 1,
+      kind: "end",
+      ts: "2026-08-14T12:11:00Z",
+    });
+    expect(
+      await env.DB.prepare(
+        "SELECT work_outcome, outcome_src FROM sessions WHERE id = ?",
+      )
+        .bind(id)
+        .first(),
+    ).toEqual({ work_outcome: "landed", outcome_src: "agent" });
+    expect(
+      await env.DB.prepare(
+        "SELECT outcome, source FROM session_outcome_events WHERE session_id = ?",
+      )
+        .bind(id)
+        .all(),
+    ).toMatchObject({ results: [{ outcome: "landed", source: "agent" }] });
+  });
+
   it("waits for the root generation before projecting supporting-session completion", async () => {
     await postEvent("generation-root", {
       version: 1,
@@ -683,7 +780,7 @@ describe("Session object", () => {
       await env.DB.prepare(
         "SELECT work_outcome, outcome_src FROM sessions WHERE id = 'generation-root'",
       ).first(),
-    ).toEqual({ work_outcome: "landed", outcome_src: "auto" });
+    ).toEqual({ work_outcome: "unresolved", outcome_src: "auto" });
   });
 
   it("requires a websocket upgrade for the live feed", async () => {
