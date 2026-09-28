@@ -26,6 +26,7 @@ import (
 
 	mimirassets "github.com/cloudboy-jh/mimir"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
+	"github.com/cloudboy-jh/mimir/internal/sessionimport"
 )
 
 const (
@@ -71,10 +72,13 @@ type normalizedInput struct {
 }
 
 type Service struct {
-	Home    string
-	Now     func() time.Time
-	Deliver func(context.Context, Delivery) error
-	key     []byte
+	Home      string
+	Now       func() time.Time
+	Deliver   func(context.Context, Delivery) error
+	Collector interface {
+		CollectCommit(context.Context, string, string) (sessionimport.GitArtifact, error)
+	}
+	key []byte
 }
 
 func New() (Service, error) {
@@ -94,7 +98,12 @@ func New() (Service, error) {
 		return Service{Home: home, key: key}, nil
 	}
 	client := mimirapi.New(pointer)
-	return Service{Home: home, key: key, Deliver: func(ctx context.Context, delivery Delivery) error {
+	return Service{Home: home, key: key, Deliver: hookDeliver(client)}, nil
+}
+
+func hookDeliver(client mimirapi.Client) func(context.Context, Delivery) error {
+	pointer := client.Pointer
+	return func(ctx context.Context, delivery Delivery) error {
 		path := ""
 		switch delivery.Kind {
 		case "event":
@@ -103,6 +112,19 @@ func New() (Service, error) {
 			path = "/sessions/" + delivery.SessionID + "/exchanges"
 		case "load":
 			path = "/integrations/harness-loads"
+		case "git-artifacts":
+			var body struct {
+				Commits []sessionimport.GitArtifact `json:"commits"`
+			}
+			data, err := json.Marshal(delivery.Body)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(data, &body); err != nil {
+				return err
+			}
+			_, err = sessionimport.New(client).UploadGitArtifacts(ctx, sessionimport.Session{ID: delivery.SessionID, Harness: delivery.Harness, Repo: delivery.Repo}, body.Commits)
+			return err
 		default:
 			return fmt.Errorf("unknown hook delivery kind %q", delivery.Kind)
 		}
@@ -134,7 +156,7 @@ func New() (Service, error) {
 			return fmt.Errorf("Mimir API %s", res.Status)
 		}
 		return nil
-	}}, nil
+	}
 }
 
 func (s Service) Ingest(ctx context.Context, harness string, input io.Reader) error {
@@ -166,7 +188,7 @@ func (s Service) Ingest(ctx context.Context, harness string, input io.Reader) er
 	if decoder.Decode(&struct{}{}) != io.EOF {
 		return errors.New("hook input must contain one JSON object")
 	}
-	normalized, err := s.normalize(harness, payload)
+	normalized, err := s.normalize(ctx, harness, payload)
 	if err != nil {
 		return err
 	}
@@ -246,7 +268,7 @@ func (s Service) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (s Service) normalize(harness string, body map[string]any) (normalizedInput, error) {
+func (s Service) normalize(ctx context.Context, harness string, body map[string]any) (normalizedInput, error) {
 	event := stringValue(body["hook_event_name"])
 	session := stringValue(body["session_id"])
 	if harness == "cursor" && session == "" {
@@ -274,6 +296,9 @@ func (s Service) normalize(harness string, body map[string]any) (normalizedInput
 	model := stringValue(body["model"])
 	title := firstString(body, "title", "session_title")
 	start, prompt, complete, end := eventNames(harness)
+	if isCommitHook(harness, event) {
+		return s.normalizeCommit(ctx, harness, session, repo, cwd, body), nil
+	}
 	switch event {
 	case start:
 		state, err := s.readState(session)

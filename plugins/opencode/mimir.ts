@@ -16,12 +16,13 @@
 // server-side silence timer (~10 minutes without a heartbeat).
 
 import { tool, type Plugin } from "@opencode-ai/plugin";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const HEARTBEAT_MS = 60_000;
 const ACTIVITY_WINDOW_MS = 5 * 60_000;
@@ -36,6 +37,8 @@ const COMMIT_REF = /^[0-9a-f]{7,40}$/i;
 const GIT_REF = /^[\w.\-/]{1,200}$/;
 const MAX_PATCH_BYTES = 20 * 1024;
 const MAX_EVIDENCE_NOTE_BYTES = 8 * 1024;
+const MAX_LIVE_PATCH_BYTES = 4 * 1024 * 1024;
+const MAX_COMMIT_CALLS = 128;
 
 type Connection = { url: string; token: string };
 
@@ -438,6 +441,7 @@ function runGit(run: GitRunner, cwd: string, args: string[]): string | null {
 // patches never retain common credential shapes before transport.
 function redactEvidenceText(text: string): string {
   return text
+    .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
     .replace(/(?:sk|pk|rk)_[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
     .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
     .replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1[REDACTED]");
@@ -539,6 +543,141 @@ function landedGitEvidenceError(outcome: string, requestedCommit: string | undef
   if (requestedCommit && !evidence) return "the requested Git commit could not be resolved; outcome was not recorded";
   if (evidence && !evidence.patch) return "the landed Git commit has no retrievable patch; outcome was not recorded";
   return null;
+}
+
+type CommitArtifact = {
+  commit_sha: string;
+  parent_commit_sha: string | null;
+  committed_at: string;
+  subject: string;
+  repository_url: null;
+  ref: null;
+  provenance: "opencode";
+  patch: string;
+};
+
+type AsyncGit = (cwd: string, args: string[], maxBytes?: number) => Promise<string | null>;
+const execGit = promisify(execFile);
+const liveGit: AsyncGit = async (cwd, args, maxBytes = 64 * 1024) => {
+  try {
+    const { stdout } = await execGit("git", args, { cwd, encoding: "utf8", timeout: 5_000, maxBuffer: maxBytes, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    return stdout.trimEnd();
+  } catch {
+    return null;
+  }
+};
+
+function isCommitCommand(toolName: string, args: unknown): boolean {
+  if (toolName !== "bash" || !args || typeof args !== "object") return false;
+  const command = (args as Record<string, unknown>).command;
+  return typeof command === "string" && /(?:^|[;&|\n]\s*|\s)git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(command);
+}
+
+function commitHint(output: unknown): string | null {
+  if (typeof output !== "string") return null;
+  const hints = [...output.matchAll(/^\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)/gim)].map((match) => match[1]!.toLowerCase());
+  return hints.length === 1 ? hints[0]! : null;
+}
+
+async function gitHead(cwd: string, git: AsyncGit): Promise<string | null> {
+  const head = await git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  return head && COMMIT_SHA.test(head) ? head.toLowerCase() : null;
+}
+
+async function collectLiveCommit(cwd: string, baseline: string, hint: string, git: AsyncGit): Promise<CommitArtifact | null> {
+  const tip = await gitHead(cwd, git);
+  if (!tip || tip === baseline) return null;
+  const range = await git(cwd, ["rev-list", "--max-count=33", `${baseline}..${tip}`], 2_000);
+  if (!range) return null;
+  const candidates = range.split("\n");
+  if (candidates.length > 32 || candidates.some((sha) => !COMMIT_SHA.test(sha))) return null;
+  const matches = candidates.filter((sha) => sha.toLowerCase().startsWith(hint));
+  if (matches.length !== 1) return null;
+  const sha = matches[0]!;
+  // A range is meaningful only if the original checkout HEAD remains an ancestor.
+  if (await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return null;
+  const details = await git(cwd, ["show", "-s", "--format=%H%x00%P%x00%cI%x00%s", sha], 4_096);
+  const fields = details?.split("\0");
+  if (!fields || fields.length !== 4 || fields[0] !== sha) return null;
+  const [_, parents, date, rawSubject] = fields;
+  const committed = new Date(date!);
+  if (Number.isNaN(committed.getTime())) return null;
+  const patch = await git(cwd, ["-c", "diff.external=", "show", "--format=", "--patch", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", sha, "--"], MAX_LIVE_PATCH_BYTES + 1);
+  if (!patch || Buffer.byteLength(patch, "utf8") > MAX_LIVE_PATCH_BYTES) return null;
+  const cleaned = redactEvidenceText(patch);
+  if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_LIVE_PATCH_BYTES) return null;
+  const subject = redactEvidenceText(rawSubject!).replace(/[\p{Cc}]/gu, " ").slice(0, 500);
+  return { commit_sha: sha, parent_commit_sha: parents!.split(" ")[0] || null, committed_at: committed.toISOString(), subject, repository_url: null, ref: null, provenance: "opencode", patch: cleaned };
+}
+
+async function postGitArtifact(conn: Connection, sessionID: string, artifact: CommitArtifact, repo: string | null): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const headers: Record<string, string> = { authorization: `Bearer ${conn.token}`, "content-type": "application/json", "x-mimir-harness": "opencode", "x-mimir-session": sessionID };
+    if (repo) headers["x-mimir-repo"] = repo;
+    const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(sessionID)}/git-artifacts`, {
+      method: "POST", headers, body: JSON.stringify({ version: 1, commits: [artifact] }), signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    const result = await response.json() as { kind?: string; artifacts?: Array<{ capture_status?: string }> };
+    return result.kind === "ok" && result.artifacts?.[0]?.capture_status === "saved";
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createCommitReporter(
+  cwd: string | undefined,
+  git: AsyncGit,
+  send: (sessionID: string, artifact: CommitArtifact) => Promise<boolean>,
+  schedule: (callback: () => void, delay: number) => unknown = setTimeout,
+) {
+  const calls = new Map<string, { baseline: string | null }>();
+  const jobs = new Set<string>();
+  const key = (sessionID: string, callID: string) => JSON.stringify([sessionID, callID]);
+  return {
+    async before(input: { tool: string; sessionID: string; callID: string }, output: { args: unknown }): Promise<void> {
+      if (!cwd || !input.sessionID || !input.callID || !isCommitCommand(input.tool, output.args)) return;
+      const id = key(input.sessionID, input.callID);
+      // Reserve the key before the async HEAD lookup; duplicate hooks cannot overwrite it.
+      if (calls.has(id)) return;
+      if (calls.size >= MAX_COMMIT_CALLS) calls.delete(calls.keys().next().value!);
+      const call = { baseline: null as string | null };
+      calls.set(id, call);
+      try {
+        call.baseline = await gitHead(cwd, git);
+      } catch {
+        // Local Git failure must not interrupt the tool.
+      }
+    },
+    after(input: { sessionID: string; callID: string }, output: { output?: unknown; metadata?: Record<string, unknown> }): void {
+      const id = key(input.sessionID, input.callID);
+      const call = calls.get(id);
+      calls.delete(id);
+      if (!cwd || !call?.baseline || output.metadata?.exitCode !== undefined && output.metadata.exitCode !== 0 || output.metadata?.isError === true) return;
+      const hint = commitHint(output.output);
+      if (!hint || jobs.size >= MAX_COMMIT_CALLS) return;
+      jobs.add(id);
+      void (async () => {
+        try {
+          const artifact = await collectLiveCommit(cwd, call.baseline!, hint, git);
+          if (!artifact) return;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            if (await send(input.sessionID, artifact)) return;
+            if (attempt < 3) await new Promise<void>((resolve) => schedule(resolve, 250 * 2 ** attempt));
+          }
+        } catch {
+          // Git collection and delivery are strictly best-effort.
+        } finally {
+          jobs.delete(id);
+        }
+      })();
+    },
+    pending: () => calls.size,
+  };
 }
 
 function createDeliveryQueue(
@@ -719,6 +858,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
     (sessionID) => (client as unknown as OpenCodeClient).session.messages({ path: { id: sessionID } }),
     (sessionID, exchange) => postDirectExchange(conn, sessionID, exchange, repo),
   );
+  const commitReporter = createCommitReporter(worktree ?? directory, liveGit, (sessionID, artifact) => postGitArtifact(conn, sessionID, artifact, repo));
   const activity = createActivityTracker();
 
   const timer = setInterval(() => {
@@ -728,6 +868,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
   (timer as { unref?: () => void }).unref?.();
 
   return {
+    "tool.execute.before": async (input, output) => { await commitReporter.before(input, output); },
+    "tool.execute.after": async (input, output) => { commitReporter.after(input, output); },
     tool: {
       mimir_session_status: tool({
         description: "Verify the current OpenCode session's durable Mimir capture status.",
@@ -800,4 +942,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

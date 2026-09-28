@@ -1,7 +1,112 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+
+describe("live Git commit capture", () => {
+  const base = "a".repeat(40);
+  const sha = "b".repeat(40);
+  const command = { command: 'git add . && git commit -m "fix"' };
+  const output = { output: `[main ${sha.slice(0, 7)}] fix\n 1 file changed` };
+  const patch = 'diff --git a/f b/f\n+token=supersecretvalue\n+Bearer abc.def.ghi\n';
+  const git = async (_cwd: string, args: string[]) => {
+    const responses: Record<string, string> = {
+      "rev-parse --verify HEAD^{commit}": base,
+      [`rev-list --max-count=33 ${base}..${sha}`]: sha,
+      [`merge-base --is-ancestor ${base} ${sha}`]: "",
+      [`show -s --format=%H%x00%P%x00%cI%x00%s ${sha}`]: [sha, base, "2026-09-28T12:00:00Z", "token=supersecretvalue"].join("\0"),
+      [`-c diff.external= show --format= --patch --unified=3 --no-ext-diff --no-textconv --no-renames --no-color ${sha} --`]: patch,
+    };
+    // HEAD advances only after the tool has run.
+    return args[0] === "rev-parse" ? (advanced ? sha : base) : responses[args.join(" ")] ?? null;
+  };
+  let advanced = false;
+
+  it("attributes an exact successful call, redacts locally, and retries upload without waiting on the after hook", async () => {
+    advanced = false;
+    const sent: Array<{ session: string; artifact: unknown }> = [];
+    const scheduled: Array<() => void> = [];
+    let attempts = 0;
+    const reporter = createCommitReporter("/repo", git, async (session, artifact) => {
+      sent.push({ session, artifact });
+      return ++attempts === 2;
+    }, (callback) => { scheduled.push(callback); });
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "call" }, { args: command });
+    advanced = true;
+    reporter.after({ sessionID: "other", callID: "call" }, output);
+    reporter.after({ sessionID: "one", callID: "wrong" }, output);
+    expect(reporter.pending()).toBe(1);
+    reporter.after({ sessionID: "one", callID: "call" }, output);
+    reporter.after({ sessionID: "one", callID: "call" }, output);
+    await Bun.sleep(10);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.session).toBe("one");
+    expect(sent[0]?.artifact).toMatchObject({ commit_sha: sha, parent_commit_sha: base, provenance: "opencode", committed_at: "2026-09-28T12:00:00.000Z", repository_url: null, ref: null });
+    expect(JSON.stringify(sent[0]?.artifact)).not.toContain("supersecretvalue");
+    expect(JSON.stringify(sent[0]?.artifact)).not.toContain("abc.def.ghi");
+    scheduled.shift()?.();
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(2);
+    expect(reporter.pending()).toBe(0);
+  });
+
+  it("rejects absent or ambiguous hints, failures, and unrelated tool calls", async () => {
+    advanced = false;
+    let uploads = 0;
+    const reporter = createCommitReporter("/repo", git, async () => { uploads++; return true; });
+    expect(isCommitCommand("read", command)).toBe(false);
+    expect(isCommitCommand("bash", { command: "git status" })).toBe(false);
+    expect(commitHint("[main abcdef0] ok\n[main 1234567] other")).toBeNull();
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "fail" }, { args: command });
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "missing" }, { args: command });
+    await reporter.before({ tool: "read", sessionID: "one", callID: "other" }, { args: command });
+    advanced = true;
+    reporter.after({ sessionID: "one", callID: "fail" }, { ...output, metadata: { exitCode: 1 } });
+    reporter.after({ sessionID: "one", callID: "missing" }, { output: "commit succeeded" });
+    reporter.after({ sessionID: "one", callID: "other" }, output);
+    await Bun.sleep(0);
+    expect(uploads).toBe(0);
+  });
+
+  it("never captures a commit without a pre-tool checkout baseline", async () => {
+    const reporter = createCommitReporter("/repo", async () => null, async () => { throw new Error("unexpected upload"); });
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "call" }, { args: command });
+    reporter.after({ sessionID: "one", callID: "call" }, output);
+    expect(reporter.pending()).toBe(0);
+  });
+
+  it("requires a new reachable commit matching the result and skips oversized patches", async () => {
+    advanced = true;
+    expect(await collectLiveCommit("/repo", base, "c".repeat(7), git)).toBeNull();
+    expect(await collectLiveCommit("/repo", sha, sha.slice(0, 7), git)).toBeNull();
+    const unreachable = async (cwd: string, args: string[]) => args[0] === "merge-base" ? null : git(cwd, args);
+    expect(await collectLiveCommit("/repo", base, sha.slice(0, 7), unreachable)).toBeNull();
+    const huge = async (cwd: string, args: string[]) => args.includes("--patch") ? "x".repeat(4 * 1024 * 1024 + 1) : git(cwd, args);
+    expect(await collectLiveCommit("/repo", base, sha.slice(0, 7), huge)).toBeNull();
+  });
+
+  it("posts one bounded artifact to the authenticated Worker endpoint and handles failed saves", async () => {
+    const original = globalThis.fetch;
+    let request: Request | undefined;
+    const artifact = { commit_sha: sha, parent_commit_sha: base, committed_at: "2026-09-28T12:00:00.000Z", subject: "fix", repository_url: null, ref: null, provenance: "opencode" as const, patch: "diff --git a/f b/f" };
+    try {
+      globalThis.fetch = async (input, init) => { request = new Request(input, init); return Response.json({ kind: "ok", artifacts: [{ capture_status: "saved" }] }); };
+      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, "repo")).toBe(true);
+      expect(request?.url).toBe("https://mimir.test/sessions/session%2Fid/git-artifacts");
+      expect(request?.headers.get("authorization")).toBe("Bearer secret");
+      expect(request?.headers.get("x-mimir-harness")).toBe("opencode");
+      expect(request?.headers.get("x-mimir-session")).toBe("session/id");
+      expect(request?.headers.get("x-mimir-repo")).toBe("repo");
+      expect(await request?.json()).toEqual({ version: 1, commits: [artifact] });
+      globalThis.fetch = async () => Response.json({ kind: "partial", artifacts: [{ capture_status: "failed" }] });
+      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, null)).toBe(false);
+      globalThis.fetch = async () => { throw new Error("offline"); };
+      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, null)).toBe(false);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
 
 describe("plugin exports", () => {
   it("exposes an identified OpenCode server plugin module", () => {
@@ -641,10 +746,11 @@ describe("mergeOutcomeEvidence", () => {
 
 describe("redactEvidenceText and boundedBytes", () => {
   it("redacts builtin credential shapes", () => {
-    const text = redactEvidenceText("Bearer abc.def.ghi\napi_key: supersecretvalue\npassword=hunter2value");
+    const text = redactEvidenceText("Bearer abc.def.ghi\napi_key: supersecretvalue\npassword=hunter2value\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----");
     expect(text).toContain("Bearer [REDACTED]");
     expect(text).not.toContain("supersecretvalue");
     expect(text).not.toContain("hunter2value");
+    expect(text).not.toContain("private-material");
   });
 
   it("bounds by bytes without splitting multibyte characters", () => {

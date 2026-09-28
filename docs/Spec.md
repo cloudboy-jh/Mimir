@@ -686,12 +686,14 @@ the ordered `git_artifacts` metadata array. The Access-protected dashboard reads
 patch content from `GET /dashboard/api/sessions/:id/git-artifacts/:commit/patch`;
 machine session detail never embeds patch bodies.
 
-The Pi and Oh My Pi extensions collect commits named in successful Git commit
-tool output between turn start and turn end. They upload redacted, size-bounded
-patches under the exact session ID; a transient upload failure is retried during
-the current process, including on a session switch or shutdown. Commits without
-recognizable tool evidence, oversized patches, and crashes before turn end are
-not captured automatically. `mimir session git capture <session-id>
+Pi and Oh My Pi collect commits named in successful Git commit tool output
+between turn start and turn end. OpenCode collects from paired before/after
+shell-tool calls; Hermes uses its pre/post tool hooks. Claude Code, Codex and
+Cursor route post-tool commit evidence through their receipt-owned hook
+manifests and the encrypted CLI outbox. All upload redacted, size-bounded
+patches under the exact session ID. Commits without recognizable tool evidence,
+oversized patches, and unsupported remote or external shell work are not
+captured automatically. `mimir session git capture <session-id>
 <full-commit-sha> --json` backfills one exact checkout commit without replaying
 exchanges or changing the recorded outcome.
 

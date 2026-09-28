@@ -27,6 +27,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import subprocess
 import tempfile
 import threading
 import time
@@ -43,6 +45,8 @@ USER_AGENT = "mimir-hermes/1.0"
 MAX_PENDING_REQUESTS = 128
 MAX_PENDING_EXCHANGES = 256
 MAX_EXCHANGE_BYTES = 1024 * 1024
+MAX_PATCH_BYTES = 4 * 1024 * 1024
+COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 _UTC = timezone.utc
 
@@ -156,6 +160,140 @@ def repo_name(directory):
         return None
     parts = [part for part in re.split(r"[\\/]", directory.rstrip("/\\")) if part]
     return parts[-1] if parts else None
+
+
+def _git(cwd, args, limit=65536):
+    """Read at most limit bytes, with a deadline even for a stalled git process."""
+    try:
+        process = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL)
+        timer = threading.Timer(5, process.kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            output = process.stdout.read(limit + 1)
+            if len(output) > limit:
+                process.kill()
+            process.wait(timeout=5)
+            if process.returncode != 0 or len(output) > limit:
+                return None
+            return output.decode("utf-8", errors="replace")
+        finally:
+            timer.cancel()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+
+
+def _head(cwd):
+    value = _git(cwd, ["rev-parse", "--verify", "HEAD"])
+    value = value.strip() if value else None
+    return value if value and COMMIT_SHA.fullmatch(value) else None
+
+
+def _commit_cwd(tool_name, args):
+    if tool_name not in ("bash", "exec", "terminal", "shell", "execute", "run") or not isinstance(args, dict):
+        return None
+    command = args.get("command")
+    if not isinstance(command, str) or len(command) > 50000:
+        return None
+    cwd = args.get("workdir") or args.get("cwd") or os.getcwd()
+    if not isinstance(cwd, str) or not os.path.isdir(cwd):
+        return None
+    # Only recognize a literal git invocation, not a quoted mention of git commit.
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        if token not in ("git", "git.exe") or (index and tokens[index - 1] not in ("&&", ";", "||", "|")):
+            continue
+        pos = index + 1
+        checkout = cwd
+        if pos < len(tokens) and tokens[pos] == "-C" and pos + 1 < len(tokens):
+            checkout = os.path.abspath(os.path.join(cwd, tokens[pos + 1]))
+            pos += 2
+        if pos < len(tokens) and tokens[pos] == "commit" and os.path.isdir(checkout):
+            return checkout
+    return None
+
+
+def _redact_patch(text):
+    text = re.sub(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+                  "[REDACTED PRIVATE KEY]", text)
+    text = re.sub(r"\b(Bearer\s+)[^\s\"']+", r"\1[REDACTED]", text, flags=re.I)
+    return re.sub(r"\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[\"']?)[^\s\"']+",
+                  r"\1[REDACTED]", text, flags=re.I)
+
+
+def _tool_text(result):
+    if isinstance(result, str):
+        return result[:50001]
+    if isinstance(result, dict):
+        for key in ("stdout", "output", "content"):
+            text = _tool_text(result.get(key))
+            if text is not None:
+                return text
+    if isinstance(result, list):
+        parts = [item.get("text") for item in result if isinstance(item, dict)
+                 and item.get("type") == "text" and isinstance(item.get("text"), str)]
+        return "\n".join(parts)[:50001] if parts else None
+    return None
+
+
+def _commit_artifact(cwd, before, result):
+    result = _tool_text(result)
+    if not before or result is None or len(result) > 50000:
+        return None
+    after = _head(cwd)
+    if not after or after == before:
+        return None
+    # Git's own commit summary supplies the hash; tool success alone is insufficient.
+    hints = re.findall(r"\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)", result, re.M)
+    if not any(after.startswith(hint) for hint in hints):
+        return None
+    details = _git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", after])
+    lines = details.strip().splitlines() if details else []
+    if len(lines) < 3:
+        return None
+    parents, committed, *subject = lines
+    try:
+        date = datetime.fromisoformat(committed.replace("Z", "+00:00")).astimezone(_UTC)
+    except ValueError:
+        return None
+    patch = _git(cwd, ["-c", "diff.external=", "show", "--format=", "--no-ext-diff",
+                       "--no-textconv", "--no-renames", "--no-color", after, "--"], MAX_PATCH_BYTES)
+    if not patch:
+        return None
+    patch = _redact_patch(patch)
+    if not patch or len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
+        return None
+    return {"commit_sha": after, "parent_commit_sha": parents.split(" ")[0] or None,
+            "committed_at": date.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "subject": re.sub(r"[\x00-\x1f\x7f]", " ", _redact_patch(" ".join(subject)))[:500],
+            "repository_url": None, "ref": None, "provenance": "hermes", "patch": patch}
+
+
+def _post_artifact(connection, session_id, artifact):
+    body = json.dumps({"version": 1, "commits": [artifact]}, ensure_ascii=False).encode("utf-8")
+    if len(body) > 5 * 1024 * 1024:
+        return False
+    request = urllib.request.Request(
+        f"{connection['url']}/sessions/{urllib.parse.quote(session_id, safe='')}/git-artifacts",
+        data=body, method="POST",
+        headers={"authorization": f"Bearer {connection['token']}", "content-type": "application/json",
+                 "user-agent": USER_AGENT, "x-mimir-harness": "hermes", "x-mimir-session": session_id},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            receipt = json.load(response)
+        return any(item.get("commit_sha") == artifact["commit_sha"] and item.get("capture_status") == "saved"
+                   for item in receipt.get("artifacts", []))
+    except Exception:
+        return False
 
 
 
@@ -639,6 +777,8 @@ def register(ctx):
     ) if directory else None
     if reporter._queue:
         reporter._queue.replay()
+    pending_commits = {}
+    commits_lock = threading.Lock()
     def heartbeat_loop():
         while True:
             threading.Event().wait(HEARTBEAT_SECONDS)
@@ -658,6 +798,32 @@ def register(ctx):
 
     def on_tool(session_id=None, turn_id=None, api_request_id=None, **kwargs):
         reporter.tool_call(session_id, turn_id, api_request_id, kwargs)
+        tool_id = kwargs.get("tool_call_id")
+        if not session_id or not tool_id:
+            return
+        with commits_lock:
+            prior = pending_commits.pop((session_id, tool_id), None)
+        if (not prior or kwargs.get("status") not in ("ok", "succeeded", "success")
+                or kwargs.get("is_error") is True or kwargs.get("exit_code") not in (None, 0)):
+            return
+        result = kwargs.get("result")
+        artifact = _commit_artifact(prior[0], prior[1], result)
+        if artifact:
+            threading.Thread(target=_post_artifact, args=(connection, session_id, artifact), daemon=True).start()
+
+    def before_tool(session_id=None, tool_call_id=None, tool_name=None, args=None, **_kwargs):
+        if not isinstance(session_id, str) or not session_id or not isinstance(tool_call_id, str) or not tool_call_id:
+            return
+        try:
+            cwd = _commit_cwd(tool_name, args)
+            before = _head(cwd) if cwd else None
+        except (OSError, ValueError):
+            return
+        if before:
+            with commits_lock:
+                if len(pending_commits) >= MAX_PENDING_REQUESTS:
+                    pending_commits.pop(next(iter(pending_commits)))
+                pending_commits[(session_id, tool_call_id)] = (cwd, before)
 
     def on_turn(session_id=None, turn_id=None, **_kwargs):
         if session_id:
@@ -668,11 +834,16 @@ def register(ctx):
 
     def on_finalize(session_id=None, reason=None, **_kwargs):
         if session_id:
+            with commits_lock:
+                for key in list(pending_commits):
+                    if key[0] == session_id:
+                        del pending_commits[key]
             reporter.flush(session_id)
             reporter.finish(session_id, reason or "session finalized")
 
     ctx.register_hook("pre_api_request", on_transport)
     ctx.register_hook("post_api_request", on_response)
+    ctx.register_hook("pre_tool_call", before_tool)
     ctx.register_hook("post_tool_call", on_tool)
     ctx.register_hook("post_llm_call", on_turn)
     ctx.register_hook("on_session_start", on_start)

@@ -5,6 +5,7 @@
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
     "PreCompact": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
     "PostCompact": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
+    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex" }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "mimir _hook codex", "timeout": 3 }] }]
   }
