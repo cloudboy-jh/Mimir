@@ -116,6 +116,9 @@ export async function ingestGitArtifacts(
   for (const input of prepared) {
     const existing = await loadGitArtifact(db, sessionID, input.commit_sha);
     if (existing) {
+      if (existing.capture_status === "saved" && isRepairKey(existing.patch_r2_key, input.patchR2Key) &&
+          await loadRepairAudit(bucket, sessionID, existing))
+        input.patchR2Key = existing.patch_r2_key;
       if (!sameArtifact(existing, input))
         return { kind: "conflict", commit_sha: input.commit_sha };
       if (existing.capture_status === "saved") {
@@ -241,6 +244,125 @@ export async function loadSessionGitArtifacts(db: D1Database, id: string) {
   return rows.results;
 }
 
+type RepairAudit = {
+  version: 1;
+  operation: "git-artifact-repair";
+  session_id: string;
+  installation_id: string | null;
+  token_hash: string;
+  old: GitArtifact;
+  new: GitArtifact;
+};
+
+export async function repairGitArtifact(
+  db: D1Database,
+  bucket: R2Bucket,
+  sessionID: string,
+  commitSHA: string,
+  body: unknown,
+  actor: { installationID: string | null; tokenHash: string },
+) {
+  if (!SHA.test(commitSHA)) return { kind: "invalid", error: "invalid commit SHA" } as const;
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return { kind: "invalid", error: "body must be an object" } as const;
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "expected_digest" && key !== "artifact") ||
+      typeof record.expected_digest !== "string" || !/^[0-9a-f]{64}$/.test(record.expected_digest))
+    return { kind: "invalid", error: "body requires expected_digest (lowercase SHA-256) and artifact only" } as const;
+  const parsed = parseGitArtifacts({ version: 1, commits: [record.artifact] });
+  if ("error" in parsed) return { kind: "invalid", error: parsed.error } as const;
+  const input = parsed.artifacts[0];
+  if (input.commit_sha !== commitSHA)
+    return { kind: "invalid", error: "artifact commit_sha must match path SHA" } as const;
+  const session = await db.prepare("SELECT parent_session_id, installation_id FROM sessions WHERE id = ?")
+    .bind(sessionID).first<{ parent_session_id: string | null; installation_id: string | null }>();
+  if (!session) return { kind: "not-found" } as const;
+  if (session.parent_session_id !== null)
+    return { kind: "invalid", error: "repair requires the exact root session id" } as const;
+  if (session.installation_id !== actor.installationID)
+    return { kind: "forbidden" } as const;
+  const old = await loadGitArtifact(db, sessionID, commitSHA);
+  if (!old) return { kind: "not-found" } as const;
+  const patterns = stringArray((await readConfig(db))["redact.patterns"]);
+  const patch = redact(input.patch, patterns);
+  if (typeof patch !== "string")
+    return { kind: "invalid", error: "patch must be a string" } as const;
+  const patchSha256 = await sha256(patch);
+  const prefix = `sessions/${sessionID}/git/${commitSHA}/${patchSha256}`;
+  const prepared: PreparedArtifact = {
+    ...input, patch, patchSha256,
+    patchBytes: new TextEncoder().encode(patch),
+    patchR2Key: `${prefix}.patch`, stats: patchStats(patch),
+  };
+  const conflict = { kind: "conflict", commit_sha: commitSHA } as const;
+  const success = (artifact: GitArtifact, auditKey: string, duplicate: boolean) => ({
+    kind: "ok" as const, session_id: sessionID, artifacts: [artifact], duplicates: duplicate ? 1 : 0,
+    repaired: { commit_sha: commitSHA, previous_digest: record.expected_digest as string,
+      patch_sha256: patchSha256, audit_r2_key: auditKey, duplicate },
+  });
+  try {
+    if (old.capture_status === "saved" && isRepairKey(old.patch_r2_key, prepared.patchR2Key) &&
+        sameArtifact(old, { ...prepared, patchR2Key: old.patch_r2_key })) {
+      const auditKey = `${old.patch_r2_key}.audit.json`;
+      const audit = await loadRepairAudit(bucket, sessionID, old);
+      if (audit?.old.patch_sha256 === record.expected_digest &&
+          await bucket.head(old.patch_r2_key))
+        return success(old, auditKey, true);
+    }
+    if (old.patch_sha256 !== record.expected_digest) return conflict;
+    prepared.patchR2Key = `${prefix}/repair-${crypto.randomUUID()}.patch`;
+    const now = new Date().toISOString();
+    const { patch: _patch, ...inputMetadata } = input;
+    const metadata: GitArtifact = {
+      ...old, ...inputMetadata, patch_r2_key: prepared.patchR2Key, patch_sha256: patchSha256,
+      patch_bytes: prepared.patchBytes.byteLength, patch_files: prepared.stats.files,
+      patch_additions: prepared.stats.additions, patch_deletions: prepared.stats.deletions,
+      capture_status: "saved", saved_at: now, failed_at: null, failure_code: null,
+    };
+    // Patch bodies never enter the audit or D1 metadata.
+    const auditKey = `${prepared.patchR2Key}.audit.json`;
+    const audit: RepairAudit = { version: 1, operation: "git-artifact-repair", session_id: sessionID,
+      installation_id: actor.installationID, token_hash: actor.tokenHash, old, new: metadata };
+    if (!await bucket.put(prepared.patchR2Key, prepared.patchBytes, {
+      onlyIf: { etagDoesNotMatch: "*" }, sha256: patchSha256,
+      httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      customMetadata: { session_id: sessionID, commit_sha: commitSHA, sha256: patchSha256 },
+    })) throw new Error("patch write failed");
+    // Immutable intent precedes the CAS. It proves completion only when D1 matches audit.new.
+    if (!await bucket.put(auditKey, JSON.stringify(audit), {
+      onlyIf: { etagDoesNotMatch: "*" }, httpMetadata: { contentType: "application/json" },
+    })) throw new Error("audit write failed");
+    const columns = artifactColumns();
+    const updated = await db.prepare(
+      `UPDATE session_git_artifacts SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE session_id = ? AND ${columns.map((column) => `${column} IS ?`).join(" AND ")} AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND parent_session_id IS NULL AND installation_id IS ?)`,
+    ).bind(...columns.map((column) => metadata[column]), sessionID,
+      ...columns.map((column) => old[column]), sessionID, actor.installationID).run();
+    if (updated.meta.changes !== 1) return conflict;
+    return success(metadata, auditKey, false);
+  } catch {
+    return { kind: "failed", error: "Git artifact repair persistence failed", commit_sha: commitSHA } as const;
+  }
+}
+
+function artifactColumns() {
+  return GIT_ARTIFACT_COLUMNS.split(", ") as Array<keyof GitArtifact>;
+}
+
+async function loadRepairAudit(bucket: R2Bucket, sessionID: string, artifact: GitArtifact) {
+  const object = await bucket.get(`${artifact.patch_r2_key}.audit.json`);
+  const audit = object ? await object.json<RepairAudit>() : null;
+  return audit?.version === 1 && audit.operation === "git-artifact-repair" &&
+    audit.session_id === sessionID && audit.old.commit_sha === artifact.commit_sha &&
+    artifactColumns().every((column) => audit.new[column] === artifact[column])
+    ? audit : null;
+}
+
+function isRepairKey(key: string, canonicalKey: string) {
+  const prefix = canonicalKey.slice(0, -6);
+  return key.startsWith(`${prefix}/repair-`) &&
+    /^repair-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.patch$/.test(key.slice(prefix.length + 1));
+}
+
 export async function loadGitArtifactPatch(
   db: D1Database,
   bucket: R2Bucket,
@@ -259,7 +381,7 @@ export async function loadGitArtifactPatch(
     return { kind: "artifact-not-found" } as const;
   const object = await bucket.get(artifact.patch_r2_key);
   return object
-    ? ({ kind: "stream", body: object.body } as const)
+    ? ({ kind: "stream", body: object.body, artifact } as const)
     : ({ kind: "patch-not-found" } as const);
 }
 

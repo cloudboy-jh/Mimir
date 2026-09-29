@@ -5,8 +5,10 @@ import { parseSessionEvent, SESSION_ID } from "./events";
 import { canMutateSession, expireSessions } from "./lifecycle";
 import {
   ingestGitArtifacts,
+  loadGitArtifactPatch,
   loadSessionGitArtifacts,
   readGitArtifactBody,
+  repairGitArtifact,
 } from "./git-artifacts";
 import { autoResolveStaleOutcomes, canonicalOutcome, endSession, updateOutcome } from "./outcomes";
 import {
@@ -155,6 +157,7 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
   app.use("/sessions/:id/outcome", requireSessionOwnership);
   app.use("/sessions/:id/end", requireSessionOwnership);
   app.use("/sessions/:id/git-artifacts", requireSessionOwnership);
+  app.use("/sessions/:id/git-artifacts/*", requireSessionOwnership);
   app.use("/sessions/:id/parent", requireSessionOwnership);
 
   app.get("/sessions/:id/parent", async (c) => {
@@ -245,6 +248,43 @@ export function registerSessionRoutes(app: Hono<AppEnv>) {
       result,
       result.duplicates === result.artifacts.length ? 200 : 201,
     );
+  });
+
+  app.post("/sessions/:id/git-artifacts/:sha/repair", async (c) => {
+    const parsed = await readGitArtifactBody(c.req.raw);
+    if ("error" in parsed)
+      return c.json({ error: parsed.error }, parsed.error.endsWith("too large") ? 413 : 400);
+    const result = await repairGitArtifact(c.env.DB, c.env.LOGS,
+      c.req.param("id"), c.req.param("sha"), parsed.body,
+      { installationID: c.get("installationID"), tokenHash: c.get("tokenHash") });
+    c.header("cache-control", "no-store");
+    if (result.kind === "invalid") return c.json({ error: result.error }, 400);
+    if (result.kind === "forbidden") return c.json({ error: "session belongs to another installation" }, 403);
+    if (result.kind === "not-found") return c.json({ error: "session or Git artifact not found" }, 404);
+    if (result.kind === "conflict")
+      return c.json({ error: "Git artifact repair conflicts with stored commit", commit_sha: result.commit_sha }, 409);
+    if (result.kind === "failed") return c.json(result, 503);
+    return c.json(result, 200);
+  });
+
+  app.get("/sessions/:id/git-artifacts/:sha/patch", async (c) => {
+    c.header("cache-control", "no-store");
+    const sessionID = await rootSessionID(c.env.DB, c.req.param("id"));
+    const root = await c.env.DB.prepare(
+      "SELECT installation_id FROM sessions WHERE id = ? AND parent_session_id IS NULL",
+    ).bind(sessionID).first<{ installation_id: string | null }>();
+    if (!root) return c.json({ error: "session not found" }, 404);
+    if (root.installation_id !== c.get("installationID"))
+      return c.json({ error: "session belongs to another installation" }, 403);
+    const result = await loadGitArtifactPatch(c.env.DB, c.env.LOGS, sessionID, c.req.param("sha"));
+    if (result.kind === "invalid") return c.json({ error: "invalid commit SHA" }, 400);
+    if (result.kind === "artifact-unavailable") return c.json({ error: "Git artifact is not saved" }, 409);
+    if (result.kind !== "stream") return c.json({ error: "session, Git artifact or patch not found" }, 404);
+    return new Response(result.body, { headers: {
+      "content-type": "text/plain; charset=utf-8", "cache-control": "no-store",
+      "x-mimir-patch-sha256": result.artifact.patch_sha256,
+      "x-mimir-patch-bytes": String(result.artifact.patch_bytes),
+    } });
   });
 
   app.post("/sessions/:id/events", async (c) => {

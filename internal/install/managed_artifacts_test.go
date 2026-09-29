@@ -139,6 +139,64 @@ func TestFreshInstallBundlesHarnessIntegrationsAndUseSkill(t *testing.T) {
 			}
 		})
 	}
+	for _, artifact := range report.Artifacts {
+		if artifact.Source != "skills/mimir-use/SKILL.md" {
+			continue
+		}
+		t.Run("delivered guidance/"+artifact.Path, func(t *testing.T) {
+			text := strings.Join(strings.Fields(string(mustReadFile(t, artifact.Path))), " ")
+			for _, required := range []string{
+				"For root-session work, use the exact root session ID; never substitute a subsession",
+				"mimir session git verify <exact-session-id> <full-lowercase-40-character-sha> --json",
+				"`verified: true`",
+				"SHA256 digest, byte count, multiline Git patch format, and file/addition/deletion statistics",
+				"Saved status alone is not verification",
+				"Repair an explicitly identified corrupted existing artifact only from a trusted local commit SHA",
+				"existing canonical `patch_sha256` as the expected digest",
+				"mimir session git repair <exact-session-id> <full-lowercase-40-character-sha> --expected-digest <oldsha256> --json",
+				"repair preserves an audit of the prior artifact",
+				"Do not automatically repair capture conflicts caused by unrelated metadata or content mismatches",
+				"No bulk repair or guessed mutations",
+				"independently verifying every relevant saved Git artifact",
+			} {
+				if !strings.Contains(text, required) {
+					t.Errorf("installed skill missing guidance %q", required)
+				}
+			}
+			for _, sequence := range []struct {
+				section string
+				steps   []string
+			}{
+				{"## After meaningful work", []string{
+					"mimir session git capture <exact-session-id>",
+					"mimir session get <exact-session-id> --json",
+					"mimir session git verify <exact-session-id>",
+					"Record the outcome **separately**",
+				}},
+				{"## Ending a session", []string{
+					"mimir session git verify <exact-session-id>",
+					"latest outcome event",
+					"mimir session end <exact-session-id> --json",
+					"mimir session get <exact-session-id> --json",
+					"mimir session git verify <exact-session-id>",
+					"every artifact is still saved and independently verified",
+				}},
+			} {
+				_, remaining, found := strings.Cut(text, sequence.section)
+				if !found {
+					t.Fatalf("installed skill missing section %q", sequence.section)
+				}
+				remaining, _, _ = strings.Cut(remaining, "## ")
+				for _, step := range sequence.steps {
+					_, rest, found := strings.Cut(remaining, step)
+					if !found {
+						t.Fatalf("%s missing ordered step %q", sequence.section, step)
+					}
+					remaining = rest
+				}
+			}
+		})
+	}
 }
 
 func TestUpdateRefreshesOwnedHarnessArtifactsWithoutClaimingLocalChanges(t *testing.T) {
@@ -153,10 +211,10 @@ func TestUpdateRefreshesOwnedHarnessArtifactsWithoutClaimingLocalChanges(t *test
 	ownedPrior := map[string]string{
 		filepath.Join(paths.PiHome, "extensions", "mimir.ts"):                         "plugins/pi/mimir.ts",
 		filepath.Join(paths.OhMyPiHome, "extensions", "mimir.ts"):                     "plugins/oh-my-pi/mimir.ts",
-		filepath.Join(paths.HermesHome, "plugins", "mimir", "plugin.yaml"):           "plugins/hermes/plugin.yaml",
-		filepath.Join(paths.HermesHome, "skills", "mimir-use", "SKILL.md"):           "skills/mimir-use/SKILL.md",
+		filepath.Join(paths.HermesHome, "plugins", "mimir", "plugin.yaml"):            "plugins/hermes/plugin.yaml",
+		filepath.Join(paths.HermesHome, "skills", "mimir-use", "SKILL.md"):            "skills/mimir-use/SKILL.md",
 		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"): "plugins/claude-code/hooks/hooks.json",
-		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"): "plugins/codex/hooks/hooks.json",
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"):  "plugins/codex/hooks/hooks.json",
 	}
 	receipt := mustLoadReceipt(t)
 	for target, source := range ownedPrior {

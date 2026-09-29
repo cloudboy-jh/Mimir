@@ -381,7 +381,7 @@ class HookContractTest(unittest.TestCase):
             before(session_id="exact", tool_call_id="id", tool_name="bash", args={"command": "git commit -m done"})
             after(session_id="exact", tool_call_id="id", status="ok", result="ok")
             after(session_id="exact", tool_call_id="id", status="ok", result="ok")
-            collect.assert_called_once_with(self.home.name, "a" * 40, "ok")
+            collect.assert_called_once_with(self.home.name, "a" * 40, "ok", {"repository_url": None, "ref": None})
             send.assert_called_once_with("exact", {"commit_sha": "b" * 40})
             self.assertEqual(self.queued(), [])
 
@@ -421,6 +421,7 @@ class HookContractTest(unittest.TestCase):
                 after(session_id="exact", tool_call_id="first", status="ok", result=summary)
                 self.assertEqual(send.call_args.args[0], "exact")
                 self.assertEqual(send.call_args.args[1]["commit_sha"], git("rev-parse", "HEAD"))
+                self.assertEqual(send.call_args.args[1]["ref"], git("symbolic-ref", "--short", "HEAD"))
                 after(session_id="exact", tool_call_id="first", status="ok", result=summary)
                 send.assert_called_once()
 
@@ -439,6 +440,14 @@ class GitArtifactTest(unittest.TestCase):
             git("add", ".")
             git("commit", "-qm", "initial")
             baseline = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "artifact-test")
+            self.assertEqual(mimir_plugin._artifact_metadata(root), {"repository_url": None, "ref": "artifact-test"})
+            for origin in ("git@github.com:owner/repo.git", "ssh://git@github.com/owner/repo.git",
+                           "https://user:password@github.com/owner/repo.git?token=secret#fragment"):
+                git("config", "remote.origin.url", origin)
+                self.assertEqual(mimir_plugin._artifact_metadata(root), {
+                    "repository_url": "https://github.com/owner/repo", "ref": "artifact-test"})
+            metadata = mimir_plugin._artifact_metadata(root)
             with open(path, "a", encoding="utf-8") as handle:
                 handle.write("api_key=supersecretvalue\n")
             git("add", ".")
@@ -447,15 +456,31 @@ class GitArtifactTest(unittest.TestCase):
             self.assertEqual(mimir_plugin._commit_cwd("bash", {"command": "git commit -m second", "workdir": root}), root)
             self.assertEqual(mimir_plugin._commit_cwd("bash", {"command": "git -C . commit -m second", "cwd": root}), root)
             self.assertIsNone(mimir_plugin._commit_cwd("bash", {"command": "echo 'git commit -m second'", "workdir": root}))
-            artifact = mimir_plugin._commit_artifact(root, baseline, summary)
+            artifact = mimir_plugin._commit_artifact(root, baseline, summary, metadata)
             self.assertEqual(artifact["commit_sha"], sha)
             self.assertEqual(artifact["parent_commit_sha"], baseline)
+            self.assertEqual(artifact["repository_url"], "https://github.com/owner/repo")
+            self.assertEqual(artifact["ref"], "artifact-test")
             self.assertIn("api_key=[REDACTED]", artifact["patch"])
             self.assertNotIn("supersecretvalue", artifact["patch"])
             self.assertIsNone(mimir_plugin._commit_artifact(root, baseline, "[main deadbee] second"))
             self.assertIsNone(mimir_plugin._commit_artifact(root, sha, summary))
             with patch.object(mimir_plugin, "MAX_PATCH_BYTES", 8):
                 self.assertIsNone(mimir_plugin._commit_artifact(root, baseline, summary))
+            git("checkout", "-qb", "switched")
+            artifact = mimir_plugin._commit_artifact(root, baseline, summary, metadata)
+            self.assertEqual(artifact["commit_sha"], sha)
+            self.assertIsNone(artifact["ref"])
+            git("remote", "set-url", "origin", "https://github.com/other/repo")
+            self.assertIsNone(mimir_plugin._commit_artifact(root, baseline, summary, metadata)["repository_url"])
+            git("checkout", "--detach", "-q")
+            detached = mimir_plugin._artifact_metadata(root)
+            self.assertIsNone(detached["ref"])
+            self.assertIsNone(mimir_plugin._commit_artifact(root, baseline, summary, detached)["ref"])
+            git("checkout", "--detach", "-q", baseline)
+            self.assertIsNone(mimir_plugin._commit_artifact(root, sha, f"[main {baseline[:7]}] old", metadata))
+            for origin in (None, "C:\\private\\repo", "file:///private/repo"):
+                self.assertIsNone(mimir_plugin._normalize_remote_url(origin))
 
     def test_initial_commit_requires_matching_git_summary(self):
         with tempfile.TemporaryDirectory() as root:

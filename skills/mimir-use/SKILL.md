@@ -59,19 +59,21 @@ Codex, and Cursor supply IDs to their installed hooks, but do not guarantee an
 ID to the agent's shell. If the shell has no exact ID, compare the active
 harness/session identity with `mimir list --json` and `mimir session get <id>
 --json` using repository, intent, and timing. Mutate only an **unambiguous**
-match. Recency alone, a matching repository alone, or a Git commit alone never
+match. For root-session work, use the exact root session ID; never substitute a
+subsession. Recency alone, a matching repository alone, or a Git commit alone never
 identifies a session. If still ambiguous, report that verification could not
 be performed; do not update a guessed session.
 
 Automatic artifact capture is best-effort and is **not** evidence of a saved
 artifact. For every relevant commit actually produced by this work, from the
-checkout containing that commit, resolve the full SHA and repair/verify the
+checkout containing that commit, resolve the full SHA and capture/verify the
 artifact independently of the outcome:
 
 ```text
 git rev-parse --verify <committed-ref>^{commit}
 mimir session git capture <exact-session-id> <full-lowercase-40-character-sha> --json
 mimir session get <exact-session-id> --json
+mimir session git verify <exact-session-id> <full-lowercase-40-character-sha> --json
 ```
 
 Repeat for each relevant SHA (not just the latest HEAD). The capture command
@@ -79,10 +81,35 @@ is safe to retry; a push, HTTP success, or an attempted automatic upload is
 not proof of persistence. In the canonical `git_artifacts` array, verify an
 entry for each SHA with `capture_status: "saved"` and a nonempty
 `patch_sha256`. If it is missing, accepted, or failed, retry capture and read
-it back; never claim the patch was saved until the read confirms it. Do not
-create a Git artifact or cite a commit for uncommitted or read-only work.
+it back. After the artifact is saved, require `mimir session git verify
+<exact-session-id> <full-lowercase-40-character-sha> --json` to succeed with
+`verified: true`. It independently fetches the stored patch and checks its
+SHA256 digest, byte count, multiline Git patch format, and file/addition/deletion
+statistics against canonical metadata. Saved status alone is not verification.
+Never claim the patch is verified until this check succeeds. Do not create a
+Git artifact or cite a commit for uncommitted or read-only work.
 
-Record the outcome **separately**, after checking the result. OpenCode's
+Repair an explicitly identified corrupted existing artifact only from a trusted
+local commit SHA in its checkout, using the existing canonical `patch_sha256`
+as the expected digest:
+
+```text
+mimir session git repair <exact-session-id> <full-lowercase-40-character-sha> --expected-digest <oldsha256> --json
+mimir session get <exact-session-id> --json
+mimir session git verify <exact-session-id> <full-lowercase-40-character-sha> --json
+```
+
+The expected digest guards against replacing a concurrently changed artifact;
+repair preserves an audit of the prior artifact. Confirm the repair audit and
+new digest, then require independent verification again. Do not automatically
+repair capture conflicts caused by unrelated metadata or content mismatches.
+Investigate the mismatch first; a conflict alone is not evidence of corruption.
+No bulk repair or guessed mutations: target only the exact session and SHA,
+and for root-session work target the exact root session. If identity, the trusted
+local SHA, or the expected digest cannot be established, leave it untouched.
+
+Record the outcome **separately**, after checking the result and independently
+verifying every relevant saved Git artifact. OpenCode's
 native outcome tool accepts `commit` (full SHA) and `evidence` (a JSON object
 encoded as a string); use it only for the exact current OpenCode session. In
 other harnesses use the CLI:
@@ -161,17 +188,22 @@ unit of work has completed.
 ## Ending a session
 
 Only when the user explicitly asks to end, close, or finalize the session,
-verify all relevant Git artifacts are saved, the latest outcome event contains
+run `mimir session git verify <exact-session-id> <full-lowercase-40-character-sha>
+--json` for every relevant saved Git artifact, verify the latest outcome event contains
 the intended evidence, and the session's current state via `mimir session get
-<id> --json`. Repair missing artifacts/evidence before ending; if identity or
+<id> --json`. Capture missing artifacts and verify them; correct missing outcome
+evidence before ending. Repair corrupted existing artifacts only with the trusted
+local SHA and expected digest as described above. If identity or
 persistence remains unverified, do not claim the workflow completed. Then:
 
 ```text
 mimir session end <exact-session-id> --json
 mimir session get <exact-session-id> --json
+mimir session git verify <exact-session-id> <full-lowercase-40-character-sha> --json
 ```
 
-Confirm the returned session is inactive, the artifact is still saved, and
+Repeat verification for every relevant SHA. Confirm the returned session is
+inactive, every artifact is still saved and independently verified, and
 the intended outcome evidence remains. An end-command timeout is not proof
 that it failed; read the canonical session before retrying. Do not commit,
 push, or end automatically. An ended exact session may reactivate on later

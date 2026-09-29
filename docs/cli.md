@@ -11,6 +11,9 @@ mimir list --json
 mimir search <query> --json
 mimir session get <id> --json
 mimir session status <id> --json
+mimir session git capture <id> <sha> --json
+mimir session git verify <exact-id> <sha> --json
+mimir session git repair <id> <sha> --expected-digest <oldsha256> --json
 mimir session outcome <id> <landed|discarded|abandoned|unresolved> --reason <text> --evidence <json> --json
 mimir session end <id> --outcome <value> --reason <text> --evidence <json> --json
 mimir import list [opencode|pi] --json
@@ -133,6 +136,50 @@ and harness-facing commands. `mimir session <id>` remains an alias for
 `mimir session get <id>`.
 
 ## Capture And Control
+
+### Git artifact verification and repair
+
+`session git capture` collects a bounded redacted patch from the current
+checkout for a full lowercase 40-character commit SHA. Read back the exact
+session with `mimir session get <exact-id> --json` and confirm the artifact is
+saved with a `patch_sha256`, then require:
+
+```text
+mimir session git verify <exact-id> <sha> --json
+```
+
+Verification is read-only and independent of capture. It fetches the stored
+patch bytes, recomputes the SHA256 digest and byte count, checks multiline Git
+patch format, and compares file/addition/deletion statistics with canonical
+artifact metadata. Require `verified: true`; `capture_status: "saved"` alone
+does not establish patch integrity. JSON verification reports `patch_sha256`,
+`patch_bytes`, `patch_lines`, `patch_files`, `patch_additions`, and
+`patch_deletions` alongside the exact session ID and commit SHA.
+
+For an explicitly identified corrupted existing artifact only, collect the
+replacement from a trusted local commit SHA in its checkout and use the
+existing canonical digest (a full lowercase 64-character SHA256):
+
+```text
+mimir session git repair <id> <sha> --expected-digest <oldsha256> --json
+mimir session get <id> --json
+mimir session git verify <id> <sha> --json
+```
+
+Repair is an explicit mutation guarded by the expected digest and preserves an
+audit of the prior artifact. Check the repair audit and new digest; require
+independent verification afterward even though repair also verifies its result.
+Do not automatically repair conflicts caused by unrelated metadata or content
+mismatches. Investigate first; a capture conflict is not proof of corruption.
+No bulk repair or guessed mutations. For root-session work, target the exact
+root session, never a subsession. If the exact identity, trusted local SHA, or
+expected digest is unavailable, leave the artifact untouched.
+
+Verify each relevant saved artifact before recording outcome evidence. Read
+back the latest outcome event before requesting the status receipt. Before an
+explicitly requested end, verify every relevant SHA and the intended outcome
+evidence, end the exact session, then read back its inactive state and verify
+every artifact again. Capture, repair, outcome, and end are separate operations.
 
 CLI commands inspect and control memory; they do not capture unrelated model
 traffic. Capture comes from redirected proxy traffic and harness plugins.

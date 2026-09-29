@@ -194,6 +194,31 @@ def _head(cwd):
     return value if value and COMMIT_SHA.fullmatch(value) else None
 
 
+def _normalize_remote_url(raw):
+    value = raw.strip() if raw else ""
+    if not value:
+        return None
+    scp = re.fullmatch(r"[A-Za-z0-9._-]+@([^:/]+):(?!/)(.+)", value)
+    candidate = f"https://{scp[1]}/{scp[2]}" if scp else re.sub(
+        r"^ssh://(?:[^@/]+@)?", "https://", value, flags=re.I)
+    candidate = re.sub(r"^(?:git|http)://", "https://", candidate, flags=re.I)
+    try:
+        url = urllib.parse.urlsplit(candidate)
+        path = re.sub(r"\.git$", "", url.path.rstrip("/"), flags=re.I)
+        if url.scheme != "https" or not url.hostname or "." not in url.hostname or not path or path == "/":
+            return None
+        return f"https://{url.hostname}{path}"
+    except ValueError:
+        return None
+
+
+def _artifact_metadata(cwd):
+    repository = _normalize_remote_url(_git(cwd, ["remote", "get-url", "origin"]))
+    branch = (_git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]) or "").strip()
+    ref = branch if branch and len(branch) <= 512 and not re.search(r"[\s\x00-\x1f\x7f]", branch) else None
+    return {"repository_url": repository, "ref": ref}
+
+
 def _commit_cwd(tool_name, args):
     if tool_name not in ("bash", "exec", "terminal", "shell", "execute", "run") or not isinstance(args, dict):
         return None
@@ -244,7 +269,7 @@ def _tool_text(result):
     return None
 
 
-def _commit_artifact(cwd, before, result):
+def _commit_artifact(cwd, before, result, metadata=None):
     result = _tool_text(result)
     if result is None or len(result) > 50000:
         return None
@@ -255,11 +280,15 @@ def _commit_artifact(cwd, before, result):
     hints = re.findall(r"\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)", result, re.M)
     if not any(after.startswith(hint) for hint in hints):
         return None
+    if before and _git(cwd, ["merge-base", "--is-ancestor", before, after]) is None:
+        return None
     details = _git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", after])
     lines = details.rstrip("\r\n").splitlines() if details else []
     if len(lines) < 3:
         return None
     parents, committed, *subject = lines
+    if not before and parents:
+        return None
     try:
         date = datetime.fromisoformat(committed.replace("Z", "+00:00")).astimezone(_UTC)
     except ValueError:
@@ -271,10 +300,14 @@ def _commit_artifact(cwd, before, result):
     patch = _redact_patch(patch)
     if not patch or len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
         return None
+    current = _artifact_metadata(cwd)
+    metadata = metadata or {"repository_url": None, "ref": None}
     return {"commit_sha": after, "parent_commit_sha": parents.split(" ")[0] or None,
             "committed_at": date.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "subject": re.sub(r"[\x00-\x1f\x7f]", " ", _redact_patch(" ".join(subject)))[:500],
-            "repository_url": None, "ref": None, "provenance": "hermes", "patch": patch}
+            "repository_url": metadata["repository_url"] if metadata["repository_url"] == current["repository_url"] else None,
+            "ref": metadata["ref"] if metadata["ref"] == current["ref"] else None,
+            "provenance": "hermes", "patch": patch}
 
 
 def _post_artifact(connection, session_id, artifact):
@@ -838,7 +871,7 @@ def register(ctx):
                 or kwargs.get("is_error") is True or kwargs.get("exit_code") not in (None, 0)):
             return
         result = kwargs.get("result")
-        artifact = _commit_artifact(prior[0], prior[1], result)
+        artifact = _commit_artifact(prior[0], prior[1], result, prior[2])
         if artifact:
             commit_delivery.send(session_id, artifact)
 
@@ -848,6 +881,7 @@ def register(ctx):
         try:
             cwd = _commit_cwd(tool_name, args)
             before = _head(cwd) if cwd else None
+            metadata = _artifact_metadata(cwd) if cwd else None
         except (OSError, ValueError):
             return
         # An unborn branch has no HEAD but can still produce an initial commit.
@@ -855,7 +889,7 @@ def register(ctx):
             with commits_lock:
                 if len(pending_commits) >= MAX_PENDING_REQUESTS:
                     pending_commits.pop(next(iter(pending_commits)))
-                pending_commits[(session_id, tool_call_id)] = (cwd, before)
+                pending_commits[(session_id, tool_call_id)] = (cwd, before, metadata)
 
     def on_turn(session_id=None, turn_id=None, **_kwargs):
         if session_id:

@@ -204,6 +204,23 @@ async function turnBaseline(cwd: string): Promise<string | null> {
   return await head(cwd) ?? "unborn";
 }
 
+type ArtifactMetadata = { repository_url: string | null; ref: string | null };
+function normalizeRemoteUrl(raw: string | null): string | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  const scp = /^[A-Za-z0-9._-]+@([^:/]+):(?!\/)(.+)$/.exec(value);
+  try {
+    const url = new URL(scp ? `https://${scp[1]}/${scp[2]}` : value.replace(/^ssh:\/\/(?:[^@/]+@)?/i, "https://").replace(/^(?:git|http):\/\//i, "https://"));
+    const path = url.pathname.replace(/\/+$/, "").replace(/\.git$/i, "");
+    return url.protocol === "https:" && url.hostname.includes(".") && path && path !== "/" ? `https://${url.hostname}${path}` : null;
+  } catch { return null; }
+}
+async function artifactMetadata(cwd: string): Promise<ArtifactMetadata> {
+  const repository_url = normalizeRemoteUrl(await git(cwd, ["remote", "get-url", "origin"]));
+  const branch = (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim();
+  return { repository_url, ref: branch && branch.length <= 512 && !/[\s\x00-\x1f\x7f]/.test(branch) ? branch : null };
+}
+
 function commitHints(message: unknown, results: unknown): string[] {
   const blocks = message && typeof message === "object" && Array.isArray((message as { content?: unknown }).content)
     ? (message as { content: unknown[] }).content : [];
@@ -238,7 +255,7 @@ function redactPatch(patch: string): string {
     .replace(/\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*["']?)[^\s"']+/gi, "$1[REDACTED]");
 }
 
-async function collectCommits(cwd: string, baseline: string, hints: string[]) {
+async function collectCommits(cwd: string, baseline: string, hints: string[], metadata: ArtifactMetadata) {
   if (!hints.length) return [];
   const tip = await head(cwd);
   if (!tip || tip === baseline) return [];
@@ -253,6 +270,9 @@ async function collectCommits(cwd: string, baseline: string, hints: string[]) {
     commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
   }
   if (commits.length > 16) return [];
+  const current = await artifactMetadata(cwd);
+  const repository_url = metadata.repository_url === current.repository_url ? metadata.repository_url : null;
+  const ref = metadata.ref === current.ref ? metadata.ref : null;
   const artifacts = [];
   for (const sha of commits) {
     if (!hints.some((hint) => sha.startsWith(hint) && commits.filter((candidate) => candidate.startsWith(hint)).length === 1)) continue;
@@ -267,7 +287,7 @@ async function collectCommits(cwd: string, baseline: string, hints: string[]) {
     if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_PATCH_BYTES) continue;
     const committed = new Date(committedAt);
     if (Number.isNaN(committed.getTime())) continue;
-    artifacts.push({ commit_sha: sha, parent_commit_sha: parents.split(" ")[0] || null, committed_at: committed.toISOString(), subject: redactPatch(subject).slice(0, 500).replace(/[\p{Cc}]/gu, " "), repository_url: null, ref: null, provenance: "oh-my-pi", patch: cleaned });
+    artifacts.push({ commit_sha: sha, parent_commit_sha: parents.split(" ")[0] || null, committed_at: committed.toISOString(), subject: redactPatch(subject).slice(0, 500).replace(/[\p{Cc}]/gu, " "), repository_url, ref, provenance: "oh-my-pi", patch: cleaned });
   }
   return artifacts;
 }
@@ -292,7 +312,7 @@ export default function (pi: ExtensionAPI) {
   const config = connection();
   if (!config) return;
   const deliver = deliveryQueue(config);
-  const snapshots = new Map<number, { startedAt: number; messages: unknown[]; session: Session; baseline: string | null }>();
+  const snapshots = new Map<number, { startedAt: number; messages: unknown[]; session: Session; baseline: string | null; metadata: ArtifactMetadata }>();
   const artifactJobs = new Set<Promise<void>>();
   const flushArtifacts = async () => { await Promise.all([...artifactJobs]); };
   const sendArtifacts = async (session: Session, commits: Awaited<ReturnType<typeof collectCommits>>) => {
@@ -418,8 +438,9 @@ export default function (pi: ExtensionAPI) {
     if (!session) return;
     const messages = ctx.sessionManager?.buildSessionContext?.().messages;
     const baseline = await turnBaseline(session.cwd);
+    const metadata = await artifactMetadata(session.cwd);
     if (current !== session) return;
-    snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [], session, baseline });
+    snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [], session, baseline, metadata });
   });
 
   pi.on("turn_end", async (turn: TurnEnd) => {
@@ -428,7 +449,7 @@ export default function (pi: ExtensionAPI) {
     if (snapshot && current === snapshot.session && snapshot.baseline) {
       const hints = commitHints(turn.message, turn.toolResults);
       if (hints.length) {
-        const job = (async () => sendArtifacts(snapshot.session, await collectCommits(snapshot.session.cwd, snapshot.baseline!, hints)))();
+        const job = (async () => sendArtifacts(snapshot.session, await collectCommits(snapshot.session.cwd, snapshot.baseline!, hints, snapshot.metadata)))();
         artifactJobs.add(job);
         try { await job; } finally { artifactJobs.delete(job); }
       }
@@ -463,4 +484,4 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
-export const __testing = { sessionID, safe };
+export const __testing = { sessionID, safe, artifactMetadata, collectCommits, turnBaseline, normalizeRemoteUrl };

@@ -2,6 +2,84 @@ import { describe, expect, it, vi } from "vitest";
 import { addMachineToken, dashboardRequest, env, request } from "./support";
 
 describe("Session Git artifacts", () => {
+  it("persists multiline redacted source patches with digests and stats matching retrieved R2 bytes", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, boundary) VALUES ('redaction-git', '2026-08-20T10:00:00.000Z', 'header');
+      INSERT INTO config(key, value) VALUES ('redact.patterns', '["customer-[0-9]+", "["]');
+    `);
+    const patch = [
+      "diff --git a/config.ts b/config.ts", "--- a/config.ts", "+++ b/config.ts", "@@ -1,2 +1,11 @@",
+      "-TOKEN=old-secret", '-const apiKey = "old value";',
+      "+TOKEN=new-secret", '+const apiKey = "new \\"quoted\\" value";',
+      "+const password = 'two words';", '+const path = "C:\\Users\\name\\file.ts";',
+      '+const label = "customer-123 café";',
+      '+const token = `first second`;', '+password = """first second""";',
+      '+const secret =', '+  "next line";',
+      '+const apiKey = `first', '+second`;',
+      "diff --git a/image.png b/image.png", "index 1234567..abcdef0 100644",
+      "Binary files a/image.png and b/image.png differ", "",
+    ].join("\n");
+    const expected = [
+      "diff --git a/config.ts b/config.ts", "--- a/config.ts", "+++ b/config.ts", "@@ -1,2 +1,11 @@",
+      "-TOKEN=[REDACTED]", '-const apiKey = "[REDACTED]";',
+      "+TOKEN=[REDACTED]", '+const apiKey = "[REDACTED]";',
+      "+const password = '[REDACTED]';", '+const path = "C:\\Users\\name\\file.ts";',
+      '+const label = "[REDACTED] café";',
+      '+const token = `[REDACTED]`;', '+password = """[REDACTED]""";',
+      '+const secret =', '+  "[REDACTED]";',
+      '+const apiKey = `[REDACTED]', '+[REDACTED]`;',
+      "diff --git a/image.png b/image.png", "index 1234567..abcdef0 100644",
+      "Binary files a/image.png and b/image.png differ", "",
+    ].join("\n");
+    const sha = "1".repeat(40);
+    const hash = await digest(expected);
+    const key = `sessions/redaction-git/git/${sha}/${hash}.patch`;
+    const uploaded = await request("/sessions/redaction-git/git-artifacts", {
+      method: "POST",
+      headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, commits: [{ commit_sha: sha, patch }] }),
+    });
+    expect(uploaded.status).toBe(201);
+    const metadata = {
+      patch_sha256: hash, patch_r2_key: key, patch_bytes: new TextEncoder().encode(expected).byteLength,
+      patch_files: 2, patch_additions: 11, patch_deletions: 2,
+    };
+    expect(await uploaded.json()).toMatchObject({ artifacts: [{ capture_status: "saved", ...metadata }] });
+    expect(await env.DB.prepare(
+      "SELECT patch_sha256, patch_r2_key, patch_bytes, patch_files, patch_additions, patch_deletions FROM session_git_artifacts WHERE session_id = 'redaction-git'",
+    ).first()).toEqual(metadata);
+    const object = await env.LOGS.get(key);
+    expect(object).not.toBeNull();
+    const stored = await object!.text();
+    expect(stored).toBe(expected);
+    expect(stored.match(/\r\n|\n|\r/g)).toEqual(patch.match(/\r\n|\n|\r/g));
+    expect(stored).not.toMatch(/first|second|next line/);
+    expect(await digest(stored)).toBe(hash);
+    expect(object!.customMetadata?.sha256).toBe(hash);
+    const retrieved = await dashboardRequest(`/dashboard/api/sessions/redaction-git/git-artifacts/${sha}/patch`);
+    expect(retrieved.status).toBe(200);
+    expect(await retrieved.text()).toBe(stored);
+  });
+
+  it("preserves legitimate Git binary patch payloads byte for byte", async () => {
+    await env.DB.exec("INSERT INTO sessions(id, started_at, boundary) VALUES ('binary-git', '2026-08-20T10:00:00.000Z', 'header')");
+    const patch = "diff --git a/file.bin b/file.bin\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..fba23eab21e54f04e017bd5b9e1cbd7d3cfae964\nGIT binary patch\nliteral 4\nLcmZQzWM;W)01f~L\n\nliteral 0\nHcmV?d00001\n\n";
+    const sha = "2".repeat(40);
+    const hash = await digest(patch);
+    const key = `sessions/binary-git/git/${sha}/${hash}.patch`;
+    const uploaded = await request("/sessions/binary-git/git-artifacts", {
+      method: "POST", headers: { authorization: "Bearer machine-token", "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, commits: [{ commit_sha: sha, patch }] }),
+    });
+    expect(uploaded.status).toBe(201);
+    expect(await uploaded.json()).toMatchObject({ artifacts: [{ patch_sha256: hash, patch_r2_key: key,
+      patch_bytes: new TextEncoder().encode(patch).byteLength, patch_files: 1, patch_additions: 0, patch_deletions: 0 }] });
+    const stored = await (await env.LOGS.get(key))!.text();
+    expect(stored).toBe(patch);
+    expect(await digest(stored)).toBe(hash);
+    expect(await (await dashboardRequest(`/dashboard/api/sessions/binary-git/git-artifacts/${sha}/patch`)).text()).toBe(patch);
+  });
+
   it("retains exact-session saved commit evidence through outcome and explicit end, without inferring a commit for another session", async () => {
     await env.DB.exec(`
       INSERT INTO sessions(id, started_at, state, boundary, repo) VALUES ('exact-commit', '2026-08-20T10:00:00.000Z', 'active', 'header', 'mimir');

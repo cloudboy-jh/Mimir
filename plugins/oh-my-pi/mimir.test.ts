@@ -96,6 +96,33 @@ function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
 
 
 describe("Oh My Pi extension", () => {
+  test("artifact metadata is safe, baseline-observed, and guarded across checkout switches", async () => {
+    const repo = repository();
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo.cwd, ...args], { encoding: "utf8" }).trim();
+    try {
+      git("checkout", "-qb", "artifact-test");
+      const base = git("rev-parse", "HEAD");
+      expect(await __testing.artifactMetadata(repo.cwd)).toEqual({ repository_url: null, ref: "artifact-test" });
+      for (const origin of ["git@github.com:owner/repo.git", "https://user:password@github.com/owner/repo.git?token=secret#fragment", "ssh://git@github.com/owner/repo.git"]) {
+        git("config", "remote.origin.url", origin);
+        expect(await __testing.artifactMetadata(repo.cwd)).toEqual({ repository_url: "https://github.com/owner/repo", ref: "artifact-test" });
+      }
+      const metadata = await __testing.artifactMetadata(repo.cwd);
+      const sha = repo.commit("new\n");
+      expect((await __testing.collectCommits(repo.cwd, base, [sha.slice(0, 7)], metadata))[0]).toMatchObject({ commit_sha: sha, ...metadata });
+      git("checkout", "-qb", "switched");
+      expect((await __testing.collectCommits(repo.cwd, base, [sha.slice(0, 7)], metadata))[0]).toMatchObject({ commit_sha: sha, ref: null });
+      git("remote", "set-url", "origin", "https://github.com/other/repo.git");
+      expect((await __testing.collectCommits(repo.cwd, base, [sha.slice(0, 7)], metadata))[0]?.repository_url).toBeNull();
+      git("checkout", "--detach", "-q");
+      const detached = await __testing.artifactMetadata(repo.cwd);
+      expect(detached.ref).toBeNull();
+      expect((await __testing.collectCommits(repo.cwd, base, [sha.slice(0, 7)], detached))[0]).toMatchObject({ commit_sha: sha, ref: null });
+      git("checkout", "--detach", "-q", base);
+      expect(await __testing.collectCommits(repo.cwd, sha, [base.slice(0, 7)], metadata)).toEqual([]);
+      for (const origin of [null, "C:\\private\\repo", "file:///private/repo"]) expect(__testing.normalizeRemoteUrl(origin)).toBeNull();
+    } finally { repo.cleanup(); }
+  });
   test("captures an evidenced root commit once under the exact session", async () => {
     const repo = unbornRepository();
     try {
@@ -136,6 +163,8 @@ describe("Oh My Pi extension", () => {
   test("captures only a newly committed SHA named by successful tool output, with redaction and exact delivery", async () => {
     const repo = repository();
     try {
+      execFileSync("git", ["-C", repo.cwd, "checkout", "-qb", "artifact-test"]);
+      execFileSync("git", ["-C", repo.cwd, "remote", "add", "origin", "https://user:password@github.com/owner/repo.git?token=secret#fragment"]);
       const harness = createHarness();
       const ctx = { cwd: repo.cwd, sessionManager: { getSessionId: () => "exact-git", buildSessionContext: () => ({ messages: [] }) } };
       await harness.invoke("session_start", {}, ctx);
@@ -146,7 +175,7 @@ describe("Oh My Pi extension", () => {
       const artifacts = harness.requests.filter((request) => request.url.endsWith("/sessions/exact-git/git-artifacts"));
       expect(artifacts).toHaveLength(1);
       expect(artifacts[0].authorization).toBe("Bearer token");
-      expect(artifacts[0].body).toMatchObject({ version: 1, commits: [{ commit_sha: sha, provenance: "oh-my-pi", repository_url: null }] });
+      expect(artifacts[0].body).toMatchObject({ version: 1, commits: [{ commit_sha: sha, provenance: "oh-my-pi", repository_url: "https://github.com/owner/repo", ref: "artifact-test" }] });
       expect((artifacts[0].body as { commits: Array<{ committed_at: string }> }).commits[0].committed_at).toMatch(/\.\d{3}Z$/);
       expect(JSON.stringify(artifacts[0].body)).not.toContain("supersecret");
     } finally { repo.cleanup(); }

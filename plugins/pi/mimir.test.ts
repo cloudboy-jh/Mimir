@@ -97,6 +97,32 @@ function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
 }
 
 describe("Pi Mimir extension", () => {
+  test("artifact metadata is safe, baseline-observed, and guarded across checkout switches", async () => {
+    const cwd = repository();
+    try {
+      git(cwd, "checkout", "-qb", "artifact-test");
+      const base = git(cwd, "rev-parse", "HEAD");
+      expect(await __testing.artifactMetadata(cwd)).toEqual({ repository_url: null, ref: "artifact-test" });
+      for (const origin of ["git@github.com:owner/repo.git", "https://user:password@github.com/owner/repo.git?token=secret#fragment", "ssh://git@github.com/owner/repo.git"]) {
+        git(cwd, "config", "remote.origin.url", origin);
+        expect(await __testing.artifactMetadata(cwd)).toEqual({ repository_url: "https://github.com/owner/repo", ref: "artifact-test" });
+      }
+      const metadata = await __testing.artifactMetadata(cwd);
+      const { sha } = commit(cwd, "new\n");
+      expect((await __testing.collectCommits(cwd, base, [sha.slice(0, 7)], metadata))[0]).toMatchObject({ commit_sha: sha, ...metadata });
+      git(cwd, "checkout", "-qb", "switched");
+      expect((await __testing.collectCommits(cwd, base, [sha.slice(0, 7)], metadata))[0]).toMatchObject({ commit_sha: sha, ref: null });
+      git(cwd, "remote", "set-url", "origin", "https://github.com/other/repo.git");
+      expect((await __testing.collectCommits(cwd, base, [sha.slice(0, 7)], metadata))[0]?.repository_url).toBeNull();
+      git(cwd, "checkout", "--detach", "-q");
+      const detached = await __testing.artifactMetadata(cwd);
+      expect(detached.ref).toBeNull();
+      expect((await __testing.collectCommits(cwd, base, [sha.slice(0, 7)], detached))[0]).toMatchObject({ commit_sha: sha, ref: null });
+      git(cwd, "checkout", "--detach", "-q", base);
+      expect(await __testing.collectCommits(cwd, sha, [base.slice(0, 7)], metadata)).toEqual([]);
+      for (const origin of [null, "C:\\private\\repo", "file:///private/repo"]) expect(__testing.normalizeRemoteUrl(origin)).toBeNull();
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
   test("resolves connection without exposing credentials in the extension", () => {
     const files = new Map([
       [join("/home", ".mimir", "config"), 'url = "https://mimir.example/"\n'],
@@ -302,6 +328,8 @@ describe("Pi Mimir extension", () => {
   test("captures a successful Pi commit with redacted bounded patch, ISO date and exact session", async () => {
     const cwd = repository();
     try {
+      git(cwd, "checkout", "-qb", "artifact-test");
+      git(cwd, "remote", "add", "origin", "https://user:password@github.com/owner/repo.git?token=secret#fragment");
       const harness = createHarness();
       await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "pi-exact" } });
       await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
@@ -315,6 +343,7 @@ describe("Pi Mimir extension", () => {
       expect(body.version).toBe(1);
       expect(body.commits[0]!.commit_sha).toBe(sha);
       expect(body.commits[0]!.provenance).toBe("pi");
+      expect(body.commits[0]).toMatchObject({ repository_url: "https://github.com/owner/repo", ref: "artifact-test" });
       expect(body.commits[0]!.committed_at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
       expect(body.commits[0]!.patch).toContain("api_key=[REDACTED]");
       expect(body.commits[0]!.patch).not.toContain("supersecret");

@@ -546,13 +546,19 @@ type CommitArtifact = {
   parent_commit_sha: string | null;
   committed_at: string;
   subject: string;
-  repository_url: null;
-  ref: null;
+  repository_url: string | null;
+  ref: string | null;
   provenance: "opencode";
   patch: string;
 };
 
 type AsyncGit = (cwd: string, args: string[], maxBytes?: number) => Promise<string | null>;
+type ArtifactMetadata = { repository_url: string | null; ref: string | null };
+async function artifactMetadata(cwd: string, git: AsyncGit): Promise<ArtifactMetadata> {
+  const repository_url = normalizeRemoteUrl(await git(cwd, ["remote", "get-url", "origin"]));
+  const branch = (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim();
+  return { repository_url, ref: branch && GIT_REF.test(branch) ? branch : null };
+}
 const execGit = promisify(execFile);
 const liveGit: AsyncGit = async (cwd, args, maxBytes = 64 * 1024) => {
   try {
@@ -580,7 +586,7 @@ async function gitHead(cwd: string, git: AsyncGit): Promise<string | null> {
   return head && COMMIT_SHA.test(head) ? head.toLowerCase() : null;
 }
 
-async function collectLiveCommit(cwd: string, baseline: string | null, hint: string, git: AsyncGit): Promise<CommitArtifact | null> {
+async function collectLiveCommit(cwd: string, baseline: string | null, hint: string, git: AsyncGit, metadata: ArtifactMetadata = { repository_url: null, ref: null }): Promise<CommitArtifact | null> {
   const tip = await gitHead(cwd, git);
   if (!tip || tip === baseline) return null;
   const range = await git(cwd, baseline ? ["rev-list", "--max-count=33", `${baseline}..${tip}`] : ["rev-list", "--max-count=2", tip], 2_000);
@@ -603,7 +609,8 @@ async function collectLiveCommit(cwd: string, baseline: string | null, hint: str
   const cleaned = redactEvidenceText(patch);
   if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_LIVE_PATCH_BYTES) return null;
   const subject = redactEvidenceText(rawSubject!).replace(/[\p{Cc}]/gu, " ").slice(0, 500);
-  return { commit_sha: sha, parent_commit_sha: parents!.split(" ")[0] || null, committed_at: committed.toISOString(), subject, repository_url: null, ref: null, provenance: "opencode", patch: cleaned };
+  const current = await artifactMetadata(cwd, git);
+  return { commit_sha: sha, parent_commit_sha: parents!.split(" ")[0] || null, committed_at: committed.toISOString(), subject, repository_url: metadata.repository_url === current.repository_url ? metadata.repository_url : null, ref: metadata.ref === current.ref ? metadata.ref : null, provenance: "opencode", patch: cleaned };
 }
 
 async function postGitArtifact(conn: Connection, sessionID: string, artifact: CommitArtifact, repo: string | null): Promise<boolean> {
@@ -631,7 +638,7 @@ function createCommitReporter(
   send: (sessionID: string, artifact: CommitArtifact) => Promise<boolean>,
   schedule: (callback: () => void, delay: number) => unknown = setTimeout,
 ) {
-  const calls = new Map<string, { baseline: string | null; observed: boolean }>();
+  const calls = new Map<string, { baseline: string | null; observed: boolean; metadata: ArtifactMetadata }>();
   const jobs = new Set<string>();
   const uploading = new Set<string>();
   const saved = new Set<string>();
@@ -643,10 +650,11 @@ function createCommitReporter(
       // Reserve the key before the async HEAD lookup; duplicate hooks cannot overwrite it.
       if (calls.has(id)) return;
       if (calls.size >= MAX_COMMIT_CALLS) calls.delete(calls.keys().next().value!);
-      const call = { baseline: null as string | null, observed: false };
+      const call = { baseline: null as string | null, observed: false, metadata: { repository_url: null, ref: null } as ArtifactMetadata };
       calls.set(id, call);
       try {
         call.baseline = await gitHead(cwd, git);
+        call.metadata = await artifactMetadata(cwd, git);
         call.observed = true;
       } catch {
         // Local Git failure must not interrupt the tool.
@@ -663,7 +671,7 @@ function createCommitReporter(
       jobs.add(id);
       void (async () => {
         try {
-          const artifact = await collectLiveCommit(cwd, call.baseline, hint, git);
+          const artifact = await collectLiveCommit(cwd, call.baseline, hint, git, call.metadata);
           if (!artifact) return;
           const commitKey = key(input.sessionID, artifact.commit_sha);
           if (saved.has(commitKey) || uploading.has(commitKey)) return;

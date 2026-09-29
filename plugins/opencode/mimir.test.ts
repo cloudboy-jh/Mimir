@@ -18,9 +18,30 @@ describe("live Git commit capture", () => {
       [`-c diff.external= show --format= --patch --unified=3 --no-ext-diff --no-textconv --no-renames --no-color ${sha} --`]: patch,
     };
     // HEAD advances only after the tool has run.
-    return args[0] === "rev-parse" ? (advanced ? sha : base) : responses[args.join(" ")] ?? null;
+    return args.join(" ") === "rev-parse --verify HEAD^{commit}" ? (advanced ? sha : base) : responses[args.join(" ")] ?? null;
   };
   let advanced = false;
+
+  it("snapshots safe origin and branch before the tool and drops metadata after switches", async () => {
+    for (const scenario of ["normal", "missing", "detached", "branch-switch", "origin-switch"]) {
+      advanced = false;
+      const metadataGit = async (cwd: string, args: string[]) => {
+        if (args[0] === "remote") return scenario === "missing" ? null : advanced && scenario === "origin-switch" ? "https://github.com/other/repo" : "https://user:password@github.com/owner/repo.git?token=secret#fragment";
+        if (args[0] === "symbolic-ref") return scenario === "detached" ? null : advanced && scenario === "branch-switch" ? "other" : "main";
+        return git(cwd, args);
+      };
+      const sent: unknown[] = [];
+      const reporter = createCommitReporter("/repo", metadataGit, async (session, artifact) => { expect(session).toBe("exact"); sent.push(artifact); return true; });
+      await reporter.before({ tool: "bash", sessionID: "exact", callID: "call" }, { args: command });
+      advanced = true;
+      reporter.after({ sessionID: "exact", callID: "call" }, output);
+      await Bun.sleep(10);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ commit_sha: sha, repository_url: ["missing", "origin-switch"].includes(scenario) ? null : "https://github.com/owner/repo", ref: ["detached", "branch-switch"].includes(scenario) ? null : "main" });
+      expect(JSON.stringify(sent)).not.toContain("password");
+      expect(JSON.stringify(sent)).not.toContain("fragment");
+    }
+  });
 
   it("attributes an exact successful call, redacts locally, and retries upload without waiting on the after hook", async () => {
     advanced = false;

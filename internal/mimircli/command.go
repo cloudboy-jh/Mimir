@@ -414,7 +414,7 @@ func cmdSession(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return printRemoteData(out, data)
 	}
-	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session git capture <id> <full-commit-sha> [--json] | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
+	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session git <capture|repair|verify> (see help) | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
 }
 
 func parseSessionEndArgs(args []string) (string, sessions.EndOptions, error) {
@@ -670,6 +670,8 @@ func advancedUsage(out io.Writer) error {
 		{Usage: "mimir session get <id> [--json]", Description: "Fetch the complete canonical session record."},
 		{Usage: "mimir session outcome <id> <outcome> [options]", Description: "Record an evidenced work outcome."},
 		{Usage: "mimir session git capture <id> <full-commit-sha> [--json]", Description: "Upload one commit from the current checkout to an existing session."},
+		{Usage: "mimir session git repair <id> <full-sha> --expected-digest <old-sha256> [--json]", Description: "Repair one exact commit from the current checkout, then verify the stored patch."},
+		{Usage: "mimir session git verify <id> <full-sha> [--json]", Description: "Fetch canonical detail and stored patch; verify SHA256, statistics, and multiline Git format."},
 		{Usage: "mimir reconcile", Description: "Reconcile pending session state."},
 		{Usage: "mimir mark <session> <outcome>", Description: "Compatibility alias for recording an outcome."},
 		{Usage: "mimir outcome git <session>", Description: "Infer an outcome from repository evidence."},
