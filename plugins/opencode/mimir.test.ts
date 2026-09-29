@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import plugin, { MimirPlugin, __testing } from "./mimir";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
+const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
 
 describe("live Git commit capture", () => {
   const base = "a".repeat(40);
@@ -68,11 +68,65 @@ describe("live Git commit capture", () => {
     expect(uploads).toBe(0);
   });
 
+  it("does not attribute a commit to an absent session identity", async () => {
+    let uploads = 0;
+    const reporter = createCommitReporter("/repo", git, async () => { uploads++; return true; });
+    await reporter.before({ tool: "bash", sessionID: "", callID: "call" }, { args: command });
+    reporter.after({ sessionID: "", callID: "call" }, output);
+    expect(reporter.pending()).toBe(0);
+    expect(uploads).toBe(0);
+  });
+
   it("never captures a commit without a pre-tool checkout baseline", async () => {
     const reporter = createCommitReporter("/repo", async () => null, async () => { throw new Error("unexpected upload"); });
     await reporter.before({ tool: "bash", sessionID: "one", callID: "call" }, { args: command });
     reporter.after({ sessionID: "one", callID: "call" }, output);
     expect(reporter.pending()).toBe(0);
+  });
+
+  it("captures an initial root commit from Git's actual output and suppresses duplicate after hooks", async () => {
+    const sent: string[] = [];
+    let tip: string | null = null;
+    const rootGit = async (_cwd: string, args: string[]) => {
+      const command = args.join(" ");
+      if (command === "rev-parse --verify HEAD^{commit}") return tip;
+      if (command === `rev-list --max-count=2 ${sha}`) return sha;
+      if (command === `show -s --format=%H%x00%P%x00%cI%x00%s ${sha}`) return [sha, "", "2026-09-28T12:00:00Z", "initial"].join("\0");
+      if (args.includes("--patch")) return "diff --git a/f b/f\n+first\n";
+      return null;
+    };
+    const reporter = createCommitReporter("/repo", rootGit, async (session, artifact) => { sent.push(`${session}:${artifact.commit_sha}`); return true; });
+    await reporter.before({ tool: "bash", sessionID: "root", callID: "first" }, { args: command });
+    tip = sha;
+    const result = { output: `[main (root-commit) ${sha.slice(0, 7)}] initial` };
+    reporter.after({ sessionID: "root", callID: "first" }, result);
+    reporter.after({ sessionID: "root", callID: "first" }, result);
+    await Bun.sleep(10);
+    expect(sent).toEqual([`root:${sha}`]);
+    expect(await collectLiveCommit("/repo", null, "c".repeat(7), rootGit)).toBeNull();
+    const notRoot = async (cwd: string, args: string[]) => args[0] === "show" && args[1] === "-s"
+      ? [sha, base, "2026-09-28T12:00:00Z", "not root"].join("\0") : rootGit(cwd, args);
+    expect(await collectLiveCommit("/repo", null, sha.slice(0, 7), notRoot)).toBeNull();
+  });
+
+  it("uploads a shared commit once across concurrent call IDs for the same session", async () => {
+    advanced = false;
+    const sent: string[] = [];
+    let finish!: (saved: boolean) => void;
+    const reporter = createCommitReporter("/repo", git, async (session, artifact) => {
+      sent.push(`${session}:${artifact.commit_sha}`);
+      return new Promise<boolean>((resolve) => { finish = resolve; });
+    });
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "a" }, { args: command });
+    await reporter.before({ tool: "bash", sessionID: "one", callID: "b" }, { args: command });
+    advanced = true;
+    reporter.after({ sessionID: "one", callID: "a" }, output);
+    reporter.after({ sessionID: "one", callID: "b" }, output);
+    await Bun.sleep(10);
+    expect(sent).toEqual([`one:${sha}`]);
+    finish(true);
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(1);
   });
 
   it("requires a new reachable commit matching the result and skips oversized patches", async () => {
@@ -131,6 +185,8 @@ describe("chat.headers hook", () => {
       const other = { headers: {} as Record<string, string> };
       await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "anthropic" } } as never, other);
       expect(other.headers).toEqual({});
+      await hooks["chat.headers"]!({ sessionID: "", model: { providerID: "openrouter" } } as never, other);
+      expect(other.headers).toEqual({});
     } finally {
       globalThis.fetch = fetch;
       process.env.MIMIR_URL = original.MIMIR_URL;
@@ -164,6 +220,33 @@ describe("session hierarchy", () => {
 });
 
 describe("session outcome tools", () => {
+  it("keeps no-commit outcome evidence separate from a repository's unrelated HEAD", async () => {
+    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
+    const originalFetch = globalThis.fetch;
+    process.env.MIMIR_URL = "https://mimir.example";
+    process.env.MIMIR_TOKEN = "tok";
+    const bodies: Record<string, unknown>[] = [];
+    globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith("/outcome")) bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ capture: { status: "pending" } });
+    };
+    try {
+      const hooks = await plugin.server({ directory: process.cwd() } as never);
+      await hooks.tool!.mimir_session_outcome.execute(
+        { outcome: "landed", reason: "working tree changes kept", evidence: '{"note":"tests passed"}' },
+        { sessionID: "exact-session", metadata() {} } as never,
+      );
+      expect(bodies).toEqual([{ outcome: "landed", reason: "working tree changes kept", evidence: { note: "tests passed" } }]);
+      await expect(hooks.tool!.mimir_session_outcome.execute(
+        { outcome: "landed", reason: "tests passed" }, { sessionID: "", metadata() {} } as never,
+      )).rejects.toThrow("session identity is unavailable");
+      expect(bodies).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
+      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
+    }
+  });
   it("uses the exact OpenCode session and returns authoritative status", async () => {
     const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
     process.env.MIMIR_URL = "https://mimir.example";
@@ -192,7 +275,7 @@ describe("session outcome tools", () => {
     }
   });
 
-  it("does not overwrite the outcome when explicit Git evidence cannot be resolved", async () => {
+  it("records the outcome even when an explicit commit cannot be resolved", async () => {
     const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
     process.env.MIMIR_URL = "https://mimir.example";
     process.env.MIMIR_TOKEN = "tok";
@@ -208,8 +291,8 @@ describe("session outcome tools", () => {
         { outcome: "landed", reason: "tests passed", commit: "a329f20" },
         { sessionID: "child/session", metadata() {} } as never,
       );
-      expect(output).toContain("requested Git commit could not be resolved; outcome was not recorded");
-      expect(requests.some((url) => url.endsWith("/sessions/child%2Fsession/outcome"))).toBe(false);
+      expect(output).toContain("Mimir status");
+      expect(requests.some((url) => url.endsWith("/sessions/child%2Fsession/outcome"))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
@@ -673,10 +756,10 @@ describe("outcomeGitEvidence", () => {
       return { status: 1, stdout: "" };
     };
     expect(outcomeGitEvidence(undefined, "/repo", "Commits a329f20 and b418e31", undefined, run)).toBeNull();
-    expect(calls).toEqual(["rev-parse --verify HEAD^{commit}"]);
+    expect(calls).toEqual([]);
   });
 
-  it("keeps HEAD as the default when note evidence also names a commit", () => {
+  it("never substitutes HEAD for a named commit or no-commit work", () => {
     const head = "d".repeat(40);
     const calls: string[] = [];
     const run = (_command: string, args: string[]) => {
@@ -684,26 +767,9 @@ describe("outcomeGitEvidence", () => {
       calls.push(key);
       return key === "rev-parse --verify HEAD^{commit}" ? { status: 0, stdout: head } : { status: 1, stdout: "" };
     };
-    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)?.commit).toBe(head);
-    expect(calls).not.toContain("rev-parse --verify a329f20^{commit}");
-  });
-});
-
-describe("landedGitEvidenceError", () => {
-  const commit = "a".repeat(40);
-
-  it("leaves the prior outcome untouched when explicit Git inference fails", () => {
-    expect(landedGitEvidenceError("landed", "a329f20", null)).toContain("outcome was not recorded");
-  });
-
-  it("requires a retrievable patch for an inferred landed commit", () => {
-    expect(landedGitEvidenceError("landed", undefined, { commit, provenance: "opencode-plugin" })).toContain("no retrievable patch");
-    expect(landedGitEvidenceError("landed", undefined, { commit, patch: "diff --git a/a b/a", provenance: "opencode-plugin" })).toBeNull();
-  });
-
-  it("does not impose Git evidence on non-Git outcomes", () => {
-    expect(landedGitEvidenceError("landed", undefined, null)).toBeNull();
-    expect(landedGitEvidenceError("discarded", "a329f20", null)).toBeNull();
+    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)).toBeNull();
+    expect(outcomeGitEvidence(undefined, "/repo", "tests passed", undefined, run)).toBeNull();
+    expect(calls).toEqual(["rev-parse --verify a329f20^{commit}"]);
   });
 });
 
@@ -741,6 +807,11 @@ describe("mergeOutcomeEvidence", () => {
 
   it("stays undefined with no evidence at all", () => {
     expect(mergeOutcomeEvidence(undefined, null)).toBeUndefined();
+  });
+
+  it("preserves structured outcome evidence without inventing a commit", () => {
+    expect(mergeOutcomeEvidence('{"url":"https://example.com/check","note":"verified"}', null))
+      .toEqual({ url: "https://example.com/check", note: "verified" });
   });
 });
 

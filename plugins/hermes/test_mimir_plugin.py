@@ -247,7 +247,7 @@ class HookContractTest(unittest.TestCase):
                          lambda _reporter, event: self.events.append(event) or True),
             patch.object(mimir_plugin._ExchangeQueue, "replay", lambda _queue: None),
             patch("threading.Thread.start", return_value=None),
-            patch.dict(os.environ, {"MIMIR_HOME": self.home.name}, clear=True),
+            patch.dict(os.environ, {"MIMIR_HOME": self.home.name, "PATH": os.environ.get("PATH", "")}, clear=True),
         ]
         for active_patch in self.patches:
             active_patch.start()
@@ -369,9 +369,9 @@ class HookContractTest(unittest.TestCase):
 
     def test_commit_hook_uses_exact_session_even_without_proxy_exchange(self):
         with patch.object(mimir_plugin, "_commit_cwd", return_value=self.home.name), \
-             patch.object(mimir_plugin, "_head", return_value="a" * 40), \
-             patch.object(mimir_plugin, "_commit_artifact", return_value={"commit_sha": "b" * 40}) as collect, \
-             patch("threading.Thread") as thread:
+              patch.object(mimir_plugin, "_head", return_value="a" * 40), \
+              patch.object(mimir_plugin, "_commit_artifact", return_value={"commit_sha": "b" * 40}) as collect, \
+              patch.object(mimir_plugin._CommitDelivery, "send") as send:
             before = self.ctx.hooks["pre_tool_call"]
             after = self.ctx.hooks["post_tool_call"]
             before(session_id="exact", tool_call_id="id", tool_name="bash", args={"command": "git commit -m done"})
@@ -382,8 +382,47 @@ class HookContractTest(unittest.TestCase):
             after(session_id="exact", tool_call_id="id", status="ok", result="ok")
             after(session_id="exact", tool_call_id="id", status="ok", result="ok")
             collect.assert_called_once_with(self.home.name, "a" * 40, "ok")
-            self.assertEqual(thread.call_args.kwargs["args"][1], "exact")
+            send.assert_called_once_with("exact", {"commit_sha": "b" * 40})
             self.assertEqual(self.queued(), [])
+
+    def test_missing_identity_failed_tool_and_non_commit_never_capture(self):
+        with patch.object(mimir_plugin, "_commit_artifact") as collect, \
+             patch.object(mimir_plugin._CommitDelivery, "send") as send:
+            before = self.ctx.hooks["pre_tool_call"]
+            after = self.ctx.hooks["post_tool_call"]
+            before(session_id="s", tool_call_id=None, tool_name="bash", args={"command": "git commit -m x"})
+            before(session_id=None, tool_call_id="id", tool_name="bash", args={"command": "git commit -m x"})
+            before(session_id="s", tool_call_id="id", tool_name="bash", args={"command": "git status"})
+            after(session_id="s", tool_call_id="id", status="ok", result="[main abc1234] x")
+            collect.assert_not_called()
+            send.assert_not_called()
+
+    def test_unborn_branch_hook_captures_only_verified_initial_commit(self):
+        with tempfile.TemporaryDirectory() as root:
+            def git(*args):
+                return subprocess.check_output(["git", "-C", root, *args], stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            git("config", "user.email", "test@example.com")
+            git("config", "user.name", "Test")
+            path = os.path.join(root, "first.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("first\n")
+            git("add", ".")
+            before = self.ctx.hooks["pre_tool_call"]
+            after = self.ctx.hooks["post_tool_call"]
+            with patch.object(mimir_plugin._CommitDelivery, "send") as send:
+                before(session_id="exact", tool_call_id="no-commit", tool_name="bash",
+                       args={"command": "git commit -m first", "workdir": root})
+                after(session_id="exact", tool_call_id="no-commit", status="ok", result="nothing to commit")
+                send.assert_not_called()
+                before(session_id="exact", tool_call_id="first", tool_name="bash",
+                       args={"command": "git commit -m first", "workdir": root})
+                summary = git("commit", "-m", "first")
+                after(session_id="exact", tool_call_id="first", status="ok", result=summary)
+                self.assertEqual(send.call_args.args[0], "exact")
+                self.assertEqual(send.call_args.args[1]["commit_sha"], git("rev-parse", "HEAD"))
+                after(session_id="exact", tool_call_id="first", status="ok", result=summary)
+                send.assert_called_once()
 
 
 class GitArtifactTest(unittest.TestCase):
@@ -418,6 +457,24 @@ class GitArtifactTest(unittest.TestCase):
             with patch.object(mimir_plugin, "MAX_PATCH_BYTES", 8):
                 self.assertIsNone(mimir_plugin._commit_artifact(root, baseline, summary))
 
+    def test_initial_commit_requires_matching_git_summary(self):
+        with tempfile.TemporaryDirectory() as root:
+            def git(*args):
+                return subprocess.check_output(["git", "-C", root, *args], stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            git("config", "user.email", "test@example.com")
+            git("config", "user.name", "Test")
+            self.assertIsNone(mimir_plugin._head(root))
+            path = os.path.join(root, "first.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("first\n")
+            git("add", ".")
+            summary = git("commit", "-m", "first")
+            artifact = mimir_plugin._commit_artifact(root, None, summary)
+            self.assertEqual(artifact["commit_sha"], git("rev-parse", "HEAD"))
+            self.assertIsNone(artifact["parent_commit_sha"])
+            self.assertIsNone(mimir_plugin._commit_artifact(root, None, "commit completed"))
+
     def test_upload_requires_saved_receipt_and_accepts_root_session(self):
         import io
         artifact = {"commit_sha": "a" * 40, "patch": "redacted"}
@@ -435,6 +492,65 @@ class GitArtifactTest(unittest.TestCase):
             self.assertTrue(mimir_plugin._post_artifact(connection, "exact", artifact))
         with patch("urllib.request.urlopen", return_value=receipt("exact", "accepted")):
             self.assertFalse(mimir_plugin._post_artifact(connection, "exact", artifact))
+
+    def test_verified_commit_only_uploads_artifact_no_automatic_landed_outcome(self):
+        import io
+        connection = {"url": "https://mimir.example", "token": "tok"}
+        artifact = {"commit_sha": "a" * 40, "patch": "diff --git a/x b/x"}
+        requests = []
+        def urlopen(request, timeout):
+            requests.append(request)
+            return io.BytesIO(json.dumps({"artifacts": [
+                {"commit_sha": artifact["commit_sha"], "capture_status": "saved"}]}).encode())
+        class ImmediateThread:
+            def __init__(self, target, args=(), daemon=False):
+                self.target, self.args = target, args
+            def start(self):
+                self.target(*self.args)
+        with patch("urllib.request.urlopen", side_effect=urlopen), patch("threading.Thread", ImmediateThread):
+            mimir_plugin._CommitDelivery(connection).send("exact", artifact)
+        self.assertEqual([request.full_url for request in requests],
+                         ["https://mimir.example/sessions/exact/git-artifacts"])
+        self.assertEqual(json.loads(requests[0].data), {"version": 1, "commits": [artifact]})
+
+    def test_artifact_delivery_is_idempotent_per_exact_session(self):
+        connection = {"url": "https://mimir.example", "token": "tok"}
+        delivery = mimir_plugin._CommitDelivery(connection)
+        artifact = {"commit_sha": "b" * 40}
+        calls = []
+        def artifact_post(_connection, session, _artifact):
+            calls.append(session)
+            return True
+        class ImmediateThread:
+            def __init__(self, target, args=(), daemon=False):
+                self.target, self.args = target, args
+            def start(self):
+                self.target(*self.args)
+        with patch.object(mimir_plugin, "_post_artifact", artifact_post), \
+             patch("threading.Thread", ImmediateThread):
+            delivery.send("exact", artifact)
+            delivery.send("exact", artifact)
+            delivery.send("other", artifact)
+        self.assertEqual(calls, ["exact", "other"])
+
+    def test_exhausted_artifact_can_retry_on_duplicate_hook(self):
+        delivery = mimir_plugin._CommitDelivery({"url": "https://mimir.example", "token": "tok"})
+        artifact = {"commit_sha": "c" * 40}
+        attempts = []
+        def artifact_post(*_args):
+            attempts.append("artifact")
+            return len(attempts) > 4
+        class ImmediateThread:
+            def __init__(self, target, args=(), daemon=False):
+                self.target, self.args = target, args
+            def start(self):
+                self.target(*self.args)
+        with patch.object(mimir_plugin, "_post_artifact", artifact_post), \
+             patch("threading.Thread", ImmediateThread), patch("threading.Event.wait"):
+            delivery.send("exact", artifact)
+            delivery.send("exact", artifact)
+            delivery.send("exact", artifact)
+        self.assertEqual(attempts, ["artifact"] * 5)
 
 
 class ExchangeDeliveryTest(unittest.TestCase):

@@ -80,6 +80,11 @@ async function head(cwd: string): Promise<string | null> {
   return value && COMMIT_SHA.test(value) ? value : null;
 }
 
+async function turnBaseline(cwd: string): Promise<string | null> {
+  if ((await git(cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") return null;
+  return await head(cwd) ?? "unborn";
+}
+
 function commitHints(message: unknown, rawResults: unknown): string[] {
   const blocks = message && typeof message === "object" && Array.isArray((message as { content?: unknown }).content)
     ? (message as { content: unknown[] }).content : [];
@@ -88,13 +93,13 @@ function commitHints(message: unknown, rawResults: unknown): string[] {
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const call = block as Record<string, unknown>;
-    if (call.type !== "toolCall" || typeof call.id !== "string") continue;
+    if (call.type !== "toolCall" && call.type !== "tool_use" || typeof (call.id ?? call.toolCallId) !== "string") continue;
     const input = call.arguments;
     const args = typeof input === "string" ? (() => { try { return JSON.parse(input); } catch { return null; } })() : input;
     if (!args || typeof args !== "object") continue;
     const command = (args as Record<string, unknown>).command;
-    if (typeof command !== "string" || !/(?:^|[;&|\n]\s*|\s)git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(command)) continue;
-    const result = results.find((item) => item.toolCallId === call.id);
+    if (typeof command !== "string" || !/(?:^\s*|[;&|\n]\s*)git\s+(?:(?:-[Cc]\s+\S+|--(?:git-dir|work-tree)(?:=|\s+)\S+|--no-pager)\s+)*commit(?:\s|$)/i.test(command)) continue;
+    const result = results.find((item) => item.toolCallId === (call.id ?? call.toolCallId) || item.tool_call_id === (call.id ?? call.toolCallId));
     if (!result || result.isError === true || result.is_error === true || result.status === "error" || typeof result.exitCode === "number" && result.exitCode !== 0) continue;
     const content = result.content;
     const output = typeof content === "string" ? content : Array.isArray(content)
@@ -114,10 +119,18 @@ function redactPatch(patch: string): string {
 async function collectCommits(cwd: string, baseline: string, hints: string[]) {
   if (!hints.length) return [];
   const tip = await head(cwd);
-  if (!tip || tip === baseline || await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return [];
-  const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
-  if (!range) return [];
-  const commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  if (!tip || tip === baseline) return [];
+  let commits: string[];
+  if (baseline === "unborn") {
+    // Only an evidenced root at HEAD can be attributed without a prior commit.
+    if ((await git(cwd, ["show", "-s", "--format=%P", tip]))?.trim() !== "") return [];
+    commits = [tip];
+  } else {
+    if (await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return [];
+    const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
+    if (!range) return [];
+    commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  }
   if (commits.length > 16) return [];
   const artifacts = [];
   for (const sha of commits) {
@@ -496,7 +509,13 @@ export default function (pi: ExtensionAPI) {
     if (generation !== initialization) return;
     snapshots.clear();
     const rawID = ctx?.sessionManager?.getSessionId?.();
-    if (!rawID) return;
+    if (!rawID) {
+      const previous = session;
+      session = null;
+      restoreSessionID();
+      if (previous?.active) await request(connection, `/sessions/${encodeURIComponent(previous.id)}/events`, eventBody(previous, "end", "switch"), captureHeaders(previous));
+      return;
+    }
     const cwd = ctx.cwd || process.cwd();
     const previous = session;
     const id = canonicalSessionID(String(rawID));
@@ -552,7 +571,7 @@ export default function (pi: ExtensionAPI) {
     if (!owner) return;
     const context = ctx.sessionManager.buildSessionContext();
     const messages = normalizeMessages(context.messages);
-    const baseline = await head(owner.cwd);
+    const baseline = await turnBaseline(owner.cwd);
     if (session !== owner) return;
     snapshots.set(event.turnIndex, { startedAt: event.timestamp, request: { messages }, session: owner, baseline });
   });
@@ -570,7 +589,7 @@ export default function (pi: ExtensionAPI) {
         try { await job; } finally { artifactJobs.delete(job); }
       }
     }
-    if (session !== current) return;
+    if (session !== current || snapshot?.session !== current) return;
     const exchange = buildExchange(current.id, event.turnIndex, snapshot, event.message, event.toolResults, pi.getSessionName());
     if (!exchange) return;
     const exchangeID = String(exchange.exchange_id);

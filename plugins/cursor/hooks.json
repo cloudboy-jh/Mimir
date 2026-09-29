@@ -4,7 +4,7 @@
     "sessionStart": [{ "command": "mimir _hook cursor" }],
     "beforeSubmitPrompt": [{ "command": "mimir _hook cursor" }],
     "preCompact": [{ "command": "mimir _hook cursor" }],
-    "afterShellExecution": [{ "command": "mimir _hook cursor", "matcher": "git\\s+commit" }],
+    "afterShellExecution": [{ "command": "mimir _hook cursor" }],
     "afterAgentResponse": [{ "command": "mimir _hook cursor" }],
     "stop": [{ "command": "mimir _hook cursor" }],
     "sessionEnd": [{ "command": "mimir _hook cursor" }]

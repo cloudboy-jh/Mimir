@@ -2,6 +2,80 @@ import { describe, expect, it, vi } from "vitest";
 import { addMachineToken, dashboardRequest, env, request } from "./support";
 
 describe("Session Git artifacts", () => {
+  it("retains exact-session saved commit evidence through outcome and explicit end, without inferring a commit for another session", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary, repo) VALUES ('exact-commit', '2026-08-20T10:00:00.000Z', 'active', 'header', 'mimir');
+      INSERT INTO sessions(id, started_at, state, boundary, repo) VALUES ('exact-no-commit', '2026-08-20T10:00:01.000Z', 'active', 'header', 'mimir');
+    `);
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const sha = "a".repeat(40);
+    const patch = "diff --git a/fix.ts b/fix.ts\n--- a/fix.ts\n+++ b/fix.ts\n@@ -0,0 +1 @@\n+fixed\n";
+    const hash = await digest(patch);
+    const key = `sessions/exact-commit/git/${sha}/${hash}.patch`;
+    const upload = await request("/sessions/exact-commit/git-artifacts", {
+      method: "POST", headers,
+      body: JSON.stringify({ version: 1, commits: [{ commit_sha: sha, patch }] }),
+    });
+    expect(upload.status).toBe(201);
+    expect(await upload.json()).toMatchObject({
+      session_id: "exact-commit",
+      artifacts: [{ commit_sha: sha, capture_status: "saved", patch_sha256: hash, patch_r2_key: key }],
+    });
+    expect(await env.DB.prepare(
+      "SELECT capture_status, patch_sha256, patch_r2_key FROM session_git_artifacts WHERE session_id = ? AND commit_sha = ?",
+    ).bind("exact-commit", sha).first()).toEqual({
+      capture_status: "saved", patch_sha256: hash, patch_r2_key: key,
+    });
+    const savedPatch = await dashboardRequest(`/dashboard/api/sessions/exact-commit/git-artifacts/${sha}/patch`);
+    expect(savedPatch.status).toBe(200);
+    expect(await savedPatch.text()).toBe(patch);
+    expect(await (await env.LOGS.get(key))!.text()).toBe(patch);
+
+    const evidence = { commit: sha, patch_sha256: hash, patch_r2_key: key };
+    const marked = await request("/sessions/exact-commit/outcome", {
+      method: "POST", headers,
+      body: JSON.stringify({ outcome: "landed", source: "agent", reason: "Verified commit", evidence }),
+    });
+    expect(marked.status).toBe(200);
+    expect(await marked.json()).toMatchObject({ id: "exact-commit", outcome: "landed", evidence });
+    expect(await env.DB.prepare(
+      "SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'exact-commit' ORDER BY rowid DESC LIMIT 1",
+    ).first()).toEqual({ outcome: "landed", source: "agent", reason: "Verified commit", evidence_json: JSON.stringify(evidence) });
+
+    const noCommit = await request("/sessions/exact-no-commit/outcome", {
+      method: "POST", headers,
+      body: JSON.stringify({ outcome: "unresolved", reason: "No commit was made", evidence: { checks: "passed" } }),
+    });
+    expect(noCommit.status).toBe(200);
+    expect(await noCommit.json()).toMatchObject({ id: "exact-no-commit", outcome: "unresolved" });
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM session_git_artifacts WHERE session_id = 'exact-no-commit'",
+    ).first()).toEqual({ count: 0 });
+
+    for (const id of ["exact-commit", "exact-no-commit"]) {
+      const ended = await request(`/sessions/${id}/end`, { method: "POST", headers, body: "{}" });
+      expect(ended.status).toBe(200);
+    }
+    const detail = await request("/sessions/exact-commit", { headers });
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      session: { id: "exact-commit", state: "inactive", outcome: "landed", outcome_reason: "Verified commit" },
+      git_artifacts: [{ commit_sha: sha, capture_status: "saved", patch_sha256: hash }],
+    });
+    expect(await env.DB.prepare(
+      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'exact-commit' ORDER BY rowid DESC LIMIT 1",
+    ).first()).toEqual({ evidence_json: JSON.stringify(evidence) });
+    expect(await (await dashboardRequest(`/dashboard/api/sessions/exact-commit/git-artifacts/${sha}/patch`)).text()).toBe(patch);
+    const withoutCommit = await request("/sessions/exact-no-commit", { headers });
+    expect(await withoutCommit.json()).toMatchObject({
+      session: { id: "exact-no-commit", state: "inactive", outcome: "unresolved", outcome_reason: "No commit was made" },
+      git_artifacts: [],
+    });
+    expect(await env.DB.prepare(
+      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'exact-no-commit' ORDER BY rowid DESC LIMIT 1",
+    ).first()).toEqual({ evidence_json: '{"checks":"passed"}' });
+  });
+
   it("stores independent redacted root-owned commits idempotently without mutating outcomes", async () => {
     await addMachineToken("install-a", "machine-a");
     await env.DB.exec(`

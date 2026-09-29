@@ -53,7 +53,10 @@ export async function updateOutcome(
   await c.env.DB.batch(
     outcomeStatements(c.env.DB, outcomeSessionID, normalized, now),
   );
-  return c.json(outcomeResult(outcomeSessionID, normalized, now));
+  const current = await c.env.DB.prepare(
+    "SELECT outcome_updated_at FROM sessions WHERE id = ?",
+  ).bind(outcomeSessionID).first<{ outcome_updated_at: string }>();
+  return c.json(outcomeResult(outcomeSessionID, normalized, current!.outcome_updated_at));
 }
 
 export async function bulkUpdateOutcomes(
@@ -100,8 +103,12 @@ export async function bulkUpdateOutcomes(
       outcomeStatements(c.env.DB, id, normalized, now),
     ),
   );
+  const updatedRows = await c.env.DB.prepare(
+    `SELECT id, outcome_updated_at FROM sessions WHERE id IN (${placeholders})`,
+  ).bind(...sessionIDs).all<{ id: string; outcome_updated_at: string }>();
+  const updatedAt = new Map(updatedRows.results.map((row) => [row.id, row.outcome_updated_at]));
   return c.json({
-    updated: sessionIDs.map((id) => outcomeResult(id, normalized, now)),
+    updated: sessionIDs.map((id) => outcomeResult(id, normalized, updatedAt.get(id)!)),
   });
 }
 
@@ -616,10 +623,12 @@ async function persistOutcomePatch(
   };
   if (JSON.stringify(prepared.evidence).length > 32_000)
     return { error: "outcome evidence too large" };
-  await bucket.put(key, bytes, {
-    httpMetadata: { contentType: "text/plain; charset=utf-8" },
-    customMetadata: { session_id: sessionID, sha256: hash },
-  });
+  if (!(await bucket.head(key))) {
+    await bucket.put(key, bytes, {
+      httpMetadata: { contentType: "text/plain; charset=utf-8" },
+      customMetadata: { session_id: sessionID, sha256: hash },
+    });
+  }
   return prepared;
 }
 async function finalizeObjectOnlySession(
@@ -715,10 +724,38 @@ function outcomeStatements(
   outcome: NormalizedOutcome,
   now: string,
 ) {
+  const eventID = ulid();
   return [
     db
       .prepare(
-        "UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ?",
+        `INSERT INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM (
+             SELECT outcome, source, reason, evidence_json
+             FROM session_outcome_events WHERE session_id = ? ORDER BY rowid DESC LIMIT 1
+           ) AS latest
+           WHERE latest.outcome = ? AND latest.source = ?
+             AND latest.reason IS ? AND latest.evidence_json IS ?
+         )`,
+      )
+      .bind(
+        eventID,
+        id,
+        outcome.outcome,
+        outcome.source,
+        outcome.reason,
+        outcome.evidenceJson,
+        now,
+        id,
+        outcome.outcome,
+        outcome.source,
+        outcome.reason,
+        outcome.evidenceJson,
+      ),
+    db
+      .prepare(
+        "UPDATE sessions SET work_outcome = ?, outcome = ?, outcome_src = ?, outcome_updated_at = ?, outcome_reason = ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ? AND EXISTS (SELECT 1 FROM session_outcome_events WHERE id = ?)",
       )
       .bind(
         outcome.outcome,
@@ -727,19 +764,7 @@ function outcomeStatements(
         now,
         outcome.reason,
         id,
-      ),
-    db
-      .prepare(
-        "INSERT INTO session_outcome_events(id, session_id, outcome, source, reason, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-      .bind(
-        ulid(),
-        id,
-        outcome.outcome,
-        outcome.source,
-        outcome.reason,
-        outcome.evidenceJson,
-        now,
+        eventID,
       ),
   ];
 }

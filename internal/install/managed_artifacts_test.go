@@ -91,6 +91,137 @@ func TestSyncManagedArtifactsInstallAndIdempotence(t *testing.T) {
 	}
 }
 
+func TestFreshInstallBundlesHarnessIntegrationsAndUseSkill(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	selected, err := NormalizeHarnesses([]string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustLoadReceipt(t).Harnesses; !equalStrings(got, selected) {
+		t.Fatalf("selected harnesses = %v, want %v", got, selected)
+	}
+
+	cases := []struct{ harness, source, target string }{
+		{"pi", "plugins/pi/mimir.ts", filepath.Join(paths.PiHome, "extensions", "mimir.ts")},
+		{"oh-my-pi", "plugins/oh-my-pi/mimir.ts", filepath.Join(paths.OhMyPiHome, "extensions", "mimir.ts")},
+		{"opencode", "plugins/opencode/mimir.ts", filepath.Join(paths.OpenCodeHome, "plugins", "mimir.ts")},
+		{"opencode", "skills/mimir-use/SKILL.md", filepath.Join(paths.OpenCodeHome, "skills", "mimir-use", "SKILL.md")},
+		{"hermes", "plugins/hermes/__init__.py", filepath.Join(paths.HermesHome, "plugins", "mimir", "__init__.py")},
+		{"hermes", "plugins/hermes/plugin.yaml", filepath.Join(paths.HermesHome, "plugins", "mimir", "plugin.yaml")},
+		{"hermes", "skills/mimir-use/SKILL.md", filepath.Join(paths.HermesHome, "skills", "mimir-use", "SKILL.md")},
+		{"claude-code", "plugins/claude-code/.claude-plugin/plugin.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", ".claude-plugin", "plugin.json")},
+		{"claude-code", "plugins/claude-code/hooks/hooks.json", filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json")},
+		{"codex", "plugins/codex/marketplace.json", filepath.Join(paths.AgentPlugins, "marketplace.json")},
+		{"codex", "plugins/codex/plugin.json", filepath.Join(paths.AgentPlugins, "plugins", "mimir", "plugin.json")},
+		{"codex", "plugins/codex/hooks/hooks.json", filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json")},
+		{"cursor", "plugins/cursor/hooks.json", filepath.Join(paths.CursorHome, "hooks.json")},
+	}
+	receipt := mustLoadReceipt(t)
+	for _, tc := range cases {
+		t.Run(tc.harness+"/"+tc.source, func(t *testing.T) {
+			want, err := mimirassets.Bundle.ReadFile(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := mustReadFile(t, tc.target); !bytes.Equal(got, want) {
+				t.Fatalf("%s differs from bundled %s", tc.target, tc.source)
+			}
+			result := resultForPath(t, report, tc.target)
+			if result.Source != tc.source || result.Status != artifactInstalled || result.BundleHash != hashBytes(want) {
+				t.Fatalf("install result = %#v", result)
+			}
+			if got := receipt.Artifacts[tc.target]; got.Source != tc.source || got.Hash != hashBytes(want) {
+				t.Fatalf("receipt entry = %#v", got)
+			}
+		})
+	}
+}
+
+func TestUpdateRefreshesOwnedHarnessArtifactsWithoutClaimingLocalChanges(t *testing.T) {
+	paths := isolatedInstallation(t, true)
+	selected, err := NormalizeHarnesses([]string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcileManagedArtifacts(true, "install", true, true, false, nil, &selected); err != nil {
+		t.Fatal(err)
+	}
+	ownedPrior := map[string]string{
+		filepath.Join(paths.PiHome, "extensions", "mimir.ts"):                         "plugins/pi/mimir.ts",
+		filepath.Join(paths.OhMyPiHome, "extensions", "mimir.ts"):                     "plugins/oh-my-pi/mimir.ts",
+		filepath.Join(paths.HermesHome, "plugins", "mimir", "plugin.yaml"):           "plugins/hermes/plugin.yaml",
+		filepath.Join(paths.HermesHome, "skills", "mimir-use", "SKILL.md"):           "skills/mimir-use/SKILL.md",
+		filepath.Join(paths.ClaudeCodeHome, "skills", "mimir", "hooks", "hooks.json"): "plugins/claude-code/hooks/hooks.json",
+		filepath.Join(paths.AgentPlugins, "plugins", "mimir", "hooks", "hooks.json"): "plugins/codex/hooks/hooks.json",
+	}
+	receipt := mustLoadReceipt(t)
+	for target, source := range ownedPrior {
+		prior := []byte("previous bundled " + source + "\n")
+		if err := os.WriteFile(target, prior, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		receipt.Artifacts[target] = installReceiptArtifact{Source: source, Hash: hashBytes(prior)}
+	}
+	modified := filepath.Join(paths.OpenCodeHome, "skills", "mimir-use", "SKILL.md")
+	modifiedBytes := []byte("local skill edits\n")
+	if err := os.WriteFile(modified, modifiedBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	modifiedOwnership := receipt.Artifacts[modified]
+	unmanaged := filepath.Join(paths.CursorHome, "hooks.json")
+	unmanagedBytes := []byte(`{"hooks":{"user":[]}}`)
+	delete(receipt.Artifacts, unmanaged)
+	if err := os.WriteFile(unmanaged, unmanagedBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(paths.Receipt, receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := syncManagedArtifacts(true, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := mustLoadReceipt(t)
+	for target, source := range ownedPrior {
+		want, err := mimirassets.Bundle.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resultForPath(t, report, target).Status; got != artifactUpdated {
+			t.Errorf("%s status = %s, want updated", target, got)
+		}
+		if got := mustReadFile(t, target); !bytes.Equal(got, want) {
+			t.Errorf("%s was not refreshed from bundle", target)
+		}
+		if got := after.Artifacts[target]; got.Source != source || got.Hash != hashBytes(want) {
+			t.Errorf("%s receipt = %#v", target, got)
+		}
+	}
+	if got := resultForPath(t, report, modified).Status; got != artifactModified {
+		t.Errorf("modified skill status = %s", got)
+	}
+	if got := mustReadFile(t, modified); !bytes.Equal(got, modifiedBytes) {
+		t.Error("locally modified skill was replaced")
+	}
+	if after.Artifacts[modified] != modifiedOwnership {
+		t.Error("locally modified skill ownership changed")
+	}
+	if got := resultForPath(t, report, unmanaged).Status; got != artifactConflict {
+		t.Errorf("unmanaged hooks status = %s", got)
+	}
+	if got := mustReadFile(t, unmanaged); !bytes.Equal(got, unmanagedBytes) {
+		t.Error("unmanaged hooks were replaced")
+	}
+	if _, owned := after.Artifacts[unmanaged]; owned {
+		t.Error("unmanaged hooks were claimed")
+	}
+}
+
 func TestReinstallChangedSelectionDisablesDeselectedUnmodifiedArtifacts(t *testing.T) {
 	paths := isolatedInstallation(t, false)
 	selected := []string{"opencode"}

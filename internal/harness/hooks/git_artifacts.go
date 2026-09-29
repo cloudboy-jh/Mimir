@@ -6,13 +6,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/sessionimport"
 )
 
-var commitCommand = regexp.MustCompile(`(?:^|[;&|]\s*)git\s+commit(?:\s|$)`)
-var commitConfirmation = regexp.MustCompile(`(?m)^\[[^\]\r\n]{1,200}\s+([0-9a-fA-F]{7,40})\](?:\s|$)`)
+var commitCommand = regexp.MustCompile(`(?:^|[;&|]\s*)git\s+(?:(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)|-c\s+(?:"[^"]+"|'[^']+'|\S+)|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+))\s+)*commit(?:\s|$)`)
+var gitDirectory = regexp.MustCompile(`(?:^|\s)-C\s+("[^"]+"|'[^']+'|\S+)`)
+var leadingDirectory = regexp.MustCompile(`^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)\s*$`)
+// Git prints both "[branch SHA] title" and "[branch (root-commit) SHA] title".
+var commitConfirmation = regexp.MustCompile(`(?m)^\[[^\]\r\n]{1,200}?\s+(?:\(root-commit\)\s+)?([0-9a-fA-F]{7,40})\](?:\s|$)`)
 var commitHint = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 var failedShellExit = regexp.MustCompile(`(?m)(?:^Exit code:|^Process exited with code)\s*[1-9][0-9]*\b`)
 
@@ -30,6 +34,9 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 		}
 		input, _ := body["tool_input"].(map[string]any)
 		command = stringValue(input["command"])
+		if directory := firstString(input, "working_directory", "workdir", "cwd"); directory != "" {
+			cwd = resolveToolCWD(cwd, directory)
+		}
 		if failedResult(body["tool_response"]) || failedShellExit.MatchString(commandOutput(body["tool_response"])) {
 			return normalizedInput{}
 		}
@@ -37,18 +44,15 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 	case "cursor":
 		command = stringValue(body["command"])
 		output = commandOutput(body["output"])
-		if failedResult(body) {
+		if failedResult(body) || failedResult(body["output"]) || failedShellExit.MatchString(output) {
 			return normalizedInput{}
 		}
 		hasToolCWD := false
 		if input, ok := body["tool_input"].(map[string]any); ok {
 			if directory := firstString(input, "working_directory", "workdir", "cwd"); directory != "" {
 				hasToolCWD = true
-				if filepath.IsAbs(directory) {
-					cwd = directory
-				} else if cwd != "" {
-					cwd = filepath.Join(cwd, directory)
-				} else {
+				cwd = resolveToolCWD(cwd, directory)
+				if cwd == "" {
 					return normalizedInput{}
 				}
 			}
@@ -59,7 +63,24 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 			}
 		}
 	}
-	if cwd == "" || !commitCommand.MatchString(command) {
+	location := commitCommand.FindString(command)
+	if cwd == "" || location == "" || strings.Contains(location, "--git-dir") || strings.Contains(location, "--work-tree") {
+		return normalizedInput{}
+	}
+	// Only a single explicit directory change before Git can be attributed.
+	// Otherwise the hook cwd may name a different repository than Git used.
+	prefix := command[:strings.Index(command, location)+strings.Index(location, "git ")]
+	if prefix != "" {
+		if matches := leadingDirectory.FindStringSubmatch(prefix); len(matches) == 2 {
+			cwd = resolveToolCWD(cwd, strings.Trim(matches[1], `"'`))
+		} else if strings.TrimSpace(prefix) != "" {
+			return normalizedInput{}
+		}
+	}
+	if matches := gitDirectory.FindStringSubmatch(location); len(matches) == 2 {
+		cwd = resolveToolCWD(cwd, strings.Trim(matches[1], `"'`))
+	}
+	if cwd == "" {
 		return normalizedInput{}
 	}
 	match := commitConfirmation.FindStringSubmatch(output)
@@ -98,6 +119,16 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 		Kind: "git-artifacts", Harness: harness, SessionID: session, Repo: repo,
 		Body: map[string]any{"version": 1, "commits": []sessionimport.GitArtifact{artifact}},
 	}}}
+}
+
+func resolveToolCWD(cwd, directory string) string {
+	if filepath.IsAbs(directory) {
+		return filepath.Clean(directory)
+	}
+	if cwd == "" {
+		return ""
+	}
+	return filepath.Join(cwd, directory)
 }
 
 func commandOutput(value any) string {
@@ -139,9 +170,26 @@ func failedResult(value any) bool {
 		return false
 	}
 	for _, key := range []string{"exitCode", "exit_code", "exit_code_int"} {
-		if code, exists := result[key]; exists && code != nil && code != float64(0) && code != json.Number("0") && code != 0 {
-			return true
+		if code, exists := result[key]; exists && code != nil {
+			n, err := strconv.ParseFloat(stringifyNumber(code), 64)
+			if err != nil || n != 0 {
+				return true
+			}
 		}
 	}
 	return result["success"] == false || result["is_error"] == true
+}
+
+func stringifyNumber(value any) string {
+	switch n := value.(type) {
+	case json.Number:
+		return n.String()
+	case float64:
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(n)
+	case string:
+		return n
+	}
+	return "invalid"
 }

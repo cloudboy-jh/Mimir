@@ -67,6 +67,14 @@ function repository() {
   return cwd;
 }
 
+function unbornRepository() {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-root-artifact-"));
+  git(cwd, "init", "-q");
+  git(cwd, "config", "user.name", "Pi Test");
+  git(cwd, "config", "user.email", "pi@example.test");
+  return cwd;
+}
+
 function commit(cwd: string, content: string) {
   writeFileSync(join(cwd, "change.txt"), content);
   git(cwd, "add", ".");
@@ -312,6 +320,89 @@ describe("Pi Mimir extension", () => {
       expect(body.commits[0]!.patch).not.toContain("supersecret");
       expect(Buffer.byteLength(body.commits[0]!.patch)).toBeLessThanOrEqual(4 * 1024 * 1024);
       await harness.invoke("session_shutdown", { reason: "shutdown" });
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("captures an evidenced root commit exactly once for the exact session", async () => {
+    const cwd = unbornRepository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "pi-root" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { sha, output } = commit(cwd, "api_key=supersecret\n");
+      expect(output).toContain("(root-commit)");
+      const turn = { turnIndex: 0, ...result(output) };
+      await harness.invoke("turn_end", turn);
+      await harness.invoke("turn_end", turn);
+      const uploads = harness.requests.filter((item) => item.url.endsWith("/git-artifacts"));
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0]!.url).toEndWith("/sessions/pi-root/git-artifacts");
+      expect(uploads[0]!.headers.get("x-mimir-session")).toBe("pi-root");
+      expect(uploads[0]!.body).toMatchObject({ commits: [{ commit_sha: sha, parent_commit_sha: null, provenance: "pi" }] });
+      expect(JSON.stringify(uploads[0]!.body)).not.toContain("supersecret");
+      await harness.invoke("session_shutdown", {});
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("does not attribute a root commit without matching successful turn evidence", async () => {
+    const cwd = unbornRepository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "pi-root-negative" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { sha, output } = commit(cwd, "changed\n");
+      await harness.invoke("turn_end", { turnIndex: 0, ...result(output.replace(sha.slice(0, 7), "deadbee")) });
+      await harness.invoke("turn_start", { turnIndex: 1, timestamp: Date.now() }, turnContext);
+      await harness.invoke("turn_end", { turnIndex: 1, ...result(output) });
+      expect(harness.requests.filter((item) => item.url.endsWith("/git-artifacts"))).toHaveLength(0);
+      await harness.invoke("session_shutdown", {});
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("captures git -c commit once from matching turn evidence, never from another tool", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "exact" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { sha, output } = commit(cwd, "changed");
+      const turn = result(output, "git -c user.name=Test commit -m 'capture change'");
+      turn.toolResults.unshift({ ...turn.toolResults[0]!, toolCallId: "other", content: [{ type: "text", text: output }] });
+      await harness.invoke("turn_end", { turnIndex: 0, ...turn });
+      await harness.invoke("turn_end", { turnIndex: 0, ...turn });
+      expect(harness.requests.filter((item) => item.url.endsWith("/git-artifacts"))).toHaveLength(1);
+      expect(JSON.stringify(harness.requests.find((item) => item.url.endsWith("/git-artifacts"))?.body)).toContain(sha);
+      await harness.invoke("session_shutdown", {});
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("missing session ID clears attribution and prevents uploads and exchanges", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "old" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => undefined } });
+      const { output } = commit(cwd, "changed");
+      await harness.invoke("turn_end", { turnIndex: 0, ...result(output) });
+      expect(await harness.providerHeaders()).toEqual({});
+      expect(process.env.MIMIR_SESSION_ID).toBe(originalSessionID);
+      expect(harness.requests.filter((item) => /\/(git-artifacts|exchanges)$/.test(item.url))).toHaveLength(0);
+      expect(eventKinds(harness.requests, "old")).toEqual(["heartbeat", "end"]);
+      await harness.invoke("session_shutdown", {});
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("does not upload a commit without matching successful output", async () => {
+    const cwd = repository();
+    try {
+      const harness = createHarness();
+      await harness.invoke("session_start", {}, { cwd, sessionManager: { getSessionId: () => "negative" } });
+      await harness.invoke("turn_start", { turnIndex: 0, timestamp: Date.now() }, turnContext);
+      const { output } = commit(cwd, "changed");
+      await harness.invoke("turn_end", { turnIndex: 0, ...result(output, "echo git commit") });
+      expect(harness.requests.filter((item) => item.url.endsWith("/git-artifacts"))).toHaveLength(0);
+      await harness.invoke("session_shutdown", {});
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

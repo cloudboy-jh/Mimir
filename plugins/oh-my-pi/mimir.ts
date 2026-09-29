@@ -199,13 +199,34 @@ async function head(cwd: string): Promise<string | null> {
   return value && COMMIT_SHA.test(value) ? value : null;
 }
 
+async function turnBaseline(cwd: string): Promise<string | null> {
+  if ((await git(cwd, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") return null;
+  return await head(cwd) ?? "unborn";
+}
+
 function commitHints(message: unknown, results: unknown): string[] {
-  const activities = normalizeToolActivity(message, results);
+  const blocks = message && typeof message === "object" && Array.isArray((message as { content?: unknown }).content)
+    ? (message as { content: unknown[] }).content : [];
+  const toolResults: Record<string, unknown>[] = Array.isArray(results)
+    ? results.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
   const hints = new Set<string>();
-  for (const activity of activities) {
-    if (activity.status !== "succeeded" || !activity.output || !/(?:^|[^\w])git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(JSON.stringify(activity.input))) continue;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const call = block as Record<string, unknown>;
+    if (call.type !== "toolCall" && call.type !== "tool_use") continue;
+    const id = call.id ?? call.toolCallId;
+    if (typeof id !== "string") continue;
+    let input = call.arguments ?? call.input;
+    if (typeof input === "string") try { input = JSON.parse(input); } catch { continue; }
+    const command = input && typeof input === "object" ? (input as Record<string, unknown>).command : null;
+    if (typeof command !== "string" || !/(?:^\s*|[;&|\n]\s*)git\s+(?:(?:-[Cc]\s+\S+|--(?:git-dir|work-tree)(?:=|\s+)\S+|--no-pager)\s+)*commit(?:\s|$)/i.test(command)) continue;
+    const result = toolResults.find((item) => item.toolCallId === id || item.tool_call_id === id);
+    if (!result || result.isError === true || result.is_error === true || result.status === "error" || typeof result.exitCode === "number" && result.exitCode !== 0) continue;
+    const content = result.content;
+    const output = typeof content === "string" ? content : Array.isArray(content)
+      ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n") : "";
     // Standard git commit output identifies the actual commit (not arbitrary hashes in a tool result).
-    for (const match of activity.output.matchAll(/\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|\\n|"|$)/g)) hints.add(match[1]);
+    for (const match of output.matchAll(/\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)/gm)) hints.add(match[1]!);
   }
   return [...hints];
 }
@@ -220,10 +241,17 @@ function redactPatch(patch: string): string {
 async function collectCommits(cwd: string, baseline: string, hints: string[]) {
   if (!hints.length) return [];
   const tip = await head(cwd);
-  if (!tip || tip === baseline || (await git(cwd, ["merge-base", "--is-ancestor", baseline, tip])) === null) return [];
-  const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
-  if (!range) return [];
-  const commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  if (!tip || tip === baseline) return [];
+  let commits: string[];
+  if (baseline === "unborn") {
+    if ((await git(cwd, ["show", "-s", "--format=%P", tip]))?.trim() !== "") return [];
+    commits = [tip];
+  } else {
+    if ((await git(cwd, ["merge-base", "--is-ancestor", baseline, tip])) === null) return [];
+    const range = await git(cwd, ["rev-list", "--reverse", "--max-count=32", `${baseline}..${tip}`]);
+    if (!range) return [];
+    commits = range.trim().split("\n").filter((sha) => COMMIT_SHA.test(sha));
+  }
   if (commits.length > 16) return [];
   const artifacts = [];
   for (const sha of commits) {
@@ -328,11 +356,18 @@ export default function (pi: ExtensionAPI) {
     clearInterval(heartbeat);
     heartbeat = undefined;
     await flushArtifacts();
-    snapshots.clear();
     if (generation !== initialization) return;
+    snapshots.clear();
     const cwd = ctx?.cwd || process.cwd();
     const rawID = ctx?.sessionManager?.getSessionId?.();
-    if (!rawID) return;
+    if (!rawID) {
+      const previous = current;
+      current = null;
+      restoreSessionID();
+      configureProvider();
+      if (previous?.active) await post(config, `/sessions/${encodeURIComponent(previous.id)}/events`, event(previous, "end", "switch"), headersFor(previous));
+      return;
+    }
     const previous = current;
     const id = sessionID(String(rawID));
     const rawParentId = Object.prototype.hasOwnProperty.call(ctx, "parentSessionId")
@@ -382,7 +417,7 @@ export default function (pi: ExtensionAPI) {
     const session = current;
     if (!session) return;
     const messages = ctx.sessionManager?.buildSessionContext?.().messages;
-    const baseline = await head(session.cwd);
+    const baseline = await turnBaseline(session.cwd);
     if (current !== session) return;
     snapshots.set(turn.turnIndex, { startedAt: turn.timestamp, messages: Array.isArray(messages) ? messages.slice(-128) : [], session, baseline });
   });
@@ -398,7 +433,7 @@ export default function (pi: ExtensionAPI) {
         try { await job; } finally { artifactJobs.delete(job); }
       }
     }
-    if (!current || turn.message?.role !== "assistant" || typeof turn.message.provider !== "string" || turn.message.provider === "openrouter" || typeof turn.message.model !== "string") return;
+    if (!current || snapshot?.session !== current || turn.message?.role !== "assistant" || typeof turn.message.provider !== "string" || turn.message.provider === "openrouter" || typeof turn.message.model !== "string") return;
     const timestamp = Number(turn.message.timestamp) || Date.now();
     const payload: Record<string, unknown> = {
       exchange_id: `oh-my-pi:${createHash("sha256").update(`${current.id}\0${timestamp}\0${turn.turnIndex}`).digest("hex").slice(0, 40)}`,

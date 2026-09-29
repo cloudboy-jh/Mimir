@@ -507,9 +507,14 @@ function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit, commitR
 // without rewriting its meaning. A bare string remains a note.
 function mergeOutcomeEvidence(agentEvidence: string | undefined, git: GitEvidence | null): unknown {
   const note = agentEvidence?.trim();
-  if (note && git) return { note: boundedBytes(note, MAX_EVIDENCE_NOTE_BYTES), ...git };
-  if (note) return note;
-  return git ?? undefined;
+  let supplied: unknown = note;
+  if (note) {
+    try { supplied = JSON.parse(note); } catch { /* Plain-text evidence is a note. */ }
+  }
+  if (!git) return supplied;
+  if (supplied && typeof supplied === "object" && !Array.isArray(supplied)) return { ...supplied, ...git };
+  if (note) return { note: boundedBytes(note, MAX_EVIDENCE_NOTE_BYTES), ...git };
+  return git;
 }
 
 function workspaceGitEvidence(worktree: string | undefined, directory: string | undefined, run: GitRunner = spawnGit, commitRef = "HEAD"): GitEvidence | null {
@@ -519,7 +524,7 @@ function workspaceGitEvidence(worktree: string | undefined, directory: string | 
 }
 
 function noteCommitRef(note: string | undefined): string | null {
-  const matches = note?.match(/(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])/gi) ?? [];
+  const matches = [...(note?.matchAll(/\bcommit\s+([0-9a-f]{7,40})(?![0-9a-f])/gi) ?? [])].map((match) => match[1]!);
   const candidates = [...new Set(matches.map((match) => match.toLowerCase()))];
   return candidates.length === 1 ? candidates[0] : null;
 }
@@ -532,17 +537,8 @@ function outcomeGitEvidence(
   run: GitRunner = spawnGit,
 ): GitEvidence | null {
   if (commitRef) return workspaceGitEvidence(worktree, directory, run, commitRef);
-  const head = workspaceGitEvidence(worktree, directory, run);
-  if (head) return head;
   const fallback = noteCommitRef(note);
   return fallback ? workspaceGitEvidence(worktree, directory, run, fallback) : null;
-}
-
-function landedGitEvidenceError(outcome: string, requestedCommit: string | undefined, evidence: GitEvidence | null): string | null {
-  if (outcome !== "landed") return null;
-  if (requestedCommit && !evidence) return "the requested Git commit could not be resolved; outcome was not recorded";
-  if (evidence && !evidence.patch) return "the landed Git commit has no retrievable patch; outcome was not recorded";
-  return null;
 }
 
 type CommitArtifact = {
@@ -575,7 +571,7 @@ function isCommitCommand(toolName: string, args: unknown): boolean {
 
 function commitHint(output: unknown): string | null {
   if (typeof output !== "string") return null;
-  const hints = [...output.matchAll(/^\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)/gim)].map((match) => match[1]!.toLowerCase());
+  const hints = [...output.matchAll(/^\[[^\]\r\n]+\s(?:\(root-commit\)\s+)?([0-9a-f]{7,40})\](?=\s|$)/gim)].map((match) => match[1]!.toLowerCase());
   return hints.length === 1 ? hints[0]! : null;
 }
 
@@ -584,21 +580,21 @@ async function gitHead(cwd: string, git: AsyncGit): Promise<string | null> {
   return head && COMMIT_SHA.test(head) ? head.toLowerCase() : null;
 }
 
-async function collectLiveCommit(cwd: string, baseline: string, hint: string, git: AsyncGit): Promise<CommitArtifact | null> {
+async function collectLiveCommit(cwd: string, baseline: string | null, hint: string, git: AsyncGit): Promise<CommitArtifact | null> {
   const tip = await gitHead(cwd, git);
   if (!tip || tip === baseline) return null;
-  const range = await git(cwd, ["rev-list", "--max-count=33", `${baseline}..${tip}`], 2_000);
+  const range = await git(cwd, baseline ? ["rev-list", "--max-count=33", `${baseline}..${tip}`] : ["rev-list", "--max-count=2", tip], 2_000);
   if (!range) return null;
   const candidates = range.split("\n");
-  if (candidates.length > 32 || candidates.some((sha) => !COMMIT_SHA.test(sha))) return null;
+  if (candidates.length > (baseline ? 32 : 1) || candidates.some((sha) => !COMMIT_SHA.test(sha))) return null;
   const matches = candidates.filter((sha) => sha.toLowerCase().startsWith(hint));
   if (matches.length !== 1) return null;
   const sha = matches[0]!;
   // A range is meaningful only if the original checkout HEAD remains an ancestor.
-  if (await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return null;
+  if (baseline && await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return null;
   const details = await git(cwd, ["show", "-s", "--format=%H%x00%P%x00%cI%x00%s", sha], 4_096);
   const fields = details?.split("\0");
-  if (!fields || fields.length !== 4 || fields[0] !== sha) return null;
+  if (!fields || fields.length !== 4 || fields[0] !== sha || (!baseline && fields[1])) return null;
   const [_, parents, date, rawSubject] = fields;
   const committed = new Date(date!);
   if (Number.isNaN(committed.getTime())) return null;
@@ -635,8 +631,10 @@ function createCommitReporter(
   send: (sessionID: string, artifact: CommitArtifact) => Promise<boolean>,
   schedule: (callback: () => void, delay: number) => unknown = setTimeout,
 ) {
-  const calls = new Map<string, { baseline: string | null }>();
+  const calls = new Map<string, { baseline: string | null; observed: boolean }>();
   const jobs = new Set<string>();
+  const uploading = new Set<string>();
+  const saved = new Set<string>();
   const key = (sessionID: string, callID: string) => JSON.stringify([sessionID, callID]);
   return {
     async before(input: { tool: string; sessionID: string; callID: string }, output: { args: unknown }): Promise<void> {
@@ -645,29 +643,42 @@ function createCommitReporter(
       // Reserve the key before the async HEAD lookup; duplicate hooks cannot overwrite it.
       if (calls.has(id)) return;
       if (calls.size >= MAX_COMMIT_CALLS) calls.delete(calls.keys().next().value!);
-      const call = { baseline: null as string | null };
+      const call = { baseline: null as string | null, observed: false };
       calls.set(id, call);
       try {
         call.baseline = await gitHead(cwd, git);
+        call.observed = true;
       } catch {
         // Local Git failure must not interrupt the tool.
       }
     },
     after(input: { sessionID: string; callID: string }, output: { output?: unknown; metadata?: Record<string, unknown> }): void {
+      if (!input.sessionID || !input.callID) return;
       const id = key(input.sessionID, input.callID);
       const call = calls.get(id);
       calls.delete(id);
-      if (!cwd || !call?.baseline || output.metadata?.exitCode !== undefined && output.metadata.exitCode !== 0 || output.metadata?.isError === true) return;
+      if (!cwd || !call?.observed || output.metadata?.exitCode !== undefined && output.metadata.exitCode !== 0 || output.metadata?.isError === true) return;
       const hint = commitHint(output.output);
       if (!hint || jobs.size >= MAX_COMMIT_CALLS) return;
       jobs.add(id);
       void (async () => {
         try {
-          const artifact = await collectLiveCommit(cwd, call.baseline!, hint, git);
+          const artifact = await collectLiveCommit(cwd, call.baseline, hint, git);
           if (!artifact) return;
-          for (let attempt = 0; attempt < 4; attempt++) {
-            if (await send(input.sessionID, artifact)) return;
-            if (attempt < 3) await new Promise<void>((resolve) => schedule(resolve, 250 * 2 ** attempt));
+          const commitKey = key(input.sessionID, artifact.commit_sha);
+          if (saved.has(commitKey) || uploading.has(commitKey)) return;
+          uploading.add(commitKey);
+          try {
+            for (let attempt = 0; attempt < 4; attempt++) {
+              if (await send(input.sessionID, artifact)) {
+                if (saved.size >= MAX_COMMIT_CALLS) saved.delete(saved.values().next().value!);
+                saved.add(commitKey);
+                return;
+              }
+              if (attempt < 3) await new Promise<void>((resolve) => schedule(resolve, 250 * 2 ** attempt));
+            }
+          } finally {
+            uploading.delete(commitKey);
           }
         } catch {
           // Git collection and delivery are strictly best-effort.
@@ -876,6 +887,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         args: {},
         async execute(_args, context) {
           context.metadata?.({ title: "Mimir receipt" });
+          if (!context.sessionID) throw new Error("OpenCode session identity is unavailable");
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
         },
       }),
@@ -889,9 +901,8 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         },
         async execute(args, context) {
           context.metadata?.({ title: "Mimir receipt" });
+          if (!context.sessionID) throw new Error("OpenCode session identity is unavailable");
           const git = outcomeGitEvidence(worktree, directory, args.evidence, args.commit);
-          const gitError = landedGitEvidenceError(args.outcome, args.commit, git);
-          if (gitError) return `◆ Mimir  ${gitError}`;
           const evidence = mergeOutcomeEvidence(args.evidence, git);
           await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
           return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
@@ -899,7 +910,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
       }),
     },
     "chat.headers": async (input: { sessionID: string; model?: { providerID?: string } }, output: { headers: Record<string, string> }) => {
-      if (input.model?.providerID !== "openrouter") return;
+      if (input.model?.providerID !== "openrouter" || !input.sessionID) return;
       output.headers["x-mimir-session"] = input.sessionID;
       output.headers["x-mimir-harness"] = "opencode";
       if (repo) output.headers["x-mimir-repo"] = repo;
@@ -942,4 +953,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, landedGitEvidenceError, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };

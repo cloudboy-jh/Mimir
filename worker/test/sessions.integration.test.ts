@@ -642,6 +642,70 @@ describe("Sessions integration", () => {
     ).toEqual({ state: "inactive" });
   });
 
+  it("deduplicates identical outcome retries but records changed evidence and later reversions", async () => {
+    await env.DB.prepare(
+      "INSERT INTO sessions(id, started_at, state, boundary) VALUES ('outcome-retry', '2026-08-17T12:00:00Z', 'inactive', 'header')",
+    ).run();
+    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
+    const send = async (evidence: { note: string }) => {
+      const response = await request("/sessions/outcome-retry/outcome", {
+        method: "POST", headers,
+        body: JSON.stringify({ outcome: "discarded", source: "agent", reason: "superseded", evidence }),
+      });
+      expect(response.status).toBe(200);
+      return response.json<{ outcome_updated_at: string }>();
+    };
+    const first = await send({ note: "first" });
+    await env.DB.prepare(
+      "UPDATE sessions SET summary_text = 'kept', summary_status = 'ready' WHERE id = 'outcome-retry'",
+    ).run();
+    const repeated = await send({ note: "first" });
+    expect(repeated.outcome_updated_at).toBe(first.outcome_updated_at);
+    expect(await env.DB.prepare(
+      "SELECT summary_text, summary_status FROM sessions WHERE id = 'outcome-retry'",
+    ).first()).toEqual({ summary_text: "kept", summary_status: "ready" });
+    expect((await env.DB.prepare(
+      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'outcome-retry' ORDER BY rowid",
+    ).all()).results).toEqual([{ evidence_json: '{"note":"first"}' }]);
+
+    await Promise.all([send({ note: "second" }), send({ note: "second" })]);
+    await send({ note: "first" });
+    expect((await env.DB.prepare(
+      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'outcome-retry' ORDER BY rowid",
+    ).all()).results).toEqual([
+      { evidence_json: '{"note":"first"}' },
+      { evidence_json: '{"note":"second"}' },
+      { evidence_json: '{"note":"first"}' },
+    ]);
+  });
+
+  it("keeps bulk outcome retries idempotent per root session", async () => {
+    await env.DB.exec(`
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-retry-a', '2026-08-17T12:00:00Z', 'inactive', 'header');
+      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-retry-b', '2026-08-17T12:00:00Z', 'inactive', 'header');
+    `);
+    const send = async (reason: string) => {
+      const response = await dashboardRequest("/dashboard/api/sessions/outcomes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session_ids: ["bulk-retry-a", "bulk-retry-b"], outcome: "discarded", reason }),
+      });
+      expect(response.status).toBe(200);
+      return response.json<{ updated: { id: string; outcome_updated_at: string }[] }>();
+    };
+    const first = await send("first");
+    expect((await send("first")).updated).toEqual(first.updated);
+    await send("changed");
+    expect((await env.DB.prepare(
+      "SELECT session_id, reason FROM session_outcome_events WHERE session_id IN ('bulk-retry-a', 'bulk-retry-b') ORDER BY session_id, rowid",
+    ).all()).results).toEqual([
+      { session_id: "bulk-retry-a", reason: "first" },
+      { session_id: "bulk-retry-a", reason: "changed" },
+      { session_id: "bulk-retry-b", reason: "first" },
+      { session_id: "bulk-retry-b", reason: "changed" },
+    ]);
+  });
+
   it("ends sessions idempotently and optionally records an outcome", async () => {
     await env.DB.prepare(
       "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-session', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')",
@@ -816,7 +880,7 @@ describe("Sessions integration", () => {
 
     const patch =
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-    const complete = await request("/sessions/git-evidence/outcome", {
+    const completeRequest: RequestInit = {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -827,7 +891,8 @@ describe("Sessions integration", () => {
           patch,
         },
       }),
-    });
+    };
+    const complete = await request("/sessions/git-evidence/outcome", completeRequest);
     expect(complete.status).toBe(200);
     const completeBody: unknown = await complete.json();
     if (
@@ -844,6 +909,12 @@ describe("Sessions integration", () => {
     expect(
       await env.LOGS.get(completeBody.evidence.patch_r2_key),
     ).not.toBeNull();
+    const repeated = await request("/sessions/git-evidence/outcome", completeRequest);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(completeBody);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'git-evidence'",
+    ).first()).toEqual({ count: 1 });
     const diff = await dashboardRequest(
       "/dashboard/api/sessions/git-evidence/diff",
     );

@@ -246,7 +246,7 @@ def _tool_text(result):
 
 def _commit_artifact(cwd, before, result):
     result = _tool_text(result)
-    if not before or result is None or len(result) > 50000:
+    if result is None or len(result) > 50000:
         return None
     after = _head(cwd)
     if not after or after == before:
@@ -256,7 +256,7 @@ def _commit_artifact(cwd, before, result):
     if not any(after.startswith(hint) for hint in hints):
         return None
     details = _git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", after])
-    lines = details.strip().splitlines() if details else []
+    lines = details.rstrip("\r\n").splitlines() if details else []
     if len(lines) < 3:
         return None
     parents, committed, *subject = lines
@@ -295,6 +295,36 @@ def _post_artifact(connection, session_id, artifact):
     except Exception:
         return False
 
+
+class _CommitDelivery:
+    def __init__(self, connection):
+        self.connection = connection
+        self.lock = threading.Lock()
+        self.pending = set()
+        self.saved = set()
+
+    def send(self, session_id, artifact):
+        key = (session_id, artifact["commit_sha"])
+        with self.lock:
+            if key in self.pending or key in self.saved:
+                return
+            self.pending.add(key)
+        threading.Thread(target=self._attempt, args=(key, session_id, artifact), daemon=True).start()
+
+    def _attempt(self, key, session_id, artifact):
+        saved = False
+        try:
+            for attempt in range(4):
+                if _post_artifact(self.connection, session_id, artifact):
+                    saved = True
+                    break
+                if attempt < 3:
+                    threading.Event().wait(0.25 * (2 ** attempt))
+        finally:
+            with self.lock:
+                self.pending.discard(key)
+                if saved:
+                    self.saved.add(key)
 
 
 def build_simple_event(kind, session_id, repo, reason=None):
@@ -779,6 +809,7 @@ def register(ctx):
         reporter._queue.replay()
     pending_commits = {}
     commits_lock = threading.Lock()
+    commit_delivery = _CommitDelivery(connection)
     def heartbeat_loop():
         while True:
             threading.Event().wait(HEARTBEAT_SECONDS)
@@ -809,7 +840,7 @@ def register(ctx):
         result = kwargs.get("result")
         artifact = _commit_artifact(prior[0], prior[1], result)
         if artifact:
-            threading.Thread(target=_post_artifact, args=(connection, session_id, artifact), daemon=True).start()
+            commit_delivery.send(session_id, artifact)
 
     def before_tool(session_id=None, tool_call_id=None, tool_name=None, args=None, **_kwargs):
         if not isinstance(session_id, str) or not session_id or not isinstance(tool_call_id, str) or not tool_call_id:
@@ -819,7 +850,8 @@ def register(ctx):
             before = _head(cwd) if cwd else None
         except (OSError, ValueError):
             return
-        if before:
+        # An unborn branch has no HEAD but can still produce an initial commit.
+        if cwd and (before or (_git(cwd, ["rev-parse", "--is-inside-work-tree"]) or "").strip() == "true"):
             with commits_lock:
                 if len(pending_commits) >= MAX_PENDING_REQUESTS:
                     pending_commits.pop(next(iter(pending_commits)))
