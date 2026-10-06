@@ -23,6 +23,7 @@ import {
   readBoundedText,
 } from "./response-codec";
 import { redact } from "./redaction";
+import { extractToolNames, toolNameStatements } from "./tool-names";
 
 export const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 
@@ -51,6 +52,7 @@ type PreparedCapture = {
   responseExcerpt: string;
   files: string[];
   errors: string[];
+  tools: string[];
 };
 
 export async function capture(
@@ -144,6 +146,7 @@ export async function capture(
     responseExcerpt: excerpt(JSON.stringify(redactedResponse)),
     files: derived.files,
     errors: derived.errors,
+    tools: extractToolNames(redactedRequest, redactedResponse),
   };
   const titleCandidate =
     requestKind === "title" ? extractGeneratedTitle(redactedResponse) : null;
@@ -362,6 +365,7 @@ async function prepareAcceptedExchange(
           )
           .bind(exchangeId, sessionId, signature),
       ),
+      ...toolNameStatements(db, exchangeId, prepared.tools),
     ]);
     return true;
   } catch (error) {

@@ -2,6 +2,7 @@ import { readConfig, stringArray } from "../config/config-store";
 import { readBoundedText } from "../exchanges/response-codec";
 import { redact } from "../exchanges/redaction";
 import { rootSessionID } from "./session-queries";
+import { normalizeRepositoryUrl } from "./git-repository";
 
 export const MAX_GIT_ARTIFACT_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_GIT_ARTIFACTS = 50;
@@ -131,7 +132,7 @@ export async function ingestGitArtifacts(
     const acceptedAt = new Date().toISOString();
     await db
       .prepare(
-        "INSERT OR IGNORE INTO session_git_artifacts(session_id, commit_sha, parent_commit_sha, committed_at, subject, repository_url, ref, provenance, patch_r2_key, patch_sha256, patch_bytes, patch_files, patch_additions, patch_deletions, capture_status, accepted_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)",
+        "INSERT OR IGNORE INTO session_git_artifacts(session_id, commit_sha, parent_commit_sha, committed_at, subject, repository_url, repository_key, ref, provenance, patch_r2_key, patch_sha256, patch_bytes, patch_files, patch_additions, patch_deletions, capture_status, accepted_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)",
       )
       .bind(
         sessionID,
@@ -140,6 +141,7 @@ export async function ingestGitArtifacts(
         input.committed_at,
         input.subject,
         input.repository_url,
+        normalizeRepositoryUrl(input.repository_url) ?? `session:${sessionID}`,
         input.ref,
         input.provenance,
         input.patchR2Key,
@@ -334,8 +336,9 @@ export async function repairGitArtifact(
     })) throw new Error("audit write failed");
     const columns = artifactColumns();
     const updated = await db.prepare(
-      `UPDATE session_git_artifacts SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE session_id = ? AND ${columns.map((column) => `${column} IS ?`).join(" AND ")} AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND parent_session_id IS NULL AND installation_id IS ?)`,
-    ).bind(...columns.map((column) => metadata[column]), sessionID,
+      `UPDATE session_git_artifacts SET repository_key = ?, ${columns.map((column) => `${column} = ?`).join(", ")} WHERE session_id = ? AND ${columns.map((column) => `${column} IS ?`).join(" AND ")} AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND parent_session_id IS NULL AND installation_id IS ?)`,
+    ).bind(normalizeRepositoryUrl(metadata.repository_url) ?? `session:${sessionID}`,
+      ...columns.map((column) => metadata[column]), sessionID,
       ...columns.map((column) => old[column]), sessionID, actor.installationID).run();
     if (updated.meta.changes !== 1) return conflict;
     return success(metadata, auditKey, false);

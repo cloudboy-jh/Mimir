@@ -128,6 +128,11 @@ describe("Reported exchange integration", () => {
       ).first(),
     ).toEqual({ signature: "compile_failed: compile error" });
 
+    const indexedTools = await dashboardRequest("/dashboard/api/log?tool=read");
+    expect((await indexedTools.json<{ exchanges: Array<{ id: string }> }>()).exchanges.map((item) => item.id)).toEqual(["reported-exchange-1"]);
+    const absentTool = await dashboardRequest("/dashboard/api/log?tool=not-observed");
+    expect((await absentTool.json<{ exchanges: Array<{ id: string }> }>()).exchanges).toEqual([]);
+
     const objectText = await (await env.LOGS.get(exchange!.r2_key))!.text();
     expect(objectText).not.toContain("private-value");
     expect(objectText).not.toContain("customer-123");

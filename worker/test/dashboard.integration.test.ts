@@ -728,7 +728,7 @@ describe("Dashboard integration", () => {
     ).resolves.toEqual({ count: 0, session_ids: [] });
   });
 
-  it("serves filter facets from saved traffic, ordered by frequency and scoped on request", async () => {
+  it("serves filter facets from indexed traffic, ordered by frequency and scoped on request", async () => {
     await env.DB.batch([
       env.DB.prepare(
         "INSERT INTO sessions(id, started_at, state, last_active_at, boundary, repo, harness, model_primary) VALUES ('facet-root', '2026-05-01T00:00:00Z', 'inactive', '2026-05-01T00:00:00Z', 'header', 'mimir', 'OpenCode', 'anthropic/claude')",
@@ -749,7 +749,7 @@ describe("Dashboard integration", () => {
         "INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status, saved_at) VALUES ('facet-3', 'facet-other', '2026-05-01T00:02:10Z', 'chat', 'openai/gpt', 1, 'log/f3.json', 'openai', 'Hermes', 'stop', 'saved', '2026-05-01T00:02:11Z')",
       ),
       env.DB.prepare(
-        "INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status) VALUES ('facet-pending', 'facet-other', '2026-05-01T00:03:10Z', 'chat', 'never/surfaced', 1, 'log/f4.json', 'ghost-provider', 'Ghost', 'length', 'pending')",
+        "INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, provider, harness, finish_reason, capture_status) VALUES ('facet-pending', 'facet-other', '2026-05-01T00:03:10Z', 'chat', 'pending/model', 1, 'log/f4.json', 'pending-provider', 'Pending app', 'length', 'accepted')",
       ),
     ]);
 
@@ -764,8 +764,8 @@ describe("Dashboard integration", () => {
       await dashboardRequest("/dashboard/api/facets")
     ).json()) as Facets;
     expect(facets.models).toContain("anthropic/claude");
-    expect(facets.models).not.toContain("never/surfaced");
-    expect(facets.providers).not.toContain("ghost-provider");
+    expect(facets.models).toContain("pending/model");
+    expect(facets.providers).toContain("pending-provider");
     expect(facets.repos).toContain("mimir");
     expect(facets.repos).toContain("other-repo");
     expect(facets.models.indexOf("anthropic/claude")).toBeLessThan(

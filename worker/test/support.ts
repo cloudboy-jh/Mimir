@@ -7,6 +7,8 @@ import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 import worker from "../src/index";
 import { finalizeAcceptedExchange } from "../src/exchanges/capture-pipeline";
 import parentIntegrity from "../migrations/0020_session_parent_integrity.sql?raw";
+import commitIdentity from "../migrations/0021_commit_repository_identity.sql?raw";
+import exchangeTools from "../migrations/0022_exchange_tools.sql?raw";
 
 const schema = `
 CREATE TABLE machines (installation_id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, arch TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT);
@@ -74,11 +76,13 @@ export async function dashboardRequest(path: string, init?: RequestInit) {
 beforeAll(async () => {
   await env.DB.exec(schema);
   await env.DB.exec(parentIntegrity.replace(/--[^\n]*/g, "").replace(/\n/g, " "));
+  await env.DB.exec(commitIdentity.replace(/--[^\n]*/g, "").replace(/\n/g, " "));
+  await env.DB.exec(exchangeTools.replace(/--[^\n]*/g, "").replace(/\n/g, " "));
 });
 
 beforeEach(async () => {
   await env.DB.exec(
-    "DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM session_outcome_events; DELETE FROM session_git_artifacts; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens; DELETE FROM machines;",
+    "DELETE FROM session_files; DELETE FROM session_errors; DELETE FROM exchange_files; DELETE FROM exchange_errors; DELETE FROM exchange_tools; DELETE FROM session_outcome_events; DELETE FROM session_git_artifacts; DELETE FROM exchanges; DELETE FROM sessions; DELETE FROM config; DELETE FROM harness_loads; DELETE FROM hermes_credentials; DELETE FROM access_tokens; DELETE FROM machines;",
   );
   await env.DB.prepare(
     "INSERT INTO access_tokens(token_hash, label, created_at) VALUES (?, 'test', '2026-01-01T00:00:00Z')",

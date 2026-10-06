@@ -14,7 +14,9 @@
     "@lobehub/icons-static-svg": "^1.93.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "highlight.js": "^11.12.0",
     "lucide-vue-next": "^0.468.0",
+    "markdown-it": "^15.0.2",
     "reka-ui": "^2.6.1",
     "tailwind-merge": "^2.6.0",
     "vue": "^3.5.0",
@@ -22,6 +24,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",
+    "@types/markdown-it": "^14.2.0",
     "@vitejs/plugin-vue": "^6.0.0",
     "shadcn-vue": "^2.4.3",
     "tailwindcss": "^4.1.18",

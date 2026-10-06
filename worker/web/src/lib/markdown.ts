@@ -37,7 +37,18 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
   const lines: string[] = [];
   lines.push(`# ${oneLine(displayTitle(session))}`, "");
   lines.push(heading("Summary"), "");
-  lines.push(session.summary_text?.trim() || session.intent?.trim() || "No session summary is available.", "");
+  if (detail.summary) {
+    const summary = detail.summary;
+    if (summary.goal) lines.push(bullet("Goal", summary.goal));
+    if (summary.result) lines.push(bullet("Recorded result", summary.result));
+    for (const [label, values] of [["Actions", summary.actions], ["Verification evidence", summary.verification], ["Unresolved", summary.unresolved]] as const) {
+      if (values.length) lines.push("", heading(label, 3), ...values.map((value) => `- ${oneLine(value)}`));
+    }
+    if (summary.partial) lines.push("", "_Provisional reconstruction: saved evidence is incomplete or bounded._");
+    lines.push("");
+  } else {
+    lines.push(session.summary_text?.trim() || session.intent?.trim() || "No session summary is available.", "");
+  }
   lines.push(heading("Work outcome"));
   lines.push(bullet("Outcome", session.outcome));
   if (session.outcome_reason) lines.push(bullet("Reason", session.outcome_reason));
@@ -98,8 +109,10 @@ export function sessionMarkdown(detail: SessionDetail, exchanges: SessionExchang
     lines.push(`### ${shortDate(exchange.ts)} · ${oneLine(exchange.model)}`);
     lines.push(`- **Provider:** ${oneLine(exchange.provider || "Unknown")}`);
     if (exchange.finish_reason) lines.push(`- **Finish:** ${oneLine(exchange.finish_reason)}`);
+    lines.push(`- **Kind:** ${exchange.request_kind}`, `- **Capture:** ${oneLine(exchange.capture_status)}`);
     lines.push(`- **Tokens:** ${exchange.input_tokens} in · ${exchange.output_tokens} out${(exchange.cache_read_tokens ?? 0) > 0 ? ` · ${exchange.cache_read_tokens} cache read` : ""}${(exchange.cache_write_tokens ?? 0) > 0 ? ` · ${exchange.cache_write_tokens} cache write` : ""}`);
     if (exchange.request_excerpt) lines.push("", `> ${oneLine(exchange.request_excerpt)}`);
+    if (exchange.response_excerpt) lines.push("", `**Response excerpt:** ${oneLine(exchange.response_excerpt)}`);
     lines.push("");
   }
   if (sourceURL) lines.push(`[View this session in Mimir](${sourceURL})`, "");

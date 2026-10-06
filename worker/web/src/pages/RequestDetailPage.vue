@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ArrowLeft, RotateCw } from "lucide-vue-next";
-import IdentityBadge from "@/components/IdentityBadge.vue";
 import BrandIcon from "@/components/BrandIcon.vue";
 import RequestEvidence from "@/components/request/RequestEvidence.vue";
 import { errorMessage, getExchange, type Exchange, type LogEnvelope } from "@/lib/api";
@@ -11,12 +10,15 @@ import { outputSpeed, shortDate } from "@/lib/format";
 const route = useRoute();
 const exchange = ref<Exchange | null>(null);
 const envelope = ref<LogEnvelope | null>(null);
-const tab = ref<"request" | "response">("request");
 const loading = ref(true);
 const error = ref("");
 const originSession = computed(() => typeof route.query.session === "string" ? route.query.session : "");
-const backTarget = computed(() => originSession.value ? `/sessions/${originSession.value}#session-activity` : "/requests");
-const backLabel = computed(() => originSession.value ? "Session activity" : "Requests");
+const debugOpen = ref(false);
+const debugJson = computed(() => debugOpen.value && envelope.value ? JSON.stringify(envelope.value, null, 2) : "");
+const backTarget = computed(() => originSession.value
+  ? { path: `/sessions/${originSession.value}`, query: { view: route.query.view === "conversation" ? "conversation" : "requests" }, hash: route.query.view === "conversation" ? "#session-panel-conversation" : "#session-activity" }
+  : "/requests");
+const backLabel = computed(() => originSession.value ? route.query.view === "conversation" ? "Session conversation" : "Session requests" : "Requests");
 let controller: AbortController | null = null;
 
 async function load() {
@@ -27,6 +29,7 @@ async function load() {
   error.value = "";
   exchange.value = null;
   envelope.value = null;
+  debugOpen.value = false;
   try {
     const result = await getExchange(String(route.params.id), active.signal);
     exchange.value = result.exchange;
@@ -38,20 +41,48 @@ async function load() {
   }
 }
 
-function moveTab() {
-  tab.value = tab.value === "request" ? "response" : "request";
-  document.getElementById(`request-tab-${tab.value}`)?.focus();
+async function focusSide() {
+  await nextTick();
+  const side = route.query.side === "response" ? "response" : "request";
+  if ((!route.hash || route.hash === "#request-evidence-panel") && (route.query.side || route.hash)) document.getElementById(`request-${side}`)?.focus();
 }
 
 watch(() => String(route.params.id), load, { immediate: true });
+watch([() => route.query.side, envelope], () => { void focusSide(); });
+onMounted(() => { void focusSide(); });
 </script>
 
 <template>
   <section v-if="exchange && envelope">
-    <RouterLink :to="backTarget" class="mb-6 inline-flex items-center gap-1.5 text-[13px] font-medium text-zinc-500 hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100"><ArrowLeft class="size-4" aria-hidden="true" />{{ backLabel }}</RouterLink>
-    <div class="border-b border-zinc-200 pb-6 dark:border-zinc-800"><div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div class="min-w-0"><p class="break-all font-mono text-xs text-zinc-500">{{ exchange.id }}</p><h1 class="mt-2 flex min-w-0 items-center gap-3 break-all text-2xl font-semibold tracking-[-0.025em] sm:text-[28px]"><BrandIcon :label="exchange.model" />{{ exchange.model }}</h1><div class="mt-3 flex flex-wrap items-center gap-4"><IdentityBadge :label="exchange.provider || 'Unknown provider'" /><IdentityBadge :label="exchange.harness || 'Unknown app'" /><span class="text-xs text-zinc-500">{{ shortDate(exchange.ts) }}</span></div></div><RouterLink :to="`/sessions/${exchange.session_id}`" class="text-[13px] font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">View parent session</RouterLink></div></div>
-    <dl class="grid grid-cols-2 border-b border-zinc-200 sm:grid-cols-3 md:grid-cols-5 dark:border-zinc-800"><div v-for="item in [{ label: 'Input', value: exchange.input_tokens.toLocaleString() }, { label: 'Output', value: exchange.output_tokens.toLocaleString() }, { label: 'Latency', value: `${(exchange.latency_ms / 1000).toFixed(2)}s` }, { label: 'Speed', value: outputSpeed(exchange.output_tokens, exchange.latency_ms) }, { label: 'Finish', value: exchange.finish_reason || 'Unknown' }]" :key="item.label" class="border-b border-zinc-200 py-4 pr-4 last:border-b-0 sm:border-b-0 dark:border-zinc-800"><dt class="text-xs text-zinc-500">{{ item.label }}</dt><dd class="mt-1 break-all font-mono text-xs text-zinc-900 dark:text-zinc-100">{{ item.value }}</dd></div></dl>
-    <div class="pt-8"><div class="mb-4 flex gap-5 border-b border-zinc-200 dark:border-zinc-800" role="tablist" aria-label="Request evidence side" @keydown.left.prevent="moveTab" @keydown.right.prevent="moveTab"><button v-for="name in ['request', 'response'] as const" :id="`request-tab-${name}`" :key="name" type="button" role="tab" :aria-selected="tab === name" aria-controls="request-evidence-panel" :tabindex="tab === name ? 0 : -1" class="relative pb-2.5 text-[13px] font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600" :class="tab === name ? 'text-zinc-950 after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-teal-700 dark:text-zinc-50' : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200'" @click="tab = name">{{ name }}</button></div><div id="request-evidence-panel" role="tabpanel" :aria-labelledby="`request-tab-${tab}`"><RequestEvidence :envelope="envelope" :side="tab" /></div></div>
+    <RouterLink :to="backTarget" class="mb-4 inline-flex items-center gap-1.5 text-[13px] font-medium text-zinc-600 hover:text-zinc-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100"><ArrowLeft class="size-4" aria-hidden="true" />{{ backLabel }}</RouterLink>
+    <header class="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+      <div class="min-w-0">
+        <h1 class="flex items-center gap-2 break-all text-lg font-semibold"><BrandIcon :label="exchange.model" />{{ exchange.model }}</h1>
+        <p class="mt-1 text-xs text-zinc-600 dark:text-zinc-400">{{ exchange.provider || 'Unknown provider' }} · {{ exchange.harness || 'Unknown app' }} · {{ shortDate(exchange.ts) }}</p>
+        <dl class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <div class="flex gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">Latency</dt><dd class="font-mono">{{ (exchange.latency_ms / 1000).toFixed(2) }}s</dd></div>
+          <div class="flex gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">Tokens</dt><dd class="font-mono">{{ exchange.input_tokens.toLocaleString() }} in / {{ exchange.output_tokens.toLocaleString() }} out</dd></div>
+          <div class="flex gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">Speed</dt><dd class="font-mono">{{ outputSpeed(exchange.output_tokens, exchange.latency_ms) }}</dd></div>
+          <div class="flex gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">Finish</dt><dd>{{ exchange.finish_reason || 'Unknown' }}</dd></div>
+        </dl>
+      </div>
+      <RouterLink v-if="!originSession" :to="`/sessions/${exchange.session_id}`" class="text-xs font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-teal-600 dark:text-teal-400">Session</RouterLink>
+    </header>
+    <div id="request-evidence-panel" class="grid min-w-0 gap-6 pt-5 lg:grid-cols-2 lg:gap-8">
+      <section id="request-request" aria-labelledby="request-input-heading" tabindex="-1" class="min-w-0 scroll-mt-20 rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-600">
+        <h2 id="request-input-heading" class="border-b border-zinc-200 pb-2 text-sm font-semibold dark:border-zinc-800">Input</h2>
+        <RequestEvidence :envelope="envelope" side="request" :origin-session="originSession" />
+      </section>
+      <section id="request-response" aria-labelledby="request-output-heading" tabindex="-1" class="min-w-0 scroll-mt-20 rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-600">
+        <h2 id="request-output-heading" class="border-b border-zinc-200 pb-2 text-sm font-semibold dark:border-zinc-800">Output</h2>
+        <RequestEvidence :envelope="envelope" side="response" :origin-session="originSession" />
+      </section>
+    </div>
+    <details class="mt-6 border-t border-zinc-200 pt-3 dark:border-zinc-800" @toggle="debugOpen = ($event.target as HTMLDetailsElement).open">
+      <summary class="w-fit cursor-pointer rounded-[3px] text-xs text-zinc-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400">Debug JSON</summary>
+      <p class="mt-3 break-all font-mono text-xs text-zinc-600 dark:text-zinc-400">{{ exchange.id }}</p>
+      <pre v-if="debugOpen" class="mt-2 max-h-[65vh] overflow-auto whitespace-pre-wrap break-words rounded-[5px] border border-zinc-200 bg-stone-50 p-4 font-mono text-xs leading-5 dark:border-zinc-800 dark:bg-zinc-900" tabindex="0">{{ debugJson }}</pre>
+    </details>
   </section>
   <section v-else-if="loading" aria-busy="true" class="py-16"><div class="h-4 w-32 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="mt-5 h-9 w-64 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="mt-8 h-80 animate-pulse bg-zinc-100 motion-reduce:animate-none dark:bg-zinc-900" /></section>
   <section v-else class="py-20 text-center"><h1 class="text-xl font-semibold">Request unavailable</h1><p class="mx-auto mt-2 max-w-md text-sm text-zinc-500 dark:text-zinc-400">{{ error }}</p><div class="mt-4 flex justify-center gap-4"><button class="inline-flex items-center gap-2 text-sm font-medium text-teal-700 dark:text-teal-400" @click="load"><RotateCw class="size-4" />Retry</button><RouterLink to="/requests" class="text-sm font-medium text-teal-700 dark:text-teal-400">Return to requests</RouterLink></div></section>

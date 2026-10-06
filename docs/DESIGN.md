@@ -69,7 +69,7 @@ components:
 
 **Creative North Star: "The Flight Recorder"**
 
-Mimir reconstructs agent work after the fact. Its interface should feel like opening a precise instrument: chronological, legible, and grounded in evidence. Session summaries establish what happened; requests, files, models, providers, and errors provide the supporting record.
+Mimir reconstructs agent work after the fact. Its interface should feel like opening a precise instrument: chronological, legible, and grounded in evidence. Session summaries frame recorded work and uncertainty; requests, files, models, providers, and errors provide the supporting record.
 
 The system is technical, quiet, and exact. It explicitly rejects generic SaaS dashboard composition, decorative color blending, pill navigation, interchangeable metric-card walls, and oversized marketing hierarchy. The pixel-art wordmark is the only ornamental brand element.
 
@@ -156,11 +156,18 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 - **Error / Disabled:** Explicit text and icon state; never color alone.
 
 ### Navigation
-- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, plain route links follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band.
+- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, Sessions, Commits, Requests, Overview, and Settings follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band. Smaller screens use the shared navigation menu.
 
 ### Session Record
 - A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
 - Session detail may show outcome source, reason, and timestamp as audit metadata. Unresolved means no evidenced result has been recorded; it does not mean capture failed.
+- The detail header shows app, machine, and every exact-session model with saved request counts. Model names stay visible, not behind a new dropdown or disclosure. Preserve the short authored outcome reason once below the header; put deterministic reconstruction and source links in Summary evidence.
+- Conversation is the default: coherent turns pair answers with code, reasoning, tools, and sources. Title/summary requests stay in Requests; compaction appears as a context boundary.
+- Keep the persistent Details/Changes sidebar in normal page flow, stacking below the reader on small screens. No sticky sidebar or independent viewport-height scroller. It holds unique identifiers, timing, outcome editing/history, usage, capture receipts, and supporting evidence, not repeated identity or summary.
+
+### Captured Commits
+- Begin with repository/ref selection and a compact commit table. Open the exact session-owned patch with changed-file navigation, filename search, and unified/split views; expose alternate capture selection only when needed.
+- Keep full hashes, patch digests, provenance, and raw binary patches in secondary Details. Link to the recorded repository host for complete sources; do not present the captured patch reader as a full repository source browser or evidence of a push or merge.
 
 ### Capture Receipt
 - The harness-facing receipt is one quiet line attached to the completed response, not agent prose: `Saved to Mimir · 14 exchanges`. Add `View session` only when dashboard Access is configured and the destination is usable.

@@ -38,6 +38,13 @@ mimir update
 mimir update --force
 ```
 
+For an existing deployment, update the binary first, then run `mimir deploy`
+from the updated binary to apply its bundled Worker, production dashboard, and
+D1 migrations. Release publication and `mimir update` do not deploy anything to
+your Cloudflare account. If Windows reports a scheduled update, finish the
+binary swap before deploying. Reactivate the installed harness integrations as
+described in [installation](installation.md#integration-details).
+
 Release archives are verified against published checksums before replacement.
 The updater requires the receipt-owned executable, records the verified new
 hash, refreshes integrations, and guards rollback against concurrent binary
@@ -94,13 +101,33 @@ bun --cwd=worker/web install --frozen-lockfile
 bun run dev
 ```
 
-The fixture covers multi-model sessions, supporting runs, commits, diffs,
-errors, outcome history, and empty states. Vite serves it with HMR on
-`127.0.0.1:5173` without local Cloudflare bindings. Use `bun run dev:live`
-to apply local D1 migrations and run the dashboard against the Worker on
+The fixture covers multi-provider conversations, replay suppression, paired tools
+and reasoning, auxiliary/compaction requests, supporting branches, factual
+summaries, pending/failed capture, unknown payloads, and legitimate repeated turns.
+Commits include cross-session associations, divergent same-SHA patches, separate
+repositories, rename/deletion/binary/mode-only changes, and unavailable captures.
+All exchanges and Git history are fictional and labeled as sample data.
+
+Vite serves fixtures with HMR on `localhost:5173`. Use `bun run dev:live` to
+apply local D1 migrations and run the dashboard against the Worker on
 `127.0.0.1:8787`. Vite proxies Access handoff, dashboard APIs, and log-object
-requests; local requests use a marked development identity rather than browser
-machine credentials.
+requests; local requests use a marked development identity, never machine
+credentials stored in the browser.
+
+After dashboard/fixture changes, rebuild both embedded variants and verify their
+separation:
+
+```bash
+bun run build:assets
+bun run verify:dashboard-builds
+```
+
+Production assets are built into `worker/web/dist`; the separate demo build
+goes to `internal/demoassets/static`. Production builds exclude the fixture
+provider and sample dataset. `mimir demo --no-open` serves only the generated
+fixture bundle without Cloudflare. Its default rich session is
+`ses_fixture_multi_model_result`; `/commits` exposes the repository-first
+captured-commit browser. The sample bundle must never enter production assets.
 
 Validate the capture and installer surfaces from the repository root:
 

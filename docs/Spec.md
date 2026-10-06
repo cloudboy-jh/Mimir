@@ -170,12 +170,16 @@ Session-list filters include repository, model, outcome, and date range.
 | --- | --- | --- |
 | `GET` | `/dashboard/api/identity` | Return safe Cloudflare Access identity fields or the local-development identity. |
 | `GET` | `/dashboard/api/bootstrap` | Return basic request/session totals. |
-| `GET` | `/dashboard/api/log` | Cursor-paginated exchange metadata. |
+| `GET` | `/dashboard/api/log` | Search, filter, order, and cursor-paginate indexed exchange metadata. |
 | `GET` | `/dashboard/api/log/:id` | Return one exchange and its log-object URL. |
 | `GET` | `/dashboard/log-objects/*` | Return one redacted R2 object. |
 | `GET` | `/dashboard/api/sessions` | Filter and cursor-paginate root sessions. |
-| `GET` | `/dashboard/api/sessions/:id` | Return session metadata, capture, files, aggregated errors, and outcome history. |
+| `GET` | `/dashboard/api/sessions/:id` | Return session metadata, bounded evidence-based reconstruction, capture, files, aggregated errors, and outcome history. |
 | `GET` | `/dashboard/api/sessions/:id/exchanges` | Filter, sort, and cursor-paginate the session subtree timeline. |
+| `GET` | `/dashboard/api/commits` | Group captured commits across sessions by canonical repository and full SHA, with filtered keyset pagination. |
+| `GET` | `/dashboard/api/commits/repositories` | Cursor-paginate recorded repositories, host/name identity, and distinct commit/capture counts. |
+| `GET` | `/dashboard/api/commits/refs` | Cursor-paginate recorded refs and distinct commit counts for one repository. |
+| `GET` | `/dashboard/api/commits/captures` | Cursor-paginate every association of one repository/SHA group. |
 | `GET` | `/dashboard/api/sessions/:id/status` | Return the derived capture summary. |
 | `POST` | `/dashboard/api/sessions/:id/outcome` | Append a user-sourced work-outcome event. |
 | `POST` | `/dashboard/api/sessions/outcomes` | Atomically append one user-sourced outcome to up to 100 root sessions. |
@@ -185,19 +189,25 @@ Session-list filters include repository, model, outcome, and date range.
 | `PATCH` | `/dashboard/api/devices/:id` | Change a device's display name. |
 | `POST` | `/dashboard/api/devices/:id/revoke` | Irreversibly revoke a device through the dashboard. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
-| `GET` | `/dashboard/api/facets` | Return filter vocabulary, optionally scoped to one session subtree. |
+| `GET` | `/dashboard/api/facets` | Return indexed metadata vocabulary and observed saved-tool names, optionally scoped to own or subtree exchanges. |
 
-The Vue client reads live Access-protected dashboard APIs for Sessions,
-Requests, Overview, details, R2 payload retrieval, capture status, and outcome
-mutation.
+The Vue client reads live Access-protected dashboard APIs for Sessions, Commits,
+Requests, Overview, details, redacted R2 payloads, capture status, and outcome
+mutation. Browser credentials remain Cloudflare Access-owned.
 
-`/dashboard/api/facets` returns `repos`, `apps`, `models`, `providers`, and
-`finish_reasons` from saved exchanges, ordered by request frequency and bounded
-to 50 values each. A `session` parameter scopes exchange facets to that session
-subtree and returns no repositories. Every dashboard filter is a dropdown backed
-by this vocabulary rather than a free-text exact-match field; an active filter
-value outside the bounded list stays selectable so a URL filter never renders
-blank.
+Both exchange listings search indexed redacted request/response excerpts and
+identity fields across the entire matching dataset, not just loaded rows. They
+support request kind, exchange capture status, exact tool/error evidence, dates,
+and ordering. Cursors carry timestamp, ID, and order. Whole-day dates are UTC
+inclusive; timestamp boundaries are timezone-normalized. Explicit session scopes
+must belong to the requested subtree. Session lists additionally filter root
+state, subtree capture/provider/error/commit presence, and valid cached summaries.
+
+`/dashboard/api/facets` returns bounded `repos`, `apps`, `models`, `providers`,
+`finish_reasons`, and `tools` vocabulary. Metadata may include pending/failed
+indexed captures; tools join only saved `exchange_tools` rows. `session` with
+`scope=own|tree` selects exact-session or subtree vocabulary (tree by default) and
+returns no repositories. Values outside the bounded vocabulary stay selectable.
 
 Dashboard session records retain `model_primary` as the backward-compatible
 first-model projection and add `models`, an exact-session array ordered with the
@@ -207,8 +217,81 @@ timestamps. Root records never absorb models used only by supporting sessions;
 supporting runs receive their own arrays. Session model search and filtering
 match any saved model used by that exact session while retaining
 `model_primary` as a fallback for legacy rows. The sessions table renders the
-primary model with `+N models`; session detail renders the app as a parent with
-every model below it.
+primary model with `+N models`; session detail shows the app, machine, and every
+recorded model with its request count in the header, without hiding model names.
+
+Session details default to Conversation, with an explicit Requests tab.
+Request inspectors show labelled Input and Output simultaneously, side by side
+on desktop and stacked on mobile; complete redacted JSON is a secondary Debug
+JSON disclosure. Evidence links preserve the origin session and actual source
+side. Provider/harness normalization covers OpenAI/Anthropic streams, Responses
+blocks, OpenCode parts, Pi/OMP messages, and reported tool activity. Markdown
+disables embedded HTML and executable links; unsupported/malformed content
+remains inspectable rather than being invented. Exact adjacent context replay
+is suppressed within each branch; legitimate repeated turns remain visible.
+Adjacent assistant fragments and linked tools form coherent turns, with inline
+reasoning disclosures, without crossing user, branch, context, compaction, or
+missing-capture boundaries.
+
+Session layout puts a compact title, repository/ref, work outcome, and capture
+state above the conversation. App, Machine, and every recorded model also appear
+in the session header, above the short summary.
+An authored outcome reason supplies the short
+summary when available; repeated goal/status reconstruction stays out of the
+main reader. Summary evidence opens a modal with the full reconstructed summary
+and its source links; closing restores the initiating control's keyboard focus.
+A persistent right sidebar provides Details and Changes tabs. Details contains
+session identifiers and timing, outcome editing/history, usage, capture receipts,
+and supporting-session/file/error disclosures. It does not repeat the header's
+identity, outcome badge, or summary. The sidebar uses normal page flow, without
+an independent viewport-height scroller or sticky positioning.
+The sidebar stacks below the reader on small screens, with reader-toolbar
+shortcuts to both tabs. Evidence hashes select the corresponding sidebar tab or open the
+summary modal; links from the summary to the sidebar close the modal and focus
+the selected sidebar tab.
+Incoming activity is bounded inside Details; it is not a saved capture receipt.
+Dashboard scrollbars use thin native rails with neutral thumbs and transparent
+tracks in both themes. Forced-colors mode retains default system scrollbars.
+
+Commits browsing starts with recorded repository and ref selectors, a compact
+search/filter toolbar, and a commit table with short SHA, recorded time, change
+counts, and associated sessions. Shared accessible pickers use searchable
+comboboxes for repositories and lists longer than eight options, and compact
+dropdowns for shorter lists. Repository options include host or exact local
+session identity. Repository/ref option pages are independently cursor-paginated,
+capped at 50 entries, and include pending/failed artifacts.
+Repositories without a remote remain isolated by their exact session identity.
+Opening a commit replaces the table with its owning session's exact patch and
+adjacent changed-file navigation on desktop, or a file selector on mobile.
+File search appears for eight or more files; unified/split views are available.
+URL fields `selected_repo`, `selected_commit` (full SHA), and `capture_session`
+identify the exact capture independently of table filters. Selection preserves
+table pagination; deep links restore commits and associations outside the
+initial bounded page. Returning restores the initiating link's keyboard focus.
+Alternate capture selection appears only for multiple associations. Full hashes,
+digests, provenance, and complete raw binary patches remain under Details.
+Pending/failed captures never substitute another capture or an outcome patch.
+Standalone diff routes remain accessible.
+
+Conversation pages contain eight chronological indexed requests. Archives load lazily,
+at most two concurrently, with a 2 MiB per-envelope limit. Only the current page
+and adjacent per-branch replay checkpoints remain resident. Larger or unavailable
+captures expose their state and link to unrestricted request evidence. Refresh
+retains the current page and scope. Titles and summaries are excluded from the
+conversation, and compaction remains a boundary marker without loading its archive.
+Their full evidence stays accessible through the Requests kind filter.
+
+Session reconstruction is deterministic, not model-generated. It separates goal,
+recorded actions/result, observed output, and unknown/unresolved evidence; active,
+incomplete, unavailable, or sampled evidence is marked provisional. It inspects up
+to 12 saved-primary excerpts and four 512 KiB archives from the subtree. The
+`reconstructed:v2` fingerprint includes evidence and outcome/capture metadata.
+Detail reads reconstruct; list/search projections hide obsolete or stale caches
+after descendant activity, late saves, outcome events, or artifact changes.
+The cache freshness timestamp precedes all evidence reads; changes during
+reconstruction, including same-millisecond saves, keep list/search text hidden.
+No automatic paid-model call is made. Observed tool output and recorded outcome
+claims remain evidence, not inferred proof that a check passed or work landed.
 
 Dashboard session errors are aggregated at read time from `exchange_errors`
 joined to saved exchanges: each signature carries an occurrence count, first
@@ -245,8 +328,22 @@ first parent, commit time, subject, normalized repository URL, historical ref,
 provenance, patch digest, patch statistics, storage lifecycle, and R2 reference.
 The patch is independently redacted and bounded before upload. Git artifact
 evidence supplements commit evidence attached to outcome events and does not
-replace outcome history. Revisited sessions expose every distinct commit from
-both stores, deduplicated by full SHA.
+replace outcome history. Outcome evidence is folded into an artifact only for an
+unambiguous, repository-compatible SHA match; unmatched claims remain separate.
+
+The session Changes tab lazily opens the selected exact stored patch in the
+shared unified/split reader, with file search, collapse controls, line numbers,
+highlighting, and raw binary payload inspection. Capture provenance is disclosure
+content, not the primary reading surface. This reader does not reconstruct a
+complete source tree or fetch remote repository content.
+
+The cross-session timeline groups canonical credential-free remote identity plus
+full SHA; unknown repositories stay scoped to their owning root session. Filters
+match one capture, while qualifying groups retain all associated sessions and
+divergent patch digests. Groups are keyset-paginated with 25 per page and at most
+50 initial associations; the captures endpoint exposes the remainder. Repository
+identity is persisted during ingestion/repair and backfilled by migration 0021.
+Capture status, preserved source provenance, and work outcome remain independent.
 
 File and error facets are projected from structured exchange content, not from a
 text scan of the payload. Files come only from tool-call arguments in either the
@@ -258,6 +355,17 @@ non-zero exit code, with 10 kept per exchange. Detection reads the trailing
 messages of a request so a failure is not re-counted against every later
 exchange that replays the transcript. Prose that merely mentions a path or the
 word "error" is not a facet.
+
+Tool names are projected from observed structured calls/results into
+`exchange_tools`, not declared tools, prose, or tool-argument source objects.
+New saves inspect redacted request/response structures and reported
+`tool_activity`, including supported Responses arrays. Tool filters and facets
+match only saved indexed exchanges. Migration 0022 reads valid historical D1
+request/response excerpts, never R2: truncated JSON, excluded input/output arrays
+(including historical Responses calls), and tool activity stored only in the
+archive remain unindexed but inspectable in raw evidence. Re-import/backfill
+does not re-index an already saved duplicate, and capture reconciliation checks
+storage rather than rebuilding tools from R2.
 
 The session-note menu renders readable Markdown client-side from the session
 detail and timeline responses, capped at 500 exchanges. Download remains a
@@ -648,6 +756,7 @@ The migration sequence defines:
   lifecycle, usage including cache reads/writes, latency, and R2 reference
 - `exchange_files`: schema-v1 file facets with exchange-level provenance
 - `exchange_errors`: schema-v1 error signatures with exchange-level provenance
+- `exchange_tools`: exact observed tool names, indexed for saved-exchange filtering
 - `session_outcome_events`: immutable outcome, source, reason, and timestamp history
 - `session_git_artifacts`: independent per-commit metadata, patch digest and
   statistics, R2 key, and `accepted`/`saved`/`failed` storage lifecycle
@@ -866,12 +975,14 @@ removed once no process holds them; foreign junk next to the executable is only
 reported by doctor, never deleted.
 
 `mimir deploy` is the only supported path for shipping Worker or dashboard
-changes after setup. It materializes the packaged Worker and precompiled
-dashboard, writes the discovered D1 database ID into the materialized config,
-and runs `wrangler deploy`. Bun is needed only when an explicit `--worker-dir`
-development override must compile dashboard source. The checked-in
-`wrangler.jsonc` intentionally keeps a placeholder database ID; never deploy
-from a source checkout without that override.
+changes after setup. Update the binary first; deploy materializes that binary's
+packaged Worker and precompiled production dashboard, writes the discovered D1
+database ID into the materialized config, applies D1 migrations (including
+0021 repository identity and 0022 tool indexing), and runs `wrangler deploy`.
+Neither release publication nor `mimir update` deploys a user's Worker.
+Bun is needed only when an explicit `--worker-dir` development override must
+compile dashboard source. The checked-in `wrangler.jsonc` intentionally keeps a
+placeholder database ID; never deploy from a source checkout without that override.
 
 The manifest contains OpenAI and Anthropic base URLs, an absolute credential
 path and command, and optional session metadata header names. For harnesses
@@ -894,9 +1005,10 @@ manually created application's AUD tag and team domain via `--aud` and
 
 ## 12. Dashboard Status
 
-The Vue 3 dashboard is built and deployed as Worker static assets. It includes
-Sessions, Requests, Overview, and detail routes with light/dark themes and the
-design system defined in [`DESIGN.md`](DESIGN.md).
+The Vue 3 dashboard is built and deployed as Worker static assets. Its shared
+header links Sessions, Commits, Requests, Overview, and Settings, with Sessions
+as the default arrival surface and a navigation menu on smaller screens. Detail
+routes use the same light/dark design system defined in [`DESIGN.md`](DESIGN.md).
 
 The dashboard uses `/dashboard/*` for browser routes and keeps `/sessions*`
 reserved for the canonical machine API. Direct loads and receipt links use
@@ -905,6 +1017,14 @@ outcome mutation read the Access-protected dashboard API. Full redacted request
 and response payloads are loaded from R2 through `/dashboard/log-objects/*`.
 `mimir dashboard` opens the branded `/login` handoff and returns to
 `/dashboard/sessions` after Access authentication.
+
+Production builds write `worker/web/dist` and exclude fixture data. A separate
+demo build writes `internal/demoassets/static`, embedded only for `mimir demo`.
+Repository-root `bun run dev` uses deterministic fixtures with Vite HMR;
+`bun run dev:live` applies local D1 migrations and proxies the live local Worker.
+`bun run build:assets` rebuilds both variants; `bun run verify:dashboard-builds`
+checks their separation. See [`operations.md`](operations.md#local-development)
+for prerequisites and commands.
 
 ## 13. Observability
 
@@ -917,7 +1037,7 @@ developer's Cloudflare account.
 - Mimir-hosted SaaS infrastructure
 - Multi-user tenancy, teams, roles, or account management
 - Custom browser passwords or browser bearer-token storage
-- Git-backed session synchronization or session Markdown
+- Git-backed session synchronization
 - Uploading local code indexes to D1
 - Vector search, embeddings, or a semantic search service
 - Direct model upstreams other than OpenRouter

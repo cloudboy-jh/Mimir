@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentOutcomeEvidence, getSessionGitArtifactPatch, outcomeCommitEvidence, type OutcomeEvent } from "../src/lib/api";
+import { currentOutcomeEvidence, outcomeCommitEvidence, type OutcomeEvent } from "../src/lib/api";
 
 function event(id: string, outcome: OutcomeEvent["outcome"], evidence: unknown): OutcomeEvent {
   return {
@@ -60,20 +60,3 @@ describe("outcomeCommitEvidence", () => {
   });
 });
 
-describe("getSessionGitArtifactPatch", () => {
-  it("retrieves the patch for the exact session and commit", async () => {
-    const originalFetch = globalThis.fetch;
-    let requested: string | URL | Request = "";
-    globalThis.fetch = (async (input: string | URL | Request) => {
-      requested = input;
-      return new Response("diff --git a/a.ts b/a.ts\n");
-    }) as typeof fetch;
-    try {
-      const commit = "a".repeat(40);
-      await expect(getSessionGitArtifactPatch("session/one", commit)).resolves.toContain("diff --git");
-      expect(String(requested)).toBe(`/dashboard/api/sessions/session%2Fone/git-artifacts/${commit}/patch`);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});

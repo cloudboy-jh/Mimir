@@ -6,7 +6,7 @@ const empty: Facets = { repos: [], apps: [], models: [], providers: [], finish_r
 
 // useFacets loads the filter vocabulary for a surface. Failures stay silent:
 // a filter dropdown with no options is a degraded control, not a page error.
-export function useFacets(sessionId?: Ref<string | undefined>) {
+export function useFacets(sessionId?: Ref<string | undefined>, scope?: Ref<"own" | "tree">) {
   const facets = ref<Facets>({ ...empty });
   let controller: AbortController | null = null;
 
@@ -14,15 +14,16 @@ export function useFacets(sessionId?: Ref<string | undefined>) {
     controller?.abort();
     const active = new AbortController();
     controller = active;
+    facets.value = { ...empty };
     try {
-      const result = await getFacets(sessionId?.value, active.signal);
+      const result = await getFacets(sessionId?.value, active.signal, scope?.value ?? "tree");
       if (!active.signal.aborted) facets.value = result;
     } catch {
       if (!active.signal.aborted) facets.value = { ...empty };
     }
   }
 
-  watch(() => sessionId?.value, () => void load(), { immediate: true });
+  watch([() => sessionId?.value, () => scope?.value], () => void load(), { immediate: true });
   onBeforeUnmount(() => controller?.abort());
   return { facets, reloadFacets: load };
 }

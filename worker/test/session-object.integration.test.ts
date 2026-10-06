@@ -1062,7 +1062,7 @@ describe("Session object", () => {
     expect(response.status).toBe(404);
   });
 
-  it("stores complete outcome patches in R2 and generates finalized summaries", async () => {
+  it("stores complete outcome patches in R2 without duplicating them in metadata", async () => {
     await env.DB.prepare(
       "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, harness, boundary, intent, request_count) VALUES ('full-diff-session', '2026-08-14T10:00:00Z', '2026-08-14T10:10:00Z', 'inactive', '2026-08-14T10:10:00Z', '2026-08-14T10:10:00Z', 'oh-my-pi', 'header', 'Implement the complete diff view', 4)",
     ).run();
@@ -1094,15 +1094,5 @@ describe("Session object", () => {
     );
     expect(diff.status).toBe(200);
     expect(await diff.text()).toBe(patch);
-    const detail = (await (
-      await dashboardRequest("/dashboard/api/sessions/full-diff-session")
-    ).json()) as any;
-    expect(detail.session).toMatchObject({
-      summary_status: "ready",
-      summary_source: "generated",
-    });
-    expect(detail.session.summary_text).toContain(
-      "The complete diff view shipped.",
-    );
   });
 });

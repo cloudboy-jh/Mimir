@@ -5,19 +5,19 @@ import type {
   DeviceIdentity,
   Exchange,
   Facets,
-  LogEnvelope,
+  CommitCapture,
   Outcome,
   OutcomeEvidence,
   OutcomeEvent,
   Overview,
   Session,
   SessionDetail,
-  SessionExchange,
   SessionObjectState,
 } from "@/lib/api";
 
-const now = new Date("2026-07-29T17:45:00.000Z");
-const iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000).toISOString();
+import { fixtureEnvelope, fixtureIso as iso, fixtureReference as now, fixtureSessionExchanges, fixtureTurns } from "./fixture-conversations";
+import { fixtureArtifactRows, sampleHierarchyPatch as primaryPatch } from "./fixture-git-artifacts";
+import { fixtureCommitPage, fixtureDateMatches, fixtureRepositoryKey, fixtureRepositoryPage, fixtureRefPage, fixtureRowPage } from "./fixture-queries";
 const clone = <T>(value: T): T => structuredClone(value);
 
 const devices: Device[] = [
@@ -27,13 +27,9 @@ const devices: Device[] = [
 ];
 const deviceIdentity = ({ id, name, platform, arch }: Device): DeviceIdentity => ({ id, name, platform, arch });
 
-const savedCapture = (saved: number, failed = 0): CaptureSummary => ({
-  status: failed ? "partial" : "saved",
-  saved_exchanges: saved,
-  failed_exchanges: failed,
-  pending_exchanges: 0,
-  last_saved_at: iso(4),
-});
+const emptyCapture: CaptureSummary = {
+  status: "empty", saved_exchanges: 0, failed_exchanges: 0, pending_exchanges: 0, last_saved_at: null,
+};
 
 function harnessFixture(
   id: string,
@@ -62,10 +58,10 @@ function harnessFixture(
     repo: "mimir",
     source_ref: `fixtures/${id}`,
     model_primary: model,
-    models: [{ name: model, request_count: 4, first_seen_at: iso(minutesAgo + 18), last_seen_at: iso(minutesAgo) }],
-    request_count: 4,
-    tokens_in: 24_000,
-    tokens_out: 3_200,
+    models: [],
+    request_count: 0,
+    tokens_in: 0,
+    tokens_out: 0,
     title: `${title} harness fixture`,
     title_source: "harness",
     title_updated_at: iso(minutesAgo),
@@ -76,47 +72,11 @@ function harnessFixture(
     summary_source: "generated",
     summary_updated_at: iso(minutesAgo),
     child_session_count: 0,
-    capture: savedCapture(4),
+    capture: emptyCapture,
     device: deviceIdentity(device),
   };
 }
 
-const primaryPatch = `diff --git a/worker/web/src/components/session/SessionHeader.vue b/worker/web/src/components/session/SessionHeader.vue
-index 1122334..2233445 100644
---- a/worker/web/src/components/session/SessionHeader.vue
-+++ b/worker/web/src/components/session/SessionHeader.vue
-@@ -10,3 +10,5 @@
--  <div class="model-stack">
-+  <div class="model-tree">
-+    <span>Models involved</span>
-   </div>
-diff --git a/worker/web/src/components/session/SessionChanges.vue b/worker/web/src/components/session/SessionChanges.vue
-new file mode 100644
-index 0000000..3344556
---- /dev/null
-+++ b/worker/web/src/components/session/SessionChanges.vue
-@@ -0,0 +1,4 @@
-+<template>
-+  <section aria-labelledby="result-evidence-heading">
-+  </section>
-+</template>
-diff --git a/worker/web/src/lib/dev-fixtures.ts b/worker/web/src/lib/dev-fixtures.ts
-new file mode 100644
-index 0000000..4455667
---- /dev/null
-+++ b/worker/web/src/lib/dev-fixtures.ts
-@@ -0,0 +1,3 @@
-+export const sessions = [];
-+export const exchanges = [];
-+export const outcomes = [];
-diff --git a/worker/web/src/styles.css b/worker/web/src/styles.css
-index 5566778..6677889 100644
---- a/worker/web/src/styles.css
-+++ b/worker/web/src/styles.css
-@@ -7,2 +7,3 @@
--  --animate-panel-in: panel-in 160ms ease-out;
-+  --animate-panel-in: panel-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
-+  --animate-panel-out: panel-out 150ms cubic-bezier(0.4, 0, 1, 1);`;
 
 const sessions: Session[] = [
   {
@@ -138,24 +98,18 @@ const sessions: Session[] = [
     repo: "mimir",
     source_ref: "feature/dashboard-evidence",
     model_primary: "openai/gpt-5.6-sol",
-    models: [
-      { name: "openai/gpt-5.6-sol", request_count: 12, first_seen_at: iso(77), last_seen_at: iso(6) },
-      { name: "anthropic/claude-opus-4.1-thinking", request_count: 4, first_seen_at: iso(54), last_seen_at: iso(18) },
-      { name: "google/gemini-2.5-pro-preview-06-05", request_count: 2, first_seen_at: iso(32), last_seen_at: iso(21) },
-    ],
-    request_count: 21,
-    tokens_in: 381_420,
-    tokens_out: 42_870,
-    cache_read_tokens: 268_000,
-    cache_write_tokens: 18_400,
+    models: [],
+    request_count: 0,
+    tokens_in: 0,
+    tokens_out: 0,
     title: "Restore dashboard evidence hierarchy",
     title_source: "manual",
     title_updated_at: iso(3),
     display_title: "Restore dashboard evidence hierarchy",
     intent: "Correct session evidence hierarchy, multi-model rendering, and dashboard motion without hiding implementation detail",
-    summary_text: "The session corrected the dashboard session evidence hierarchy and multi-model presentation. The recorded work landed and changed the session detail experience.", summary_status: "ready", summary_source: "generated", summary_updated_at: iso(5),
+    summary_text: "Sample: restored result evidence hierarchy and reduced-motion handling. Two patches captured; runner reported 7 passed after a focus fix. Protected preview and push remain unverified. Recorded outcome: landed.", summary_status: "ready", summary_source: "reconstructed:sample", summary_updated_at: iso(5),
     child_session_count: 2,
-    capture: savedCapture(21),
+    capture: emptyCapture,
     device: deviceIdentity(devices[0]),
   },
   {
@@ -188,7 +142,7 @@ const sessions: Session[] = [
     intent: "Investigate intermittent capture receipts from direct providers",
     summary_text: null, summary_status: "pending", summary_source: null, summary_updated_at: null,
     child_session_count: 0,
-    capture: { status: "pending", saved_exchanges: 6, failed_exchanges: 0, pending_exchanges: 1, last_saved_at: iso(2) },
+    capture: emptyCapture,
     device: deviceIdentity(devices[1]),
   },
   harnessFixture("pi", "pi", "Pi", "anthropic/claude-sonnet-4.5", 8, devices[0]),
@@ -226,7 +180,7 @@ const sessions: Session[] = [
     intent: "Prototype a session synchronization path and validate ownership behavior",
     summary_text: "The session prototyped synchronization behavior, but the approach was discarded after ownership validation.", summary_status: "ready", summary_source: "generated", summary_updated_at: iso(1100),
     child_session_count: 0,
-    capture: savedCapture(8, 1),
+    capture: emptyCapture,
     device: deviceIdentity(devices[2]),
   },
   {
@@ -373,52 +327,64 @@ const outcomeEvents: OutcomeEvent[] = [
   },
   { id: "out_fixture_unresolved", outcome: "unresolved", source: "agent", reason: "Implementation was still in progress.", evidence_json: JSON.stringify({ note: "Waiting on responsive layout verification." }), created_at: iso(44) },
 ];
+const sessionExchanges = fixtureSessionExchanges;
 
-const sessionExchanges: SessionExchange[] = Array.from({ length: 21 }, (_, index) => {
-  const model = sessions[0].models[index % sessions[0].models.length];
-  return {
-    id: `req_fixture_${String(index + 1).padStart(2, "0")}`,
-    session_id: sessions[0].id,
-    ts: iso(7 + index * 3),
-    model: model.name,
-    provider: model.name.split("/")[0],
-    finish_reason: index % 5 === 0 ? "tool-calls" : "stop",
-    latency_ms: 1_800 + index * 173,
-    harness: "opencode",
-    input_tokens: 8_400 + index * 1_170,
-    output_tokens: 720 + index * 83,
-    request_excerpt: index % 3 === 0 ? "Inspect the dashboard session detail components and trace the missing result evidence." : index % 3 === 1 ? "Implement the fixture-backed development transport without leaking mock behavior into components." : "Verify the model hierarchy, overlay transitions, and responsive evidence layout.",
-    capture_status: "saved",
-    capture_reason: null,
-    failure_code: null,
-  };
-});
-// Sub-agent exchanges let the timeline scope toggle show real content when
-// viewing a supporting session from the parent's detail page.
-sessionExchanges.push(
-  { id: "req_fixture_sub_01", session_id: "ses_fixture_supporting_review", ts: iso(55), model: "anthropic/claude-opus-4.1-thinking", provider: "anthropic", finish_reason: "stop", latency_ms: 2_140, harness: "opencode", input_tokens: 11_400, output_tokens: 1_380, request_excerpt: "Locate the evidence selection fault in the session detail sidebar.", capture_status: "saved", capture_reason: null, failure_code: null },
-  { id: "req_fixture_sub_02", session_id: "ses_fixture_supporting_motion", ts: iso(41), model: "google/gemini-2.5-pro-preview-06-05", provider: "google", finish_reason: "stop", latency_ms: 3_020, harness: "opencode", input_tokens: 7_900, output_tokens: 940, request_excerpt: "Review Reka presence states and reduced-motion handling for the overlays.", capture_status: "saved", capture_reason: null, failure_code: null },
-  { id: "req_fixture_sub_03", session_id: "ses_fixture_supporting_tooling", ts: iso(52), model: "deepseek/deepseek-v3.2", provider: "deepseek", finish_reason: "stop", latency_ms: 1_880, harness: "goose", input_tokens: 9_100, output_tokens: 1_060, request_excerpt: "Trace patch capture bounds across the evidence pipeline.", capture_status: "saved", capture_reason: null, failure_code: null },
-);
-
-const exchanges: Exchange[] = sessionExchanges.map((exchange) => ({
-  id: exchange.id,
-  session_id: exchange.session_id,
-  ts: exchange.ts,
-  model: exchange.model,
-  provider: exchange.provider,
-  finish_reason: exchange.finish_reason,
+const exchanges: Array<Exchange & { tool_names: string[]; has_errors: boolean }> = sessionExchanges.map((exchange) => ({
+  ...exchange,
   endpoint: "/v1/chat/completions",
-  latency_ms: exchange.latency_ms,
-  repo: "mimir",
-  harness: exchange.harness,
-  access_token_label: "fixture-machine",
-  input_tokens: exchange.input_tokens,
-  output_tokens: exchange.output_tokens,
+  repo: exchange.session_id.includes("harness_pi") || exchange.session_id.includes("oh_my_pi") ? "sample-cli" : "mimir",
+  access_token_label: "sample-machine-no-credentials",
   r2_key: `fixtures/${exchange.id}.json`,
 }));
+sessions.push(
+  { ...harnessFixture("local_health", "codex", "Local readiness review", "openai/gpt-5.4", 30, devices[1]), id: "ses_fixture_unknown_repo", repo: null, source_ref: "local/health", outcome: "unresolved", outcome_src: null, outcome_reason: null },
+  { ...harnessFixture("local_health_other", "pi", "Separate local repository", "anthropic/claude-sonnet-4.5", 31, devices[0]), id: "ses_fixture_unknown_repo_other", repo: null, source_ref: "local/health", outcome: "unresolved", outcome_src: null, outcome_reason: null },
+  { ...harnessFixture("capture_failure", "opencode", "Archive failure receipt", "openai/gpt-5.6-sol", 45, devices[1]), id: "ses_fixture_capture_failed", outcome: "unresolved", outcome_src: null, outcome_reason: null, summary_text: "Sample archive upload failed; no response archive or work outcome is available." },
+);
+
+const sampleDescriptions: Record<string, { title: string; summary: string; reason: string }> = {
+  pi: { title: "Sample: signal unready services with a useful exit code", summary: "Read health response and changed the sample CLI readiness exit status. Focused output reported exit status 1 for ready:false.", reason: "Readiness exit status change was retained in the sample project." },
+  oh_my_pi: { title: "Sample: clean release scripts and binary assets", summary: "Captured release cleanup with a rename, deletion, executable-bit change, and binary asset update. No deployment was attempted.", reason: "Release cleanup was retained; no deployment was attempted." },
+  claude_code: { title: "Sample: review the captured evidence hierarchy commit", summary: "Reviewed the same commit from another session. The review capture contains a narrower patch; both variants remain inspectable.", reason: "Completed the evidence review; this is not a new implementation." },
+  codex: { title: "Sample: document a rejected ownership experiment", summary: "Recorded the ownership violation and discarded outcome. No replacement implementation is claimed.", reason: "Review notes were retained, not the rejected synchronization prototype." },
+  cursor: { title: "Sample: inspect an unsupported vendor capture", summary: "Unsupported request and response bodies remain available in the raw archive. Structured reconstruction is incomplete.", reason: "Kept the raw capture for inspection; no implementation change is claimed." },
+};
+for (const session of sessions) {
+  const key = session.id.replace("ses_fixture_harness_", "");
+  const description = sampleDescriptions[key];
+  if (description) {
+    session.title = session.display_title = description.title;
+    session.intent = description.title.replace("Sample: ", "");
+    session.summary_text = description.summary;
+    session.outcome_reason = description.reason;
+  }
+  if (key === "pi" || key === "oh_my_pi") session.repo = "sample-cli";
+  if (session.id.startsWith("ses_fixture_unknown_repo")) {
+    session.intent = "Inspect a sample captured commit from a local repository without a configured remote";
+    session.summary_text = "Sample patch is available, but no conversation was captured and no outcome is recorded.";
+  }
+  if (session.title && !session.title.startsWith("Sample: ")) session.title = `Sample: ${session.title}`;
+  if (session.display_title && !session.display_title.startsWith("Sample: ")) session.display_title = `Sample: ${session.display_title}`;
+}
+
 
 const allSessions = [...sessions, ...supportingSessions];
+for (const session of allSessions) {
+  const own = sessionExchanges.filter((exchange) => exchange.session_id === session.id);
+  session.request_count = own.length;
+  session.tokens_in = own.reduce((sum, row) => sum + row.input_tokens, 0);
+  session.tokens_out = own.reduce((sum, row) => sum + row.output_tokens, 0);
+  const names = [...new Set(own.map((row) => row.model))];
+  session.models = names.map((name) => {
+    const rows = own.filter((row) => row.model === name).sort((a, b) => a.ts.localeCompare(b.ts));
+    return { name, request_count: rows.length, first_seen_at: rows[0]?.ts ?? null, last_seen_at: rows.at(-1)?.ts ?? null };
+  });
+  session.model_primary = names[0] ?? null;
+  if (session.display_title && !session.display_title.startsWith("Sample: ")) session.display_title = `Sample: ${session.display_title}`;
+  session.summary_source = session.summary_text ? "reconstructed:sample" : session.summary_source;
+  if ("capture" in session) session.capture = captureFor(new Set([session.id, ...descendantsFor(session.id).map((node) => node.id)]));
+}
+for (const device of devices) device.session_count = allSessions.filter((session) => session.device?.id === device.id).length;
 const sessionRecord = (id: string): Session | undefined => {
   const item = allSessions.find((entry) => entry.id === id);
   return item ? asSession(item) : undefined;
@@ -433,7 +399,7 @@ function asSession(item: Session | SessionDetail["supporting_sessions"][number])
     ...partial,
     activity_at: partial.last_active_at ?? partial.started_at,
     liveness: "finalized",
-    capture: savedCapture(partial.request_count),
+    capture: captureFor(new Set([partial.id, ...descendantsFor(partial.id).map((node) => node.id)])),
     child_session_count: supportingSessions.filter((child) => child.parent_session_id === partial.id).length,
   };
 }
@@ -454,234 +420,257 @@ function descendantsFor(rootId: string): SessionDetail["supporting_sessions"] {
   return descendants;
 }
 
-function detailFor(session: Session): SessionDetail {
-  const { capture, liveness: _liveness, ...detailSession } = session;
-  const rich = session.id === sessions[0].id;
+type ArtifactRow = Awaited<typeof fixtureArtifactRows>[number];
+
+function captureFor(ids: Set<string>): CaptureSummary {
+  const rows = sessionExchanges.filter((row) => ids.has(row.session_id));
+  const saved = rows.filter((row) => row.capture_status === "saved");
+  const failed = rows.filter((row) => row.capture_status === "failed").length;
+  const pending = rows.filter((row) => row.capture_status === "accepted").length;
   return {
-    session: detailSession,
-    capture,
-    supporting_sessions: descendantsFor(session.id),
-    outcome_events: rich ? outcomeEvents : [],
-    files: rich ? [
-      "worker/web/src/components/session/SessionHeader.vue",
-      "worker/web/src/components/session/SessionOutcome.vue",
-      "worker/web/src/components/session/RequestTimeline.vue",
-      "worker/web/src/lib/api.ts",
-      "worker/src/sessions/session-dashboard-routes.ts",
-      "docs/DESIGN.md",
-      "README.md",
-    ] : [],
-    errors: rich ? [
-      { signature: "Cloudflare Access authentication required.", count: 2, first_seen_at: iso(68), last_seen_at: iso(63), latest_exchange_id: sessionExchanges[15].id },
-      { signature: "Patch evidence exceeded the configured capture bound", count: 1, first_seen_at: iso(22), last_seen_at: iso(22), latest_exchange_id: sessionExchanges[5].id },
-    ] : [],
-    git_artifacts: [],
+    status: pending ? "pending" : saved.length && failed ? "partial" : failed ? "failed" : saved.length ? "saved" : "empty",
+    saved_exchanges: saved.length, failed_exchanges: failed, pending_exchanges: pending,
+    last_saved_at: saved.map((row) => row.ts).sort().at(-1) ?? null,
   };
 }
 
-function paginate<T>(items: T[], params: URLSearchParams) {
-  const start = Number(params.get("cursor") ?? 0);
-  const limit = Number(params.get("limit") ?? 25);
-  const page = items.slice(start, start + limit);
-  return { page, next_cursor: start + limit < items.length ? String(start + limit) : null };
+function rootFor(id: string): string {
+  let session = sessionRecord(id);
+  const seen = new Set<string>();
+  while (session?.parent_session_id && !seen.has(session.id)) {
+    seen.add(session.id);
+    session = sessionRecord(session.parent_session_id);
+  }
+  return session?.id ?? id;
 }
 
-function facetsFor(): Facets {
+function detailFor(session: Session, artifacts: ArtifactRow[]): SessionDetail {
+  const { capture: _capture, liveness: _liveness, ...detailSession } = session;
+  const ids = new Set([session.id, ...descendantsFor(session.id).map((node) => node.id)]);
+  const capture = captureFor(ids);
+  const rich = session.id === sessions[0].id;
+  const turns = fixtureTurns.filter((turn) => ids.has(turn.session));
+  const errorTurns = turns.filter((turn) => turn.error);
+  const ownArtifacts = artifacts.filter((row) => row.sessionId === rootFor(session.id)).map((row) => row.artifact);
+  const partial = session.state === "active" || capture.status !== "saved" || turns.some((turn) => turn.id === "req_fixture_unknown_shape");
   return {
-    repos: ["mimir"],
-    apps: [...new Set(allSessions.flatMap((session) => session.harness ? [session.harness] : []))],
-    models: [...new Set([...allSessions.flatMap((session) => [session.model_primary, ...session.models.map((model) => model.name)].filter((name): name is string => Boolean(name))), ...sessionExchanges.filter((exchange) => exchange.capture_status === "saved").map((exchange) => exchange.model)])],
-    providers: [...new Set(sessionExchanges.flatMap((exchange) => exchange.provider ? [exchange.provider] : []))],
-    finish_reasons: ["stop", "tool-calls"],
+    session: detailSession, capture, supporting_sessions: descendantsFor(session.id),
+    outcome_events: eventsFor(session.id),
+    files: rich ? ["worker/web/src/components/session/SessionHeader.vue", "worker/web/src/styles.css"] : [...new Set(turns.flatMap((turn) => turn.activity?.flatMap((tool) => typeof tool.input.path === "string" ? [tool.input.path] : []) ?? []))],
+    errors: errorTurns.map((turn) => ({ signature: turn.error!, count: 1, first_seen_at: iso(turn.ago), last_seen_at: iso(turn.ago), latest_exchange_id: turn.id })),
+    git_artifacts: ownArtifacts,
+    summary: {
+      goal: session.intent ?? null,
+      actions: rich ? ["Moved result evidence out of the model selector and retained supporting-session links.", "Captured two sample commits covering evidence hierarchy and reduced-motion behavior.", "Fixed focus restoration after a failed focused check."] : turns.filter((turn) => !turn.capture || turn.capture === "saved").slice(0, 3).map((turn) => `Recorded response: ${turn.responseText}`),
+      result: session.outcome === "unresolved" ? null : `Recorded outcome: ${session.outcome}${session.outcome_reason ? ` — ${session.outcome_reason}` : ""}`,
+      verification: rich ? ["Recorded focused runner output: 7 passed, 0 failed after the focus fix.", "Recorded local keyboard and reduced-motion preview review."] : [],
+      unresolved: rich ? ["Protected remote preview was not verified.", "No push receipt was supplied; captured patches do not establish shipment."] : [...(partial ? ["Capture or structured reconstruction is incomplete."] : []), ...(session.outcome === "unresolved" ? ["No final work outcome has been recorded."] : [])],
+      partial, source: "reconstructed",
+      evidence: rich ? [
+        { section: "actions", index: 1, href: "#changes-heading", label: "Captured sample commits" },
+        { section: "verification", index: 0, href: "/requests/req_fixture_10", label: "Focused check output" },
+        { section: "unresolved", index: 0, href: "/requests/req_fixture_05", label: "Protected preview error" },
+        { section: "result", index: 0, href: "#outcome-heading", label: "Recorded outcome" },
+      ] : [],
+    },
+  };
+}
+
+const changedOutcomeEvents = new Map<string, OutcomeEvent[]>();
+
+function eventsFor(id: string): OutcomeEvent[] {
+  const changed = changedOutcomeEvents.get(id) ?? [];
+  if (id === sessions[0].id) return [...changed, ...outcomeEvents];
+  if (changed.length) return changed;
+  const session = sessionRecord(id);
+  return [...changed, ...(session?.outcome_src ? [{
+    id: `out_sample_${id}`, outcome: session.outcome, source: session.outcome_src,
+    reason: session.outcome_reason, evidence_json: JSON.stringify({ note: "Fictional sample outcome; not production evidence." }),
+    created_at: session.outcome_updated_at ?? session.started_at,
+  }] : [])];
+}
+
+function filteredExchanges(params: URLSearchParams, ids?: Set<string>) {
+  const kind = params.get("request_kind");
+  const capture = params.get("capture_status");
+  if (kind && !["primary", "title", "summary", "compaction"].includes(kind)) throw new Error("Invalid fixture request kind.");
+  if (capture && !["accepted", "saved", "failed", "skipped"].includes(capture)) throw new Error("Invalid fixture capture status.");
+  if (params.has("errors") && params.get("errors") !== "true") throw new Error("Invalid fixture error filter.");
+  const needle = (params.get("q") ?? "").toLowerCase();
+  return exchanges.filter((row) => {
+    if (ids && !ids.has(row.session_id)) return false;
+    if (!fixtureDateMatches(row.ts, params)) return false;
+    for (const [parameter, field] of [["repo", "repo"], ["session", "session_id"], ["model", "model"], ["provider", "provider"], ["app", "harness"], ["finish_reason", "finish_reason"], ["request_kind", "request_kind"], ["capture_status", "capture_status"]] as const) {
+      const value = params.get(parameter);
+      if (value && row[field] !== value) return false;
+    }
+    const tool = params.get("tool");
+    if (tool && (row.capture_status !== "saved" || !row.tool_names.includes(tool))) return false;
+    if (params.get("errors") === "true" && !(row.capture_status === "failed" || row.capture_status === "saved" && row.has_errors)) return false;
+    return !needle || [row.id, row.session_id, row.repo, row.model, row.provider, row.harness, row.request_excerpt, row.response_excerpt].some((field) => field?.toLowerCase().includes(needle));
+  });
+}
+
+function facetsFor(ids?: Set<string>): Facets {
+  const nodes = ids ? allSessions.filter((session) => ids.has(session.id)) : allSessions;
+  const rows = sessionExchanges.filter((row) => row.capture_status === "saved" && (!ids || ids.has(row.session_id)));
+  return {
+    repos: [...new Set(nodes.flatMap((session) => session.repo ? [session.repo] : []))].sort(),
+    apps: [...new Set(nodes.flatMap((session) => session.harness ? [session.harness] : []))].sort(),
+    models: [...new Set([...nodes.flatMap((session) => session.models.map((model) => model.name)), ...rows.map((row) => row.model)])].sort(),
+    providers: [...new Set(rows.flatMap((row) => row.provider ? [row.provider] : []))].sort(),
+    finish_reasons: [...new Set(rows.flatMap((row) => row.finish_reason ? [row.finish_reason] : []))].sort(),
+    tools: [...new Set(rows.flatMap((row) => row.tool_names))].sort(),
   };
 }
 
 export async function fixtureRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
   const url = new URL(path, "https://mimir.fixture");
-  const segments = url.pathname.split("/").filter(Boolean);
+  const segments = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const api = segments[0] === "dashboard" && segments[1] === "api";
+  const method = init.method ?? "GET";
+  const params = url.searchParams;
+  const artifacts = await fixtureArtifactRows;
+  if (init.signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
-  if (url.pathname === "/dashboard/api/identity") {
-    return clone({ email: "developer@mimir.local", name: "Fixture Developer", source: "local-development" } satisfies DashboardIdentity) as T;
+  // Archive namespace must never be mistaken for the request-metadata endpoint.
+  if (segments.length === 4 && segments[0] === "dashboard" && segments[1] === "dev-fixtures" && segments[2] === "log" && method === "GET") {
+    const envelope = fixtureEnvelope(segments[3]!);
+    if (!envelope) throw new Error("Fixture archive unavailable: capture has not been saved.");
+    return clone(envelope) as T;
   }
-
-  if (url.pathname === "/dashboard/api/devices") return clone({ devices }) as T;
-
-  if (segments[2] === "devices" && segments[3] && init.method === "PATCH") {
+  if (url.pathname === "/dashboard/api/identity" && method === "GET") return clone({ email: "developer@example.invalid", name: "Sample Developer", source: "local-development" } satisfies DashboardIdentity) as T;
+  if (url.pathname === "/dashboard/api/devices" && method === "GET") return clone({ devices }) as T;
+  if (api && segments[2] === "devices" && (segments.length === 4 && method === "PATCH" || segments.length === 5 && segments[4] === "revoke" && method === "POST")) {
     const device = devices.find((item) => item.id === segments[3]);
     if (!device) throw new Error("Fixture device not found.");
-    const body = JSON.parse(String(init.body ?? "{}")) as { name?: string };
-    device.name = body.name?.trim() || device.name;
+    if (method === "PATCH") {
+      const body = JSON.parse(String(init.body ?? "{}")) as { name?: string };
+      device.name = body.name?.trim() || device.name;
+    } else device.revoked_at = now.toISOString();
     device.updated_at = now.toISOString();
     return clone({ device }) as T;
   }
-
-  if (segments[2] === "devices" && segments[3] && segments[4] === "revoke" && init.method === "POST") {
-    const device = devices.find((item) => item.id === segments[3]);
-    if (!device) throw new Error("Fixture device not found.");
-    device.revoked_at = now.toISOString();
-    device.updated_at = now.toISOString();
-    return clone({ device }) as T;
-  }
-
-  if (url.pathname === "/dashboard/api/sessions") {
-    const needle = (url.searchParams.get("q") ?? "").toLowerCase();
-    const repo = url.searchParams.get("repo");
-    const outcome = url.searchParams.get("outcome");
-    const app = url.searchParams.get("app");
-    const model = url.searchParams.get("model");
-    const from = url.searchParams.get("from");
-    const to = url.searchParams.get("to");
-    const trees = sessions.map((session) => ({ session, descendants: descendantsFor(session.id) }));
-    const savedModels = new Map<string, string[]>();
-    for (const exchange of sessionExchanges) {
-      if (exchange.capture_status !== "saved") continue;
-      const models = savedModels.get(exchange.session_id) ?? [];
-      models.push(exchange.model);
-      savedModels.set(exchange.session_id, models);
-    }
-    const filtered = trees.filter(({ session, descendants }) => {
-      if ((repo && session.repo !== repo) || (outcome && session.outcome !== outcome)
-        || (from && session.started_at < from) || (to && session.started_at > to)) return false;
-      const nodes = [session, ...descendants];
-      const modelsFor = (node: (typeof nodes)[number]) => [
-        node.model_primary, ...node.models.map((entry) => entry.name), ...(savedModels.get(node.id) ?? []),
-      ];
-      return (!needle || nodes.some((node) =>
-        [node.id, node.display_title, node.title, node.intent, node.repo, node.harness, ...modelsFor(node)]
-          .filter(Boolean).join(" ").toLowerCase().includes(needle)))
-        && (!app || nodes.some((node) => node.harness === app))
-        && (!model || nodes.some((node) => modelsFor(node).includes(model)));
+  if (method === "GET" && ["/dashboard/api/commits", "/dashboard/api/commits/captures", "/dashboard/api/commits/repositories", "/dashboard/api/commits/refs"].includes(url.pathname)) {
+    const captures: CommitCapture[] = artifacts.map(({ sessionId, artifact }) => {
+      const session = sessionRecord(sessionId)!;
+      return { ...artifact, session_id: session.id, session_title: session.display_title ?? session.intent ?? session.id, repo: session.repo, outcome: session.outcome };
     });
-    filtered.sort((a, b) => b.session.activity_at.localeCompare(a.session.activity_at) || b.session.id.localeCompare(a.session.id));
-    const { page, next_cursor } = paginate(filtered, url.searchParams);
-    return clone({
-      sessions: page.map(({ session }) => session),
-      descendants: page.flatMap(({ descendants }) => descendants.map(asSession)),
-      next_cursor,
-    }) as T;
+    if (url.pathname === "/dashboard/api/commits/repositories") return clone(fixtureRepositoryPage(captures, params)) as T;
+    if (url.pathname === "/dashboard/api/commits/refs") return clone(fixtureRefPage(captures, params)) as T;
+    if (url.pathname === "/dashboard/api/commits/captures") {
+      const repo = params.get("repo");
+      const sha = params.get("commit");
+      if (!repo || !sha) throw new Error("Repository and commit are required.");
+      const cursor = params.get("cursor");
+      const matching = captures.filter((capture) => fixtureRepositoryKey(capture.repository_url, capture.session_id) === repo && capture.commit_sha === sha && (!cursor || capture.session_id > cursor)).sort((a, b) => a.session_id.localeCompare(b.session_id));
+      const limit = Math.min(50, Math.max(1, Math.trunc(Number(params.get("limit")) || 50)));
+      const page = matching.slice(0, limit);
+      return clone({ captures: page, next_cursor: matching.length > limit ? page.at(-1)!.session_id : null }) as T;
+    }
+    return clone(fixtureCommitPage(captures, params)) as T;
   }
-
-  if (url.pathname === "/dashboard/api/sessions/outcomes" && init.method === "POST") {
+  if (url.pathname === "/dashboard/api/sessions" && method === "GET") {
+    const needle = (params.get("q") ?? "").toLowerCase();
+    const filtered = sessions.filter((session) => {
+      const ids = new Set([session.id, ...descendantsFor(session.id).map((node) => node.id)]);
+      const nodes = allSessions.filter((node) => ids.has(node.id));
+      const rows = sessionExchanges.filter((row) => ids.has(row.session_id));
+      if (!fixtureDateMatches(session.started_at, params)) return false;
+      for (const [parameter, field] of [["repo", "repo"], ["outcome", "outcome"], ["state", "state"]] as const) {
+        const value = params.get(parameter);
+        if (value && session[field] !== value) return false;
+      }
+      if (params.get("capture") && captureFor(ids).status !== params.get("capture")) return false;
+      if (params.get("provider") && !rows.some((row) => row.capture_status === "saved" && row.provider === params.get("provider"))) return false;
+      if (params.get("errors") === "true" && !rows.some((row) => row.capture_status === "failed" || row.has_errors)) return false;
+      if (params.get("commits") === "true" && !artifacts.some((row) => ids.has(row.sessionId))) return false;
+      if (params.get("app") && !nodes.some((node) => node.harness === params.get("app"))) return false;
+      if (params.get("model") && !nodes.some((node) => node.models.some((model) => model.name === params.get("model")) || node.model_primary === params.get("model"))) return false;
+      return !needle || nodes.some((node) => [node.id, node.title, node.display_title, node.intent, node.summary_text, node.repo, node.harness, ...node.models.map((model) => model.name)].some((field) => field?.toLowerCase().includes(needle)));
+    });
+    const { page, next_cursor } = fixtureRowPage(filtered, params, (row) => row.activity_at, 25, true);
+    return clone({ sessions: page, descendants: page.flatMap((session) => descendantsFor(session.id).map(asSession)), next_cursor }) as T;
+  }
+  if (url.pathname === "/dashboard/api/sessions/outcomes" && method === "POST") {
     const body = JSON.parse(String(init.body ?? "{}")) as { session_ids?: string[]; outcome: Outcome; reason?: string };
-    const sessionIds = [...new Set(body.session_ids ?? [])];
-    const updated = sessionIds.map((id) => {
-      const session = sessions.find((item) => item.id === id);
+    const ids = [...new Set(body.session_ids ?? [])];
+    const selected = ids.map((id) => {
+      const session = allSessions.find((item) => item.id === id);
       if (!session) throw new Error("Fixture session not found.");
-      session.outcome = body.outcome;
-      session.outcome_reason = body.reason ?? null;
-      session.outcome_src = "user";
-      session.outcome_updated_at = now.toISOString();
-      outcomeEvents.unshift({ id: `out_fixture_${outcomeEvents.length + 1}`, outcome: body.outcome, source: "user", reason: body.reason ?? null, evidence_json: null, created_at: now.toISOString() });
-      return { id, outcome: body.outcome };
+      return session;
     });
-    return clone({ updated }) as T;
+    for (const session of selected) recordOutcome(session, body);
+    return clone({ updated: selected.map((session) => ({ id: session.id, outcome: session.outcome })) }) as T;
   }
-
-  if (segments[2] === "sessions" && segments[3] && segments[4] === "outcome" && init.method === "POST") {
-    const session = sessions.find((item) => item.id === segments[3]);
+  if (api && segments[2] === "sessions" && segments[3]) {
+    const id = segments[3];
+    const session = sessionRecord(id);
     if (!session) throw new Error("Fixture session not found.");
-    const body = JSON.parse(String(init.body ?? "{}")) as { outcome: Outcome; reason?: string; evidence?: OutcomeEvidence };
-    session.outcome = body.outcome;
-    session.outcome_reason = body.reason ?? null;
-    session.outcome_src = "user";
-    session.outcome_updated_at = now.toISOString();
-    outcomeEvents.unshift({ id: `out_fixture_${outcomeEvents.length + 1}`, outcome: body.outcome, source: "user", reason: body.reason ?? null, evidence_json: body.evidence ? JSON.stringify(body.evidence) : null, created_at: now.toISOString() });
-    return clone({ id: session.id, outcome: session.outcome }) as T;
-  }
-
-  if (segments[2] === "sessions" && segments[3] && segments[4] === "title" && init.method === "PATCH") {
-    const session = sessions.find((item) => item.id === segments[3]);
-    if (!session) throw new Error("Fixture session not found.");
-    const body = JSON.parse(String(init.body ?? "{}")) as { title: string };
-    session.title = body.title.trim();
-    session.title_source = "manual";
-    session.title_updated_at = now.toISOString();
-    session.display_title = session.title || session.intent || null;
-    return clone({ session: { id: session.id, title: session.title, title_source: session.title_source, title_updated_at: session.title_updated_at, display_title: session.display_title } }) as T;
-  }
-
-  if (segments[2] === "sessions" && segments[3] && segments[4] === "exchanges") {
-    const scope = url.searchParams.get("session") ?? segments[3];
-    let filtered = sessionExchanges.filter((exchange) => exchange.session_id === scope);
-    const q = (url.searchParams.get("q") ?? "").toLowerCase();
-    if (q) filtered = filtered.filter((exchange) => `${exchange.id} ${exchange.request_excerpt}`.toLowerCase().includes(q));
-    for (const [parameter, field] of [["model", "model"], ["provider", "provider"], ["app", "harness"], ["finish_reason", "finish_reason"]] as const) {
-      const value = url.searchParams.get(parameter);
-      if (value) filtered = filtered.filter((exchange) => exchange[field] === value);
+    if (segments.length === 7 && segments[4] === "git-artifacts" && segments[6] === "patch" && method === "GET") {
+      const row = artifacts.find((item) => item.sessionId === rootFor(id) && item.artifact.commit_sha === segments[5]);
+      if (!row || row.artifact.capture_status !== "saved") throw new Error("Fixture git artifact patch unavailable.");
+      return row.patch as T;
     }
-    if (url.searchParams.get("order") !== "asc") filtered = [...filtered].reverse();
-    const { page, next_cursor } = paginate(filtered, url.searchParams);
+    if (segments.length === 5 && segments[4] === "outcome" && method === "POST") {
+      const body = JSON.parse(String(init.body ?? "{}")) as { outcome: Outcome; reason?: string; evidence?: OutcomeEvidence };
+      recordOutcome(allSessions.find((item) => item.id === id)!, body);
+      return clone({ id, outcome: body.outcome }) as T;
+    }
+    if (segments.length === 5 && segments[4] === "title" && method === "PATCH") {
+      const body = JSON.parse(String(init.body ?? "{}")) as { title: string };
+      const target = allSessions.find((item) => item.id === id)!;
+      target.title = body.title.trim();
+      target.title_source = "manual";
+      target.title_updated_at = now.toISOString();
+      target.display_title = target.title || target.intent || null;
+      return clone({ session: { id, title: target.title, title_source: target.title_source, title_updated_at: target.title_updated_at, display_title: target.display_title } }) as T;
+    }
+    if (segments.length === 5 && segments[4] === "exchanges" && method === "GET") {
+      const subtree = new Set([id, ...descendantsFor(id).map((node) => node.id)]);
+      const selected = params.get("session");
+      if (selected && !subtree.has(selected)) throw new Error("Selected session is outside this fixture subtree.");
+      const ids = selected ? new Set([selected]) : subtree;
+      const { page, next_cursor } = fixtureRowPage(filteredExchanges(params, ids), params, (row) => row.ts);
+      return clone({ exchanges: page.map((row) => sessionExchanges.find((item) => item.id === row.id)!), next_cursor }) as T;
+    }
+    if (segments.length === 5 && segments[4] === "object-state" && method === "GET") {
+      return clone({ session_id: id, parent_session_id: session.parent_session_id, liveness: session.liveness, harness: session.harness, repo: session.repo, started_at: session.started_at, last_event_at: session.last_active_at ?? session.started_at, finalized_at: session.liveness === "finalized" ? session.ended_at : null, end_reason: session.liveness === "finalized" ? "sample" : null, turn_count: session.request_count, tokens_in: session.tokens_in, tokens_out: session.tokens_out } satisfies SessionObjectState) as T;
+    }
+    if (segments.length === 4 && method === "GET") return clone(detailFor(session, artifacts)) as T;
+  }
+  if (url.pathname === "/dashboard/api/facets" && method === "GET") {
+    const id = params.get("session");
+    if (id && !sessionRecord(id)) throw new Error("Fixture session not found.");
+    const ids = id ? new Set([id, ...(params.get("scope") === "own" ? [] : descendantsFor(id).map((node) => node.id))]) : undefined;
+    return clone(facetsFor(ids)) as T;
+  }
+  if (url.pathname === "/dashboard/api/log" && method === "GET") {
+    const { page, next_cursor } = fixtureRowPage(filteredExchanges(params), params, (row) => row.ts, 50);
     return clone({ exchanges: page, next_cursor }) as T;
   }
-
-  if (segments[2] === "sessions" && segments[3] && segments[4] === "object-state") {
-    const session = sessionRecord(segments[3]);
-    if (!session) throw new Error("Fixture session not found.");
-    return clone({
-      session_id: session.id,
-      parent_session_id: session.parent_session_id,
-      liveness: session.liveness,
-      harness: session.harness,
-      repo: session.repo,
-      started_at: session.started_at,
-      last_event_at: session.last_active_at ?? session.started_at,
-      finalized_at: session.liveness === "finalized" ? session.ended_at : null,
-      end_reason: session.liveness === "finalized" ? "fixture" : null,
-      turn_count: session.request_count,
-      tokens_in: session.tokens_in,
-      tokens_out: session.tokens_out,
-    } satisfies SessionObjectState) as T;
-  }
-
-  if (segments[2] === "sessions" && segments[3]) {
-    const session = sessionRecord(segments[3]);
-    if (!session) throw new Error("Fixture session not found.");
-    return clone(detailFor(asSession(session))) as T;
-  }
-
-  if (url.pathname === "/dashboard/api/facets") return clone(facetsFor()) as T;
-
-  if (url.pathname === "/dashboard/api/log") {
-    let filtered = exchanges;
-    const provider = url.searchParams.get("provider");
-    const app = url.searchParams.get("app");
-    if (provider) filtered = filtered.filter((exchange) => exchange.provider === provider);
-    if (app) filtered = filtered.filter((exchange) => exchange.harness === app);
-    const { page, next_cursor } = paginate(filtered, url.searchParams);
-    return clone({ exchanges: page, next_cursor }) as T;
-  }
-
-  if (segments[2] === "log" && segments[3]) {
+  if (api && segments.length === 4 && segments[2] === "log" && method === "GET") {
     const exchange = exchanges.find((item) => item.id === segments[3]);
     if (!exchange) throw new Error("Fixture request not found.");
     return clone({ exchange, log_url: `/dashboard/dev-fixtures/log/${exchange.id}` }) as T;
   }
-
-  if (segments[1] === "dev-fixtures" && segments[2] === "log" && segments[3]) {
-    const exchange = exchanges.find((item) => item.id === segments[3]);
-    if (!exchange) throw new Error("Fixture log not found.");
+  if (url.pathname === "/dashboard/api/overview" && method === "GET") {
+    const counts = (field: "model" | "provider" | "harness") => [...new Set(exchanges.flatMap((row) => row[field] ? [row[field]!] : []))].map((name) => ({ name, requests: exchanges.filter((row) => row[field] === name).length }));
     return clone({
-      schema_version: 1,
-      exchange_id: exchange.id,
-      session_id: exchange.session_id,
-      captured_at: exchange.ts,
-      endpoint: exchange.endpoint,
-      request: { model: exchange.model, messages: [{ role: "user", content: "Fixture request body for dashboard development." }] },
-      response: { format: "json", body: { choices: [{ message: { role: "assistant", content: "Fixture response body." }, finish_reason: exchange.finish_reason }] } },
-    } satisfies LogEnvelope) as T;
+      totals: { requests: exchanges.length, sessions: sessions.length, saved_exchanges: exchanges.filter((row) => row.capture_status === "saved").length, capture_failures: exchanges.filter((row) => row.capture_status === "failed").length, input_tokens: exchanges.reduce((sum, row) => sum + row.input_tokens, 0), output_tokens: exchanges.reduce((sum, row) => sum + row.output_tokens, 0) },
+      models: counts("model"), providers: counts("provider"), apps: counts("harness"),
+    } satisfies Overview) as T;
   }
+  throw new Error(`No dashboard fixture for ${method} ${url.pathname}`);
+}
 
-  if (url.pathname === "/dashboard/api/overview") {
-    const apps = facetsFor().apps.map((name) => ({ name, requests: sessions.reduce((sum, session) => sum + (session.harness === name ? session.request_count : 0), 0) }));
-    const overview: Overview = {
-      totals: { requests: 37, sessions: sessions.length, saved_exchanges: 35, capture_failures: 1, input_tokens: 614_420, output_tokens: 73_110 },
-      models: facetsFor().models.slice(0, 4).map((name) => ({ name, requests: sessions.reduce((sum, session) => sum + (session.models.find((model) => model.name === name)?.request_count ?? 0), 0) })),
-      providers: [{ name: "openai", requests: 21 }, { name: "anthropic", requests: 13 }, { name: "google", requests: 3 }],
-      apps,
-    };
-    return clone(overview) as T;
-  }
-
-  throw new Error(`No dashboard fixture for ${init.method ?? "GET"} ${url.pathname}`);
+function recordOutcome(session: Session | SessionDetail["supporting_sessions"][number], body: { outcome: Outcome; reason?: string; evidence?: OutcomeEvidence }) {
+  const events = changedOutcomeEvents.get(session.id) ?? (session.id === sessions[0].id ? [] : eventsFor(session.id));
+  session.outcome = body.outcome;
+  session.outcome_reason = body.reason ?? null;
+  session.outcome_src = "user";
+  session.outcome_updated_at = now.toISOString();
+  events.unshift({ id: `out_sample_${session.id}_${events.length}`, outcome: body.outcome, source: "user", reason: body.reason ?? null, evidence_json: body.evidence ? JSON.stringify(body.evidence) : null, created_at: now.toISOString() });
+  changedOutcomeEvents.set(session.id, events);
 }

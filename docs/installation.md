@@ -308,14 +308,17 @@ Invoking installation through another executable cannot silently transfer it.
 
 ```bash
 mimir update
+mimir deploy
 mimir install
 mimir uninstall
 mimir uninstall --keep-binary
 ```
 
 `mimir update` refreshes the binary and managed integrations but does not deploy
-the embedded Worker. Run `mimir deploy` when doctor reports a stale bundle or
-Worker capability. Uninstall preserves the connection, machine token,
+the embedded Worker. Once the binary update completes, run `mimir deploy` to
+apply that release's bundled Worker, production dashboard, and D1 migrations.
+Release publication does not update your Cloudflare deployment. Uninstall
+preserves the connection, machine token,
 materialized Worker, install log, and Cloudflare deployment. It removes only
 verified receipt-owned files whose current bytes still match the receipt.
 

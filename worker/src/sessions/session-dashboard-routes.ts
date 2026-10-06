@@ -1,7 +1,9 @@
 import type { Hono } from "hono";
 import { boundedLimit, decodeCursor, encodeCursor } from "../dashboard/cursors";
+import { dashboardDateRange } from "../dashboard/date-range";
 import type { AppEnv } from "../env";
 import { ensureSessionSummary } from "./summaries";
+import { summaryCacheValidSQL } from "./summary-cache";
 import { SESSION_ID } from "./events";
 import { expireSessions } from "./lifecycle";
 import { autoResolveStaleOutcomes, bulkUpdateOutcomes, canonicalOutcome, updateOutcome } from "./outcomes";
@@ -20,7 +22,7 @@ import {
   rootSessionID,
   ROOT_SESSION_ACTIVITY_AT,
   ROOT_SESSION_COLUMNS,
-  SESSION_COLUMNS,
+  SESSION_LIST_COLUMNS,
   SESSION_SUBTREE_CTE,
   SESSION_TREE_CTE,
 } from "./session-queries";
@@ -173,9 +175,9 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
     const q = c.req.query("q");
     if (q) {
       where.push(
-        `EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND (${sessionTitleSearchClause("matched")} OR instr(lower(COALESCE(matched.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = matched.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(matched.id), lower(?)) > 0))`,
+        `EXISTS (SELECT 1 FROM session_tree JOIN sessions matched ON matched.id = session_tree.id WHERE session_tree.root_id = sessions.id AND (${sessionTitleSearchClause("matched")} OR (${summaryCacheValidSQL("matched")} AND instr(lower(COALESCE(matched.summary_text, '')), lower(?)) > 0) OR instr(lower(COALESCE(matched.repo, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.harness, '')), lower(?)) > 0 OR instr(lower(COALESCE(matched.model_primary, '')), lower(?)) > 0 OR EXISTS (SELECT 1 FROM exchanges model_search WHERE model_search.session_id = matched.id AND model_search.capture_status = 'saved' AND instr(lower(COALESCE(model_search.model, '')), lower(?)) > 0) OR instr(lower(matched.id), lower(?)) > 0))`,
       );
-      values.push(q, q, q, q, q, q, q);
+      values.push(q, q, q, q, q, q, q, q);
     }
     const repo = c.req.query("repo");
     if (repo) {
@@ -203,15 +205,48 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
       where.push("sessions.work_outcome = ?");
       values.push(canonical);
     }
-    for (const [parameter, operator] of [
-      ["from", ">="],
-      ["to", "<="],
-    ] as const) {
+    const state = c.req.query("state");
+    if (state) {
+      if (state !== "active" && state !== "inactive") return c.json({ error: "invalid state" }, 400);
+      where.push("sessions.state = ?");
+      values.push(state);
+    }
+    const capture = c.req.query("capture");
+    if (capture) {
+      if (!["empty", "pending", "saved", "failed", "partial"].includes(capture)) return c.json({ error: "invalid capture" }, 400);
+      const has = (status: string) => `EXISTS (SELECT 1 FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = '${status}')`;
+      const saved = has("saved"), failed = has("failed"), pending = has("accepted");
+      const statuses: Record<string, string> = {
+        empty: `NOT (${saved} OR ${failed} OR ${pending})`,
+        pending,
+        saved: `${saved} AND NOT ${failed} AND NOT ${pending}`,
+        failed: `${failed} AND NOT ${saved} AND NOT ${pending}`,
+        partial: `${failed} AND ${saved} AND NOT ${pending}`,
+      };
+      where.push(`(${statuses[capture]})`);
+    }
+    const provider = c.req.query("provider");
+    if (provider) {
+      where.push("EXISTS (SELECT 1 FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'saved' AND e.provider = ?)");
+      values.push(provider);
+    }
+    for (const parameter of ["errors", "commits"] as const) {
       const value = c.req.query(parameter);
-      if (value) {
-        where.push(`sessions.started_at ${operator} ?`);
-        values.push(value);
-      }
+      if (!value) continue;
+      if (value !== "true") return c.json({ error: `invalid ${parameter}` }, 400);
+      where.push(parameter === "errors"
+        ? "(EXISTS (SELECT 1 FROM session_errors se JOIN session_tree ON session_tree.id = se.session_id WHERE session_tree.root_id = sessions.id) OR EXISTS (SELECT 1 FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'failed'))"
+        : "EXISTS (SELECT 1 FROM session_git_artifacts ga JOIN session_tree ON session_tree.id = ga.session_id WHERE session_tree.root_id = sessions.id)");
+    }
+    const range = dashboardDateRange(c.req.query("from"), c.req.query("to"));
+    if ("error" in range) return c.json({ error: range.error }, 400);
+    if (range.start) {
+      where.push("julianday(sessions.started_at) >= julianday(?)");
+      values.push(range.start.value);
+    }
+    if (range.end) {
+      where.push(`julianday(sessions.started_at) ${range.end.exclusive ? "<" : "<="} julianday(?)`);
+      values.push(range.end.value);
     }
     const cursorValue = c.req.query("cursor");
     const cursor = decodeCursor(cursorValue);
@@ -236,7 +271,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
     // parent_session_id intact; the client builds the hierarchy.
     const descendantResult = rootIDs.length
       ? await c.env.DB.prepare(
-          `WITH RECURSIVE rooted(id) AS (SELECT id FROM sessions WHERE id IN (${rootIDs.map(() => "?").join(", ")}) AND parent_session_id IS NULL UNION ALL SELECT sessions.id FROM sessions JOIN rooted ON sessions.parent_session_id = rooted.id) SELECT ${SESSION_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM rooted) AND parent_session_id IS NOT NULL ORDER BY id ASC`,
+          `WITH RECURSIVE rooted(id) AS (SELECT id FROM sessions WHERE id IN (${rootIDs.map(() => "?").join(", ")}) AND parent_session_id IS NULL UNION ALL SELECT sessions.id FROM sessions JOIN rooted ON sessions.parent_session_id = rooted.id) SELECT ${SESSION_LIST_COLUMNS} FROM sessions WHERE id IN (SELECT id FROM rooted) AND parent_session_id IS NOT NULL ORDER BY id ASC`,
         )
           .bind(...rootIDs)
           .all<Record<string, unknown>>()
@@ -277,6 +312,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
     await expireSessions(c.env.DB);
     await autoResolveStaleOutcomes(c.env);
     const id = c.req.param("id");
+    const observedAt = new Date().toISOString();
     const session = await loadSessionRecord(c.env.DB, id);
     if (!session) return c.json({ error: "session not found" }, 404);
     const outcomeRoot = await rootSessionID(c.env.DB, id);
@@ -330,11 +366,12 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
         latest_exchange_id: latestBySignature.get(signature) ?? null,
       };
     });
-    const summarized = await ensureSessionSummary(
+    const { session: summarized, summary } = await ensureSessionSummary(
       c.env.DB,
+      c.env.LOGS,
       session,
-      files.length,
-      errors.length,
+      { capture, children, errors, gitArtifacts, outcomeEvents },
+      observedAt,
     );
     const modeled = await attachSessionDevices(
       c.env.DB,
@@ -342,6 +379,7 @@ export function registerDashboardSessionRoutes(app: Hono<AppEnv>) {
     );
     return c.json({
       session: modeled[0],
+      summary,
       capture,
       outcome_events: outcomeEvents,
       supporting_sessions: modeled.slice(1),

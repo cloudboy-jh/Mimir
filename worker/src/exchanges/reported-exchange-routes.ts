@@ -28,6 +28,7 @@ import {
 } from "./reported-exchange-schema";
 import { readBoundedText } from "./response-codec";
 import { redact } from "./redaction";
+import { extractToolNames, toolNameStatements } from "./tool-names";
 
 export async function ingestReportedExchange(c: Context<AppEnv>) {
   const sessionId = c.req.param("id") ?? "";
@@ -93,6 +94,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       c.env.DB.prepare(
         "DELETE FROM exchange_errors WHERE exchange_id = ?",
       ).bind(parsed.exchange_id),
+      c.env.DB.prepare("DELETE FROM exchange_tools WHERE exchange_id = ?").bind(parsed.exchange_id),
       c.env.DB.prepare(
         "DELETE FROM exchanges WHERE id = ? AND session_id = ? AND capture_status = 'failed'",
       ).bind(parsed.exchange_id, sessionId),
@@ -175,6 +177,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
           "INSERT INTO exchange_errors(exchange_id, session_id, signature) VALUES (?, ?, ?)",
         ).bind(parsed.exchange_id, sessionId, signature),
       ),
+      ...toolNameStatements(c.env.DB, parsed.exchange_id, extractToolNames(request, response, toolActivity)),
     ];
     if (facetStatements.length) await c.env.DB.batch(facetStatements);
 

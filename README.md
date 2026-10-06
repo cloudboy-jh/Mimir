@@ -95,11 +95,52 @@ mimir access
 mimir dashboard
 ```
 
-The dashboard leads with sessions, outcomes, and capture state; requests are
-supporting evidence. It also shows harnesses, models, provider-reported cache
-reads and writes, and token usage.
+The dashboard opens on **Sessions**, with **Commits**, **Requests**, **Overview**,
+and **Settings** in the shared header. Session details open as a conversation
+reader: compact title and status, visible app and machine, and every model used
+by that exact session with saved request counts—no model dropdown. Supporting
+sessions keep their own model lists. A short authored outcome reason appears
+once below the header when available, then the transcript. **Summary evidence**
+opens the full reconstruction and its source links.
+A persistent right sidebar holds **Details** and **Changes**, including
+captured commits, outcome editing/history, usage, and supporting evidence, without
+repeating the header or summary. It shares page scrolling and stacks below the
+reader on small screens. Assistant answers, code, saved reasoning, and linked
+tool activity stay in coherent turns.
+Title and summary requests stay out of Conversation; compaction appears only as
+a context boundary. Inspect those requests with the **Requests** kind filter.
+**Requests** presents labelled Input and Output together; complete redacted
+payloads remain under **Debug JSON**.
+Summary evidence is a deterministic reconstruction of bounded saved evidence,
+not a paid-model call or proof that an observed check passed.
+
+**Commits** starts with recorded repository and ref choices, then a compact table
+of captured work grouped by repository and full SHA. Opening a commit shows its
+owning session's patch with changed-file navigation, filename search, and
+unified/split diffs.
+Alternate capture selection appears only when needed; filters and exact capture
+selection are URL-backed, with return navigation preserving the table.
+Remote links open the repository host for complete source browsing; Mimir does
+not reconstruct a full repository source tree. Saved patches do not prove a
+push, merge, or landed outcome.
+
+Dashboard pickers share keyboard navigation and selected-state styling.
+Repositories and longer lists are searchable; repository choices show their
+host or exact local-session identity. Short lists use compact dropdowns.
+
+Search and URL-backed filters run server-side across matching indexed records,
+not just loaded rows. Requests filters cover redacted request/response excerpts,
+request kind, capture state, tools/errors, dates, and session scope. Tool filters
+use observed structured activity; older captures can have incomplete tool
+indexes ([historical limits](docs/Spec.md#43-dashboard-api)). The dashboard also
+shows harnesses, models, provider-reported cache reads/writes, and token usage.
 
 ![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
+
+To upgrade an existing deployment, update the binary with `mimir update`, then
+run `mimir deploy` to apply its bundled Worker, dashboard, and D1 migrations.
+Publishing or installing a release does not deploy your Cloudflare Worker.
+See [update operations](docs/operations.md#update).
 
 ## Use the memory
 

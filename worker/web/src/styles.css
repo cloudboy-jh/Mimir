@@ -16,10 +16,15 @@
 @layer base {
   html { color-scheme: light; }
   html.dark { color-scheme: dark; }
+  * { scrollbar-width: thin; scrollbar-color: var(--color-zinc-500) transparent; }
   body { margin: 0; min-width: 320px; background: var(--color-stone-100); font-family: var(--font-sans); text-rendering: optimizeLegibility; }
   html.dark body { background: var(--color-stone-950); }
   button, input, select { font: inherit; }
   ::selection { background: var(--color-teal-200); color: var(--color-zinc-950); }
+}
+
+@media (forced-colors: active) {
+  * { scrollbar-width: auto; scrollbar-color: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

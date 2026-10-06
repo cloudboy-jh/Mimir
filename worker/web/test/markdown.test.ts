@@ -66,6 +66,8 @@ const exchanges: SessionExchange[] = [{
   input_tokens: 100,
   output_tokens: 25,
   request_excerpt: "Inspect the settings page.",
+  response_excerpt: "The settings page uses direct vault access.",
+  request_kind: "primary",
   capture_status: "saved",
   capture_reason: null,
   failure_code: null,
@@ -127,5 +129,23 @@ describe("sessionMarkdown", () => {
 
   it("falls back to intent when no summary is available", () => {
     expect(sessionMarkdown(detail(null, "Connect Mimir to Obsidian."), [])).toContain("## Summary\n\nConnect Mimir to Obsidian.");
+  });
+
+  it("exports current reconstructed evidence instead of stale stored summary text", () => {
+    const value = detail("Earlier work was complete.");
+    value.summary = {
+      goal: "Repair missing exchanges",
+      actions: ["Inspected saved capture failures"],
+      result: "No final result was recorded.",
+      verification: [],
+      unresolved: ["One exchange could not be saved."],
+      partial: true,
+      source: "reconstructed",
+    };
+    const exported = sessionMarkdown(value, exchanges);
+    expect(exported).not.toContain("Earlier work was complete.");
+    expect(exported).toContain("One exchange could not be saved.");
+    expect(exported).toContain("Provisional reconstruction");
+    expect(exported).toContain("The settings page uses direct vault access.");
   });
 });

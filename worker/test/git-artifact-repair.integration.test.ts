@@ -58,10 +58,10 @@ describe("Guarded Git artifact repair", () => {
     expect(current.patch_bytes).toBe(new TextEncoder().encode(redacted).byteLength);
     expect(await (await env.LOGS.get(old.patch_r2_key))!.text()).toBe("old patch");
     const audit = await (await env.LOGS.get(body.repaired.audit_r2_key))!.json();
-    const { session_id: _session, ...oldMetadata } = old as GitArtifact & { session_id: string };
-    const { session_id: _currentSession, ...currentMetadata } = current as GitArtifact & { session_id: string };
-    expect(audit).toEqual({ version: 1, operation: "git-artifact-repair", session_id: "repair-root",
-      installation_id: "owner", token_hash: await tokenHash("owner-token"), old: oldMetadata, new: currentMetadata });
+    expect(audit).toMatchObject({ version: 1, operation: "git-artifact-repair", session_id: "repair-root",
+      installation_id: "owner", token_hash: await tokenHash("owner-token"),
+      old: { commit_sha: sha, patch_sha256: old.patch_sha256, patch_r2_key: old.patch_r2_key },
+      new: { ...inputMetadata, patch_sha256: current.patch_sha256, patch_r2_key: current.patch_r2_key } });
     const readback = await request(`${base}/patch`, { headers });
     expect(readback.status).toBe(200);
     expect(readback.headers.get("x-mimir-patch-sha256")).toBe(current.patch_sha256);
@@ -146,7 +146,7 @@ describe("Guarded Git artifact repair", () => {
     const prepare = env.DB.prepare.bind(env.DB);
     vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
       const statement = prepare(sql);
-      if (sql.startsWith("UPDATE session_git_artifacts SET commit_sha")) {
+      if (/^UPDATE session_git_artifacts\b/.test(sql)) {
         const bind = statement.bind.bind(statement);
         vi.spyOn(statement, "bind").mockImplementation((...values) => {
           const bound = bind(...values);

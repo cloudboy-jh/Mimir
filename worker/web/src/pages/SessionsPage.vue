@@ -17,8 +17,8 @@ import { outcomeOptions, pageSizeOptions } from "@/lib/options";
 import { displayTitle } from "@/lib/sessions";
 
 const SEARCH_DEBOUNCE_MS = 350;
-const facetKeys = ["repo", "outcome", "app", "model", "from", "to"] as const;
-const facetLabels: Record<string, string> = { repo: "Repository", outcome: "Outcome", app: "App", model: "Model", from: "From", to: "To" };
+const facetKeys = ["repo", "outcome", "app", "model", "from", "to", "state", "capture", "provider", "errors", "commits"] as const;
+const facetLabels: Record<string, string> = { repo: "Repository", outcome: "Outcome", app: "App", model: "Model", from: "From (UTC)", to: "To (UTC)", state: "State", capture: "Capture", provider: "Provider", errors: "Errors", commits: "Commits" };
 
 const route = useRoute();
 const router = useRouter();
@@ -71,11 +71,16 @@ const loadingMore = ref(false);
 const error = ref("");
 const filtersOpen = ref(false);
 const search = ref("");
-const draft = reactive<Record<string, string>>({ repo: "", outcome: "", app: "", model: "", from: "", to: "" });
+const draft = reactive<Record<string, string>>(Object.fromEntries(facetKeys.map((key) => [key, ""])));
 const { facets } = useFacets();
-const repoOptions = computed(() => facetSelectOptions(facets.value.repos, draft.repo, "All repositories"));
+const repoOptions = computed(() => facetSelectOptions(facets.value.repos, queryValue("repo"), "All repositories"));
 const appOptions = computed(() => facetSelectOptions(facets.value.apps, draft.app, "All apps"));
 const modelOptions = computed(() => facetSelectOptions(facets.value.models, draft.model, "All models"));
+const providerOptions = computed(() => facetSelectOptions(facets.value.providers, draft.provider, "All providers"));
+const stateOptions = [{ value: "", label: "All states" }, { value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }];
+const captureOptions = ["", "empty", "pending", "saved", "failed", "partial"].map((value) => ({ value, label: value ? value[0]!.toUpperCase() + value.slice(1) : "All capture states" }));
+const errorsOptions = [{ value: "", label: "All sessions" }, { value: "true", label: "Errors or capture failures" }];
+const commitsOptions = [{ value: "", label: "All sessions" }, { value: "true", label: "With captured commits" }];
 const selectedSessionIds = ref<Set<string>>(new Set());
 const bulkOutcome = ref<Outcome>("landed");
 const bulkReason = ref("");
@@ -151,6 +156,7 @@ function queryValue(key: string) {
 
 const limit = computed(() => queryValue("limit") || "25");
 const activeFacets = computed(() => facetKeys.flatMap((key) => queryValue(key) ? [{ key, label: facetLabels[key], value: queryValue(key) }] : []));
+const secondaryFacets = computed(() => activeFacets.value.filter((facet) => facet.key !== "repo"));
 const activeFilterCount = computed(() => activeFacets.value.length + (queryValue("q") ? 1 : 0));
 
 function setParams(patch: Record<string, string>) {
@@ -172,8 +178,13 @@ function currentFilters(cursor?: string): SessionFilters {
     outcome: (queryValue("outcome") || undefined) as Outcome | undefined,
     app: queryValue("app") || undefined,
     model: queryValue("model") || undefined,
-    from: from ? `${from}T00:00:00.000Z` : undefined,
-    to: to ? `${to}T23:59:59.999Z` : undefined,
+    from: from || undefined,
+    to: to || undefined,
+    state: (queryValue("state") || undefined) as SessionFilters["state"],
+    capture: (queryValue("capture") || undefined) as SessionFilters["capture"],
+    provider: queryValue("provider") || undefined,
+    errors: (queryValue("errors") || undefined) as "true" | undefined,
+    commits: (queryValue("commits") || undefined) as "true" | undefined,
     limit: Number(limit.value),
     cursor,
   };
@@ -289,27 +300,32 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 
 <template>
   <section>
-    <div class="mb-7 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-      <div><h1 class="text-[28px] font-semibold tracking-[-0.025em] text-zinc-950 dark:text-zinc-50">Sessions</h1><p class="mt-1.5 max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">Understand what your agents attempted, what changed, and which work was worth keeping.</p></div>
-      <div v-if="!loading" class="font-mono text-xs text-zinc-500 dark:text-zinc-400">{{ sessions.length }} {{ sessions.length === 1 ? "root" : "roots" }} loaded<span v-if="descendants.length"> · {{ descendants.length }} {{ descendants.length === 1 ? "sub-agent" : "sub-agents" }}</span></div>
+    <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+      <h1 class="text-2xl font-semibold tracking-tight">Sessions</h1>
+      <p v-if="!loading" class="text-xs text-zinc-600 dark:text-zinc-400">{{ sessions.length }} {{ sessions.length === 1 ? 'session' : 'sessions' }}<span v-if="descendants.length"> · {{ descendants.length }} sub-agents</span></p>
     </div>
 
-    <div class="mb-4 border-y border-zinc-200 py-3 dark:border-zinc-800">
-      <div class="flex flex-col gap-2 sm:flex-row">
-        <form class="relative min-w-0 flex-1 sm:max-w-lg" role="search" @submit.prevent="commitSearch">
+    <div class="mb-4">
+      <div class="flex flex-wrap items-center gap-2">
+        <Select :model-value="queryValue('repo')" label="Repository" :options="repoOptions" class="w-full sm:w-56" @update:model-value="setParams({ repo: $event })" />
+        <form class="relative min-w-0 flex-1 sm:w-72 sm:flex-none" role="search" @submit.prevent="commitSearch">
           <label class="sr-only" for="session-search">Search sessions</label>
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
-          <input id="session-search" v-model="search" type="search" placeholder="Search title, intent, repository, app, model, or ID" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+          <input id="session-search" v-model="search" type="search" placeholder="Search sessions" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-transparent pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus-visible:outline-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-100" />
         </form>
-        <DropdownPanel v-model:open="filtersOpen" title="Filter sessions" description="Exact matches, applied together with the current search.">
-          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFacets.length" class="font-mono text-[11px] text-zinc-500">{{ activeFacets.length }}</span></Button></template>
+        <DropdownPanel v-model:open="filtersOpen" title="Filter sessions">
+          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="secondaryFacets.length" class="font-mono text-[11px]">{{ secondaryFacets.length }}</span></Button></template>
           <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Repository</span><Select v-model="draft.repo" label="Repository" :options="repoOptions" placeholder="All repositories" class="w-full font-normal" /></div>
             <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.app" label="App" :options="appOptions" placeholder="All apps" class="w-full font-normal" /></div>
             <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Model</span><Select v-model="draft.model" label="Model" :options="modelOptions" placeholder="All models" class="w-full font-normal" /></div>
             <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" placeholder="All outcomes" class="w-full font-normal" /></div>
-            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">State</span><Select v-model="draft.state" label="State" :options="stateOptions" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Capture</span><Select v-model="draft.capture" label="Capture" :options="captureOptions" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Provider</span><Select v-model="draft.provider" label="Provider" :options="providerOptions" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Errors</span><Select v-model="draft.errors" label="Errors" :options="errorsOptions" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Commits</span><Select v-model="draft.commits" label="Commits" :options="commitsOptions" class="w-full font-normal" /></div>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From (UTC)<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To (UTC)<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
           </form>
           <template #footer>
             <Button variant="ghost" @click="clearFilters">Clear all</Button>
@@ -317,10 +333,9 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
             <Button type="submit" form="session-filters">Apply filters</Button>
           </template>
         </DropdownPanel>
-        <Select :model-value="limit" label="Root sessions per page" :options="pageSizeOptions" class="sm:w-28" @update:model-value="setParams({ limit: $event })" />
       </div>
-      <ul v-if="activeFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
-        <li v-for="facet in activeFacets" :key="facet.key">
+      <ul v-if="secondaryFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
+        <li v-for="facet in secondaryFacets" :key="facet.key">
           <button type="button" class="inline-flex items-center gap-1.5 rounded-[5px] border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 transition-colors duration-150 ease-out hover:border-zinc-400 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800" @click="setParams({ [facet.key]: '' })">
             <span class="text-zinc-500">{{ facet.label }}</span><span class="font-mono">{{ facet.value }}</span><X class="size-3" aria-hidden="true" />
             <span class="sr-only">Remove {{ facet.label }} filter</span>
@@ -395,6 +410,10 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
         <div v-if="!sessions.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">{{ activeFilterCount ? "No matching sessions" : "No sessions captured yet" }}</p><p class="mt-1 text-sm text-zinc-500">{{ activeFilterCount ? "Clear a filter or try a broader search." : "Captured model traffic will appear here as work sessions." }}</p></div>
       </template>
     </div>
-    <div v-if="nextCursor || error" class="mt-4 flex items-center justify-between gap-4"><p class="text-xs text-red-700 dark:text-red-400" role="alert">{{ error }}</p><button v-if="nextCursor" :disabled="loading || loadingMore" class="ml-auto inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 bg-white px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 disabled:cursor-wait disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800" @click="loadMore">{{ loadingMore ? "Loading..." : "Load more sessions" }}</button></div>
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <p v-if="error" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ error }}</p>
+      <Button v-if="nextCursor" variant="outline" :disabled="loading || loadingMore" @click="loadMore">{{ loadingMore ? "Loading…" : "Load more sessions" }}</Button>
+      <div class="ml-auto flex items-center gap-2"><span class="text-xs text-zinc-600 dark:text-zinc-400">Rows</span><Select :model-value="limit" label="Root sessions per page" :options="pageSizeOptions" class="w-24" @update:model-value="setParams({ limit: $event })" /></div>
+    </div>
   </section>
 </template>

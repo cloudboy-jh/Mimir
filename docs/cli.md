@@ -85,6 +85,11 @@ Worker reports an existing exchange as a duplicate rather than creating a
 second record. Rerunning either command therefore fills missing exchanges and
 does not duplicate saved ones.
 
+An already saved duplicate is not reprocessed for tool indexing. Historical
+tool filters depend on migration 0022's valid D1 excerpts, not an R2 rescan;
+truncated excerpts and archive-only tool activity can remain unindexed. See
+[historical indexing limits](Spec.md#43-dashboard-api).
+
 When the source records a checkout directory, import also finds matching Git
 commits from the session interval and tool-touched paths. It can preserve
 multiple commits as independent artifacts, regardless of whether the session

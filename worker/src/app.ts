@@ -12,6 +12,7 @@ import { registerMachineRoutes } from "./machines/machine-routes";
 import { registerSearchRoutes } from "./search/search-routes";
 import { registerDashboardSessionRoutes } from "./sessions/session-dashboard-routes";
 import { registerSessionRoutes } from "./sessions/session-routes";
+import { registerDashboardCommitRoutes } from "./sessions/commit-dashboard-routes";
 
 const app = new Hono<AppEnv>();
 
@@ -29,6 +30,7 @@ registerDashboardSessionRoutes(app);
 registerDashboardExchangeRoutes(app);
 registerDashboardDeviceRoutes(app);
 registerDashboardFacetRoutes(app);
+registerDashboardCommitRoutes(app);
 
 function installErrorHandling(target: Hono<AppEnv>) {
   target.onError((error, c) => {

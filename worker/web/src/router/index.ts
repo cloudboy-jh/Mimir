@@ -7,6 +7,7 @@ import RequestDetailPage from "@/pages/RequestDetailPage.vue";
 import OverviewPage from "@/pages/OverviewPage.vue";
 import LoginPage from "@/pages/LoginPage.vue";
 import SettingsPage from "@/pages/SettingsPage.vue";
+import CommitsPage from "@/pages/CommitsPage.vue";
 
 export const router = createRouter({
   history: createWebHistory(window.location.pathname.startsWith("/dashboard") ? "/dashboard/" : "/"),
@@ -14,6 +15,7 @@ export const router = createRouter({
     { path: "/", redirect: { name: "sessions" } },
     { path: "/login", name: "login", component: LoginPage, meta: { standalone: true } },
     { path: "/sessions", name: "sessions", component: SessionsPage },
+    { path: "/commits", name: "commits", component: CommitsPage },
     { path: "/sessions/:id", name: "session-detail", component: SessionDetailPage },
     { path: "/sessions/:id/diff/:commit", name: "session-artifact-diff", component: SessionDiffPage },
     { path: "/sessions/:id/diff", name: "session-diff", component: SessionDiffPage },

@@ -18,6 +18,25 @@ The dashboard turns Mimir's captured model traffic and recovered local harness h
 
 Success means a developer can open Mimir, recognize the relevant session, and understand its shape and outcome without reading a transcript from the beginning.
 
+Sessions, Commits, Requests, Overview, and Settings share one compact navigation
+header. Session detail leads with app, machine, and every exact-session model
+with request counts, followed once by the authored outcome reason when present.
+Conversation is the default reader; paired tools, code, reasoning, and sources
+stay with their turns. Title/summary traffic belongs in Requests, while
+compaction is a conversation boundary.
+
+Details and Changes remain beside the reader in normal page flow, holding
+unique metadata, outcome editing/history, usage, capture, and supporting
+evidence rather than duplicating the header. Summary evidence reconstructs
+bounded saved facts deterministically; it must expose uncertainty rather than
+invent a result or make an automatic paid-model call.
+
+Commits starts with recorded repositories and refs, then opens an exact
+session-owned capture in a searchable unified/split patch reader. Alternate
+captures remain distinct. This is captured work evidence, not a full source
+browser or proof of a push or merge; complete source browsing belongs on the
+recorded repository host.
+
 ## Positioning
 
 Mimir is a private memory plane that makes agent work legible across time while keeping the data inside the developer's own Cloudflare account.

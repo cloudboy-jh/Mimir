@@ -4,6 +4,8 @@ import { fixtureRequest } from "@/lib/fixture-provider";
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
 export type SessionLiveness = "active" | "disconnected" | "finalized";
+export type RequestKind = "primary" | "title" | "summary" | "compaction";
+export type ExchangeCaptureStatus = "accepted" | "saved" | "failed" | "skipped";
 
 export type DashboardIdentity = {
   email: string | null;
@@ -98,13 +100,23 @@ export type Exchange = {
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   r2_key: string;
+  request_excerpt?: string;
+  response_excerpt?: string;
+  request_kind?: RequestKind;
+  capture_status?: string;
+  capture_reason?: string | null;
+  failure_code?: string | null;
 };
 
 export type SessionExchange = Pick<Exchange, "id" | "session_id" | "ts" | "model" | "provider" | "finish_reason" | "latency_ms" | "harness" | "input_tokens" | "output_tokens" | "cache_read_tokens" | "cache_write_tokens"> & {
   request_excerpt: string;
+  response_excerpt: string;
+  request_kind: RequestKind;
   capture_status: string;
   capture_reason: string | null;
   failure_code: string | null;
+  tool_names?: string[];
+  has_errors?: boolean;
 };
 
 export type LiveSessionTurn = {
@@ -195,6 +207,51 @@ export type GitArtifact = {
   created_at: string;
 };
 
+export type CommitCapture = GitArtifact & {
+  session_id: string;
+  session_title: string;
+  repo: string | null;
+  outcome: Outcome;
+};
+
+export type CommitTimelineEntry = {
+  repository_key: string;
+  commit_sha: string;
+  subject: string | null;
+  committed_at: string | null;
+  repository_url: string | null;
+  ref: string | null;
+  patch_files: number;
+  patch_additions: number;
+  patch_deletions: number;
+  captures: CommitCapture[];
+  capture_count: number;
+  captures_next_cursor: string | null;
+};
+
+export type CommitRepository = {
+  repository_key: string;
+  name: string;
+  host: string | null;
+  commit_count: number;
+  capture_count: number;
+  session_id: string | null;
+};
+export type CommitRef = { ref: string; commit_count: number };
+
+export type CommitFilters = {
+  q?: string;
+  repo?: string;
+  ref?: string;
+  from?: string;
+  to?: string;
+  session?: string;
+  outcome?: Outcome;
+  captureStatus?: GitArtifact["capture_status"];
+  cursor?: string;
+  limit?: number;
+};
+
 export type OutcomeEvidence = {
   commit?: string;
   base_commit?: string;
@@ -269,6 +326,22 @@ export function outcomeCommitEvidence(
   return history;
 }
 
+export type SessionSummary = {
+  goal: string | null;
+  actions: string[];
+  result: string | null;
+  verification: string[];
+  unresolved: string[];
+  partial: boolean;
+  source: "reconstructed";
+  evidence?: Array<{
+    section: "goal" | "actions" | "result" | "verification" | "unresolved";
+    index: number;
+    href: string;
+    label: string;
+  }>;
+};
+
 export type SessionDetail = {
   session: Omit<Session, "capture" | "liveness">;
   capture: CaptureSummary;
@@ -277,6 +350,7 @@ export type SessionDetail = {
   files: string[];
   errors: SessionError[];
   git_artifacts: GitArtifact[];
+  summary?: SessionSummary;
 };
 
 export type SessionFilters = {
@@ -287,21 +361,35 @@ export type SessionFilters = {
   model?: string;
   from?: string;
   to?: string;
+  state?: "active" | "inactive";
+  capture?: CaptureStatus;
+  provider?: string;
+  errors?: "true";
+  commits?: "true";
   cursor?: string;
   limit?: number;
 };
 
-export type SessionExchangeFilters = {
+export type ExchangeFilters = {
   q?: string;
+  repo?: string;
   model?: string;
   provider?: string;
   app?: string;
   finishReason?: string;
   session?: string;
+  from?: string;
+  to?: string;
+  requestKind?: RequestKind;
+  captureStatus?: ExchangeCaptureStatus;
+  tool?: string;
+  errors?: "true";
   order?: "asc" | "desc";
   cursor?: string;
   limit?: number;
 };
+
+export type SessionExchangeFilters = ExchangeFilters;
 
 export type Facets = {
   repos: string[];
@@ -309,6 +397,7 @@ export type Facets = {
   models: string[];
   providers: string[];
   finish_reasons: string[];
+  tools?: string[];
 };
 
 export type Overview = {
@@ -326,6 +415,12 @@ export type LogEnvelope = {
   endpoint: string;
   request: unknown;
   response: { format: "json"; body: unknown } | { format: "reconstructed_sse"; content: unknown; events: unknown };
+  tool_activity?: Array<{
+    name: string;
+    input: Record<string, unknown>;
+    status: "succeeded" | "failed";
+    output?: unknown;
+  }>;
 };
 
 export class ApiError extends Error {
@@ -334,7 +429,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, maxBytes?: number): Promise<T> {
   if (fixtureDataEnabled) return fixtureRequest<T>(path, init);
   const response = await fetch(path, {
     cache: "no-store",
@@ -359,6 +454,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new ApiError(body?.error ?? fallback, response.status);
   }
+  if (maxBytes !== undefined && response.body) {
+    const tooLargeMessage = "This archive exceeds the conversation size limit. Open the raw request to inspect the full saved evidence.";
+    if (Number(response.headers.get("content-length")) > maxBytes) {
+      await response.body.cancel();
+      throw new ApiError(tooLargeMessage, 413);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    let bytes = 0;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        bytes += chunk.value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel();
+          throw new ApiError(tooLargeMessage, 413);
+        }
+        chunks.push(decoder.decode(chunk.value, { stream: true }));
+      }
+      chunks.push(decoder.decode());
+    } finally {
+      reader.releaseLock();
+    }
+    return JSON.parse(chunks.join("")) as T;
+  }
   return response.json() as Promise<T>;
 }
 
@@ -382,6 +504,32 @@ export async function listSessions(filters: SessionFilters = {}, signal?: AbortS
   return request<{ sessions: Session[]; descendants: Session[]; next_cursor: string | null }>(`/dashboard/api/sessions?${query}`, { signal });
 }
 
+export async function listCommits(filters: CommitFilters = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") query.set(key === "captureStatus" ? "capture_status" : key, String(value));
+  }
+  return request<{ commits: CommitTimelineEntry[]; next_cursor: string | null }>(`/dashboard/api/commits?${query}`, { signal });
+}
+
+export async function listCommitRepositories(cursor?: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  return request<{ repositories: CommitRepository[]; next_cursor: string | null }>(`/dashboard/api/commits/repositories?${query}`, { signal });
+}
+
+export async function listCommitRefs(repo: string, cursor?: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ repo, limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  return request<{ refs: CommitRef[]; next_cursor: string | null }>(`/dashboard/api/commits/refs?${query}`, { signal });
+}
+
+export async function listCommitCaptures(repo: string, commit: string, cursor?: string, signal?: AbortSignal) {
+  const query = new URLSearchParams({ repo, commit, limit: "50" });
+  if (cursor) query.set("cursor", cursor);
+  return request<{ captures: CommitCapture[]; next_cursor: string | null }>(`/dashboard/api/commits/captures?${query}`, { signal });
+}
+
 export async function getSession(id: string, signal?: AbortSignal) {
   return request<SessionDetail>(`/dashboard/api/sessions/${encodeURIComponent(id)}`, { signal });
 }
@@ -402,7 +550,7 @@ export async function getSessionDiff(id: string, signal?: AbortSignal) {
 }
 
 export async function getSessionGitArtifactPatch(id: string, commit: string, signal?: AbortSignal) {
-  if (fixtureDataEnabled) throw new ApiError("Git artifact patch unavailable.", 404);
+  if (fixtureDataEnabled) return fixtureRequest<string>(`/dashboard/api/sessions/${encodeURIComponent(id)}/git-artifacts/${encodeURIComponent(commit)}/patch`, { signal });
   const response = await fetch(
     `/dashboard/api/sessions/${encodeURIComponent(id)}/git-artifacts/${encodeURIComponent(commit)}/patch`,
     { signal, cache: "no-store", credentials: "same-origin", redirect: "manual" },
@@ -475,27 +623,22 @@ export async function setSessionsOutcome(
   );
 }
 
-export async function listSessionExchanges(id: string, filters: SessionExchangeFilters = {}, signal?: AbortSignal) {
+function exchangeQuery(filters: ExchangeFilters, defaultLimit: number) {
   const query = new URLSearchParams();
-  if (filters.q) query.set("q", filters.q);
-  if (filters.model) query.set("model", filters.model);
-  if (filters.provider) query.set("provider", filters.provider);
-  if (filters.app) query.set("app", filters.app);
-  if (filters.finishReason) query.set("finish_reason", filters.finishReason);
-  if (filters.session) query.set("session", filters.session);
-  if (filters.order) query.set("order", filters.order);
-  if (filters.cursor) query.set("cursor", filters.cursor);
-  query.set("limit", String(filters.limit ?? 25));
-  return request<{ exchanges: SessionExchange[]; next_cursor: string | null }>(`/dashboard/api/sessions/${encodeURIComponent(id)}/exchanges?${query}`, { signal });
+  const names: Record<string, string> = { finishReason: "finish_reason", requestKind: "request_kind", captureStatus: "capture_status" };
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") query.set(names[key] ?? key, String(value));
+  }
+  if (!query.has("limit")) query.set("limit", String(defaultLimit));
+  return query;
 }
 
-export async function listExchanges(filters: { cursor?: string; provider?: string; app?: string; limit?: number } = {}, signal?: AbortSignal) {
-  const query = new URLSearchParams();
-  if (filters.cursor) query.set("cursor", filters.cursor);
-  if (filters.provider) query.set("provider", filters.provider);
-  if (filters.app) query.set("app", filters.app);
-  query.set("limit", String(filters.limit ?? 50));
-  return request<{ exchanges: Exchange[]; next_cursor: string | null }>(`/dashboard/api/log?${query}`, { signal });
+export async function listSessionExchanges(id: string, filters: SessionExchangeFilters = {}, signal?: AbortSignal) {
+  return request<{ exchanges: SessionExchange[]; next_cursor: string | null }>(`/dashboard/api/sessions/${encodeURIComponent(id)}/exchanges?${exchangeQuery(filters, 25)}`, { signal });
+}
+
+export async function listExchanges(filters: ExchangeFilters = {}, signal?: AbortSignal) {
+  return request<{ exchanges: Exchange[]; next_cursor: string | null }>(`/dashboard/api/log?${exchangeQuery(filters, 50)}`, { signal });
 }
 
 export async function getExchange(id: string, signal?: AbortSignal) {
@@ -504,9 +647,19 @@ export async function getExchange(id: string, signal?: AbortSignal) {
   return { exchange: detail.exchange, envelope };
 }
 
-export async function getFacets(sessionId?: string, signal?: AbortSignal) {
-  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
-  return request<Facets>(`/dashboard/api/facets${query}`, { signal });
+export async function getConversationExchange(id: string, signal?: AbortSignal) {
+  const detail = await request<{ exchange: Exchange; log_url: string }>(`/dashboard/api/log/${encodeURIComponent(id)}`, { signal });
+  const envelope = await request<LogEnvelope>(detail.log_url, { signal }, 2 * 1024 * 1024);
+  return { exchange: detail.exchange, envelope };
+}
+
+export async function getFacets(sessionId?: string, signal?: AbortSignal, scope: "own" | "tree" = "tree") {
+  const query = new URLSearchParams();
+  if (sessionId) {
+    query.set("session", sessionId);
+    query.set("scope", scope);
+  }
+  return request<Facets>(`/dashboard/api/facets?${query}`, { signal });
 }
 
 export async function getOverview(signal?: AbortSignal) {

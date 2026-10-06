@@ -7,16 +7,19 @@ const FACET_LIMIT = 50;
 export function registerDashboardFacetRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/api/facets", async (c) => {
     const sessionId = c.req.query("session");
+    const mode = c.req.query("scope") ?? "tree";
+    if (mode !== "own" && mode !== "tree") return c.json({ error: "invalid scope" }, 400);
+    if (sessionId && !(await c.env.DB.prepare("SELECT 1 FROM sessions WHERE id = ?").bind(sessionId).first())) return c.json({ error: "session not found" }, 404);
     const scope = sessionId
       ? {
-          cte: `${SESSION_SUBTREE_CTE} `,
-          where: "AND session_id IN (SELECT id FROM subtree)",
+          cte: mode === "tree" ? `${SESSION_SUBTREE_CTE} ` : "",
+          where: mode === "tree" ? "AND session_id IN (SELECT id FROM subtree)" : "AND session_id = ?",
           values: [sessionId],
         }
       : { cte: "", where: "", values: [] as string[] };
     const exchangeFacet = (column: string) =>
       c.env.DB.prepare(
-        `${scope.cte}SELECT ${column} AS value, COUNT(*) AS requests FROM exchanges WHERE capture_status = 'saved' AND ${column} IS NOT NULL AND ${column} <> '' ${scope.where} GROUP BY ${column} ORDER BY requests DESC, value ASC LIMIT ${FACET_LIMIT}`,
+        `${scope.cte}SELECT ${column} AS value, COUNT(*) AS requests FROM exchanges WHERE ${column} IS NOT NULL AND ${column} <> '' ${scope.where} GROUP BY ${column} ORDER BY requests DESC, value ASC LIMIT ${FACET_LIMIT}`,
       )
         .bind(...scope.values)
         .all<{ value: string }>();
@@ -24,7 +27,7 @@ export function registerDashboardFacetRoutes(app: Hono<AppEnv>) {
       c.env.DB.prepare(
         `SELECT ${column} AS value, COUNT(*) AS sessions FROM sessions WHERE ${column} IS NOT NULL AND ${column} <> '' GROUP BY ${column} ORDER BY sessions DESC, value ASC LIMIT ${FACET_LIMIT}`,
       ).all<{ value: string }>();
-    const [repos, apps, models, providers, finishReasons] = await Promise.all([
+    const [repos, apps, models, providers, finishReasons, tools] = await Promise.all([
       sessionId
         ? Promise.resolve({ results: [] as Array<{ value: string }> })
         : sessionFacet("repo"),
@@ -32,6 +35,9 @@ export function registerDashboardFacetRoutes(app: Hono<AppEnv>) {
       exchangeFacet("model"),
       exchangeFacet("provider"),
       exchangeFacet("finish_reason"),
+      c.env.DB.prepare(
+        `${scope.cte}SELECT et.name AS value, COUNT(*) AS requests FROM exchange_tools et JOIN exchanges ON exchanges.id = et.exchange_id WHERE exchanges.capture_status = 'saved' ${scope.where} GROUP BY et.name ORDER BY requests DESC, value ASC LIMIT ${FACET_LIMIT}`,
+      ).bind(...scope.values).all<{ value: string }>(),
     ]);
     return c.json({
       repos: repos.results.map((row) => row.value),
@@ -39,6 +45,7 @@ export function registerDashboardFacetRoutes(app: Hono<AppEnv>) {
       models: models.results.map((row) => row.value),
       providers: providers.results.map((row) => row.value),
       finish_reasons: finishReasons.results.map((row) => row.value),
+      tools: tools.results.map((row) => row.value),
     });
   });
 

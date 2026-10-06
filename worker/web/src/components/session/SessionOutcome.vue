@@ -131,7 +131,7 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
 </script>
 
 <template>
-  <section aria-labelledby="outcome-heading">
+  <section aria-labelledby="outcome-heading" class="border-t border-zinc-200 pt-4 dark:border-zinc-800">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 id="outcome-heading" class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Work outcome</h2>
       <div class="flex flex-wrap items-center gap-1.5">
@@ -188,15 +188,11 @@ onBeforeUnmount(() => clearTimeout(flashTimer));
       </div>
     </div>
 
-    <div class="mt-3 space-y-2.5">
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <OutcomeBadge :outcome="detail.session.outcome" />
-        <span class="text-xs text-zinc-500">
-          <template v-if="detail.session.outcome_src">Set by {{ detail.session.outcome_src }}<template v-if="detail.session.outcome_updated_at"> · {{ shortDate(detail.session.outcome_updated_at) }}</template></template>
-          <template v-else>Not recorded yet</template>
-        </span>
-      </div>
-      <p class="max-w-prose text-[13px] leading-5 text-zinc-700 dark:text-zinc-300">{{ detail.session.outcome_reason || outcomeMeta[detail.session.outcome].description }}</p>
+    <div class="mt-2">
+      <p class="text-xs text-zinc-600 dark:text-zinc-400">
+        <template v-if="detail.session.outcome_src">Set by {{ detail.session.outcome_src }}<template v-if="detail.session.outcome_updated_at"> · {{ shortDate(detail.session.outcome_updated_at) }}</template></template>
+        <template v-else>Not recorded yet</template>
+      </p>
       <p v-if="saveError" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ saveError }}</p>
     </div>
   </section>

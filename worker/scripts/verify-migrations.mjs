@@ -164,6 +164,29 @@ try {
     );
   `);
 
+  execute(`
+    UPDATE exchanges SET
+      request_excerpt = '{"tools":[{"type":"function","function":{"name":"unused","parameters":{}}}],"schema":[{"type":"tool_use","name":"schema-source"}],"messages":[{"role":"assistant","tool_calls":[{"function":{"name":"read","arguments":[{"type":"tool_use","name":"argument-source"}]}}]}]}',
+      response_excerpt = '{"content":[{"type":"tool_use","name":"edit","input":{"path":"src/sample.ts","nested":[{"type":"tool_use","name":"input-source"}]}}]}'
+    WHERE id = 'legacy-exchange';
+    UPDATE exchanges SET request_excerpt = '{"messages":[' WHERE id = 'deployment-window-exchange';
+  `);
+  for (const name of ["0020_session_parent_integrity.sql", "0021_commit_repository_identity.sql", "0022_exchange_tools.sql"]) {
+    cpSync(join(root, "migrations", name), join(migrations, name));
+  }
+  applyMigrations();
+  const preservedEvidence = JSON.parse(execute(`
+    SELECT
+      (SELECT repository_key FROM session_git_artifacts WHERE session_id = 'legacy-session') AS repository_key,
+      (SELECT group_concat(name, ',') FROM (SELECT name FROM exchange_tools WHERE exchange_id = 'legacy-exchange' ORDER BY name)) AS indexed_tools,
+      (SELECT COUNT(*) FROM exchange_tools WHERE exchange_id = 'deployment-window-exchange') AS truncated_tools;
+  `, true));
+  assert.deepEqual(preservedEvidence.flatMap((entry) => entry.results ?? [])[0], {
+    repository_key: "session:legacy-session",
+    indexed_tools: "edit,read",
+    truncated_tools: 0,
+  });
+
   const output = JSON.parse(execute(`
     SELECT
       s.work_outcome,
