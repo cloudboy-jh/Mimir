@@ -41,6 +41,7 @@ jobs:
       - run: bun run check:production-assets
       - run: bun run check:demo-assets
       - run: bun run verify:dashboard-builds
+      - run: go run ./scripts/check-embedded-worker.go
       - run: go test ./...
         env:
           MIMIR_HOME: ${{ runner.temp }}/mimir-home

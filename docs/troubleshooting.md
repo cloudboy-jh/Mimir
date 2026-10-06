@@ -60,6 +60,23 @@ The database exists but does not contain `deployment.url`. Run `mimir deploy`,
 then rerun `mimir login`. If Wrangler cannot recover the workers.dev URL from
 deploy output, find the URL in Cloudflare and run `mimir login --url <url>`.
 
+## Packaged Deployment Reports `Could not resolve`
+
+The v0.19.0 CLI omitted five Worker modules from its embedded bundle. Wrangler
+could not compile the materialized Worker, even though the checkout compiled.
+Upgrade to v0.19.1 or later, confirm the executable version, then deploy again:
+
+```bash
+mimir update
+mimir version
+mimir deploy
+```
+
+Do not delete `~/.mimir` or copy individual source files into its Worker directory.
+Normal deployment rematerializes the corrected bundle while preserving generated
+configuration and dependencies. Existing Cloudflare resources and stored sessions
+do not need resetting.
+
 ## Installation Reports `action_required`
 
 Mimir preserved a conflicting, modified, or unsafe path. Inspect the reported

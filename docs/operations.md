@@ -129,6 +129,18 @@ fixture bundle without Cloudflare. Its default rich session is
 `ses_fixture_multi_model_result`; `/commits` exposes the repository-first
 captured-commit browser. The sample bundle must never enter production assets.
 
+CI and release builds also verify the CLI's embedded deployment inputs:
+
+```bash
+go run ./scripts/check-embedded-worker.go
+```
+
+This creates an isolated temporary `MIMIR_HOME`, uses the default packaged
+Worker materializer, installs locked Worker dependencies, and runs Wrangler
+`deploy --dry-run` from that materialized directory. It requires Go, Node, and
+npm, but no Bun, Cloudflare authentication, or remote resources. A successful
+checkout dry-run alone does not prove the binary contains every imported module.
+
 Validate the capture and installer surfaces from the repository root:
 
 ```bash
