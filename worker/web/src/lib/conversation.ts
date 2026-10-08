@@ -103,3 +103,28 @@ export function projectConversation(captures: ConversationCapture[]): Conversati
     return entry;
   });
 }
+
+/** Project captures oldest-first so replay trimming compares each turn with its predecessor, then present sections in the requested order. */
+export function orderedConversation(context: ConversationCapture[], page: ConversationCapture[], order: "asc" | "desc"): ConversationSection[] {
+  const chronological = order === "desc" ? [...page].reverse() : page;
+  const sections = conversationSections(projectConversation([...context, ...chronological]).slice(context.length));
+  return order === "desc" ? sections.reverse() : sections;
+}
+
+/** The latest primary capture per branch; it is the replay checkpoint for any later capture on that branch. */
+export function branchCheckpoints(chronological: SessionExchange[]): SessionExchange[] {
+  const latest = new Map<string, SessionExchange>();
+  for (const exchange of chronological) if (exchange.request_kind === "primary") latest.set(exchange.session_id, exchange);
+  return [...latest.values()];
+}
+
+/** The primary capture whose archive `projectConversation` needs to trim replayed history from `id`. */
+export function replayPredecessor(chronological: SessionExchange[], id: string): SessionExchange | undefined {
+  const index = chronological.findIndex((exchange) => exchange.id === id);
+  const branch = chronological[index]?.session_id;
+  for (let cursor = index - 1; cursor >= 0; cursor--) {
+    const exchange = chronological[cursor]!;
+    if (exchange.session_id === branch && exchange.request_kind === "primary") return exchange;
+  }
+  return undefined;
+}

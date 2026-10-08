@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LogEnvelope, SessionExchange } from "../src/lib/api";
-import { adjacentReplay, conversationSections, conversationTurns, projectConversation, type ConversationCapture } from "../src/lib/conversation";
+import { adjacentReplay, conversationSections, conversationTurns, orderedConversation, projectConversation, replayPredecessor, type ConversationCapture, type ConversationSection } from "../src/lib/conversation";
 import { structuredEvidence } from "../src/lib/structured-exchange";
 
 function capture(id: string, branch: string, messages: unknown[], response: unknown): ConversationCapture {
@@ -120,5 +120,33 @@ describe("coherent assistant turns", () => {
     }
     const withUser = projectConversation([first, capture("new-user", "main", [user, reasoning, { role: "user", content: "Another task." }], assistant)]);
     expect(conversationSections(withUser).map(section => section.captures.map(exchange => exchange.id))).toEqual([["one"], ["new-user"]]);
+  });
+});
+
+describe("conversation order", () => {
+  const followUp = (text: string) => ({ role: "user", content: text });
+  const reply = (text: string) => ({ role: "assistant", content: text });
+  const turns = [
+    capture("one", "main", [user], assistant),
+    capture("two", "main", [user, assistant, followUp("Second.")], reply("Two.")),
+    capture("three", "main", [user, assistant, followUp("Second."), reply("Two."), followUp("Third.")], reply("Three.")),
+  ];
+  const texts = (sections: ConversationSection[]) => sections.map(section => [section.exchange.id, section.messages.map(message => message.blocks[0]?.text)]);
+  it("reverses turns newest-first while trimming replay exactly as oldest-first does", () => {
+    const oldest = orderedConversation([], turns, "asc");
+    const newest = orderedConversation([], [...turns].reverse(), "desc");
+    expect(texts(newest)).toEqual(texts(oldest).reverse());
+    expect(texts(newest)[0]).toEqual(["three", ["Third.", "Three."]]);
+  });
+  it("trims a newest-first page's oldest turn against the older context capture", () => {
+    const page = orderedConversation([turns[0]!], [turns[2]!, turns[1]!], "desc");
+    expect(texts(page)).toEqual([["three", ["Third.", "Three."]], ["two", ["Second.", "Two."]]]);
+  });
+  it("finds the previous primary capture on the same branch only", () => {
+    const auxiliary = capture("title", "main", [], assistant).exchange;
+    auxiliary.request_kind = "title";
+    const chronological = [capture("main-one", "main", [], assistant).exchange, capture("child-one", "child", [], assistant).exchange, auxiliary, capture("main-two", "main", [], assistant).exchange];
+    expect(replayPredecessor(chronological, "main-two")?.id).toBe("main-one");
+    expect(replayPredecessor(chronological, "child-one")).toBeUndefined();
   });
 });

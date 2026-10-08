@@ -273,11 +273,15 @@ digests, provenance, and complete raw binary patches remain under Details.
 Pending/failed captures never substitute another capture or an outcome patch.
 Standalone diff routes remain accessible.
 
-Conversation pages contain eight chronological indexed requests. Archives load lazily,
+Conversation pages contain eight indexed requests, oldest first by default;
+`?corder=desc` shows newest first. Either order projects turns chronologically, so
+replay trimming compares each turn with its branch predecessor: newest-first pages
+also index the next older page for those checkpoints and hold a turn until its
+predecessor archive resolves. Archives load lazily,
 at most two concurrently, with a 2 MiB per-envelope limit. Only the current page
 and adjacent per-branch replay checkpoints remain resident. Larger or unavailable
 captures expose their state and link to unrestricted request evidence. Refresh
-retains the current page and scope. Titles and summaries are excluded from the
+retains the current page, scope, and order. Titles and summaries are excluded from the
 conversation, and compaction remains a boundary marker without loading its archive.
 Their full evidence stays accessible through the Requests kind filter.
 
