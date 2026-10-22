@@ -156,10 +156,21 @@ def report_harness_load(connection, load):
 
 
 def repo_name(directory):
+    """Name the Git work tree containing directory, or None outside Git.
+
+    The top level is the nearest ancestor holding a .git directory or file
+    (worktrees and submodules use a file).
+    """
     if not directory:
         return None
-    parts = [part for part in re.split(r"[\\/]", directory.rstrip("/\\")) if part]
-    return parts[-1] if parts else None
+    current = os.path.abspath(directory)
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return os.path.basename(current) or None
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
 
 
 def _git(cwd, args, limit=65536):

@@ -163,9 +163,22 @@ class StartupBuildIdentityTest(unittest.TestCase):
 
 
 class RepoNameTest(unittest.TestCase):
-    def test_posix_and_windows_paths(self):
-        self.assertEqual(repo_name("/home/u/projects/mimir"), "mimir")
-        self.assertEqual(repo_name("C:\\Users\\u\\projects\\mimir\\"), "mimir")
+    def test_git_work_tree_top_level_or_none(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkout = os.path.join(root, "mimir")
+            nested = os.path.join(checkout, "worker", "src")
+            worktree = os.path.join(root, "mimir-feature")
+            outside = os.path.join(root, "johns", "Temp")
+            os.makedirs(os.path.join(checkout, ".git"))
+            os.makedirs(nested)
+            os.makedirs(worktree)
+            os.makedirs(outside)
+            with open(os.path.join(worktree, ".git"), "w", encoding="utf-8") as handle:
+                handle.write("gitdir: ../mimir/.git/worktrees/feature\n")
+            self.assertEqual(repo_name(checkout), "mimir")
+            self.assertEqual(repo_name(nested + os.sep), "mimir")
+            self.assertEqual(repo_name(worktree), "mimir-feature")
+            self.assertIsNone(repo_name(outside))
         self.assertIsNone(repo_name(None))
 
 

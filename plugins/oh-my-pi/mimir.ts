@@ -293,7 +293,7 @@ async function collectCommits(cwd: string, baseline: string, hints: string[], me
 }
 
 async function gitMetadata(pi: ExtensionAPI, cwd: string) {
-  let repo: string | null = basename(cwd) || null;
+  let repo: string | null = null;
   let gitRef: string | null = null;
   try {
     const root = await pi.exec("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeout: 5_000 });
@@ -396,7 +396,7 @@ export default function (pi: ExtensionAPI) {
     const parentId = typeof rawParentId === "string" && rawParentId.trim()
       ? sessionID(rawParentId) : null;
     const candidate: Session = {
-      id, parentId: parentId !== id ? parentId : null, cwd, repo: basename(cwd) || null, gitRef: null,
+      id, parentId: parentId !== id ? parentId : null, cwd, repo: null, gitRef: null,
       active: previous?.id === id && previous.active,
     };
     Object.assign(candidate, await gitMetadata(pi, cwd));

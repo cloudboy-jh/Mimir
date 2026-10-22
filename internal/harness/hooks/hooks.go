@@ -285,10 +285,7 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 			cwd = stringValue(roots[0])
 		}
 	}
-	repo := filepath.Base(filepath.Clean(cwd))
-	if repo == "." || repo == string(filepath.Separator) {
-		repo = ""
-	}
+	repo := repoName(cwd)
 	key := firstString(body, "prompt_id", "turn_id", "generation_id")
 	if key == "" {
 		key = now
@@ -346,8 +343,8 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 		if model == "" {
 			model = "unknown"
 		}
-		if repo == "" && state.CWD != "" {
-			repo = filepath.Base(filepath.Clean(state.CWD))
+		if repo == "" {
+			repo = repoName(state.CWD)
 		}
 		if title == "" {
 			title = state.Title
@@ -386,6 +383,28 @@ func eventNames(harness string) (string, string, string, string) {
 		return "sessionStart", "beforeSubmitPrompt", "afterAgentResponse", "sessionEnd"
 	}
 	return "SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"
+}
+
+// repoName names the Git work tree containing dir: the basename of the
+// nearest ancestor holding a .git directory or file (worktrees and submodules
+// use a file). Directories outside a work tree have no repository.
+func repoName(dir string) string {
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	for dir = filepath.Clean(dir); ; {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			if name := filepath.Base(dir); name != string(filepath.Separator) {
+				return name
+			}
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func eventDelivery(harness, session, repo, kind, ts, reason, title string) Delivery {

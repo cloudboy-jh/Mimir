@@ -405,9 +405,11 @@ function buildDirectExchange(info: unknown, result: unknown): DirectExchange | n
   return payload;
 }
 
-function repoName(directory: string | undefined): string | null {
-  if (!directory) return null;
-  const parts = directory.replace(/[\\/]+$/, "").split(/[\\/]/);
+// OpenCode reports the Git top level as `worktree` and "/" outside Git; the
+// session directory is never a repository name.
+function repoName(worktree: string | undefined): string | null {
+  if (!worktree) return null;
+  const parts = worktree.replace(/[\\/]+$/, "").split(/[\\/]/);
   return parts[parts.length - 1] || null;
 }
 
@@ -871,7 +873,7 @@ const server: Plugin = async ({ client, directory, worktree }) => {
   const home = (() => { try { return homedir(); } catch { return undefined; } })();
   const load = loadHarnessLoad(process.env, readLocalFile, home);
   if (load) reportHarnessLoad(conn, load);
-  const repo = repoName(worktree ?? directory);
+  const repo = repoName(worktree);
   const delivery = createDeliveryQueue((event) => postEvent(conn, event));
   const exchangeReporter = createDirectExchangeReporter(
     (sessionID) => (client as unknown as OpenCodeClient).session.messages({ path: { id: sessionID } }),

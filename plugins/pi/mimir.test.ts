@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import extension, { __testing } from "./mimir";
 
@@ -492,5 +492,28 @@ describe("Pi Mimir extension", () => {
       expect(artifact).toBeGreaterThanOrEqual(0);
       expect(end).toBeGreaterThan(artifact);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("repo is the git top-level for subdirectories and absent outside git", async () => {
+    const cwd = repository();
+    const outside = mkdtempSync(join(tmpdir(), "pi-no-git-"));
+    try {
+      const nested = join(cwd, "worker", "src");
+      mkdirSync(nested, { recursive: true });
+      const harness = createHarness(async (command, args) => {
+        try { return { code: 0, stdout: execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }) }; }
+        catch { return { code: 1, stdout: "" }; }
+      });
+      await harness.invoke("session_start", {}, { cwd: nested, sessionManager: { getSessionId: () => "in-git" } });
+      expect((await harness.providerHeaders())["x-mimir-repo"]).toBe(basename(cwd));
+      await harness.invoke("session_start", {}, { cwd: outside, sessionManager: { getSessionId: () => "no-git" } });
+      const headers = await harness.providerHeaders();
+      expect(headers["x-mimir-session"]).toBe("no-git");
+      expect(headers).not.toHaveProperty("x-mimir-repo");
+      await harness.invoke("session_shutdown", {});
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

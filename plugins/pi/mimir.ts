@@ -428,7 +428,7 @@ function createDeliveryQueue(
 }
 
 async function gitMetadata(pi: ExtensionAPI, cwd: string): Promise<{ repo: string | null; gitRef: string | null }> {
-  let repo = basename(cwd) || null;
+  let repo: string | null = null;
   let gitRef: string | null = null;
   try {
     const root = await pi.exec("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { timeout: 5_000 });
@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
     const candidate: SessionState = {
       id,
       cwd,
-      repo: basename(cwd) || null,
+      repo: null,
       gitRef: null,
       active: previous?.id === id && previous.active,
     };

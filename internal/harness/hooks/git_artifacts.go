@@ -114,7 +114,7 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 	if err != nil || artifact.CommitSHA != sha {
 		return normalizedInput{}
 	}
-	repo = filepath.Base(filepath.Clean(cwd))
+	repo = repoName(cwd)
 	return normalizedInput{deliveries: []Delivery{{
 		Kind: "git-artifacts", Harness: harness, SessionID: session, Repo: repo,
 		Body: map[string]any{"version": 1, "commits": []sessionimport.GitArtifact{artifact}},

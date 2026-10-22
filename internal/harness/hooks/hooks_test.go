@@ -122,6 +122,46 @@ func TestCodexStopReadsUsageForTheExactTurnFromTranscript(t *testing.T) {
 	}
 }
 
+func TestRepoIsGitWorkTreeRootOrNothing(t *testing.T) {
+	root := t.TempDir()
+	checkout := filepath.Join(root, "mimir")
+	nested := filepath.Join(checkout, "worker", "src")
+	worktree := filepath.Join(root, "mimir-feature")
+	outside := filepath.Join(root, "johns", "Temp")
+	for _, dir := range []string{filepath.Join(checkout, ".git"), nested, filepath.Join(worktree, "plugins"), outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: ../mimir/.git/worktrees/feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string]string{checkout: "mimir", nested: "mimir", filepath.Join(worktree, "plugins"): "mimir-feature", outside: "", "": "", "relative/dir": ""} {
+		if got := repoName(dir); got != want {
+			t.Errorf("repoName(%q) = %q, want %q", dir, got, want)
+		}
+	}
+
+	var sent []Delivery
+	service := Service{Home: t.TempDir(), Now: time.Now, Deliver: func(_ context.Context, delivery Delivery) error {
+		sent = append(sent, delivery)
+		return nil
+	}}
+	ingest := func(payload map[string]any) {
+		t.Helper()
+		data, _ := json.Marshal(payload)
+		if err := service.Ingest(context.Background(), "claude-code", bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ingest(map[string]any{"hook_event_name": "PreCompact", "session_id": "outside", "cwd": outside})
+	ingest(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": "nested", "prompt_id": "p1", "cwd": nested, "prompt": "fix it"})
+	ingest(map[string]any{"hook_event_name": "Stop", "session_id": "nested", "prompt_id": "p1", "last_assistant_message": "fixed"})
+	if len(sent) != 2 || sent[0].Repo != "" || sent[0].Body["repo"] != nil || sent[1].Kind != "exchange" || sent[1].Repo != "mimir" {
+		t.Fatalf("deliveries = %#v", sent)
+	}
+}
+
 func TestInputIsBounded(t *testing.T) {
 	service := Service{Home: t.TempDir()}
 	err := service.Ingest(context.Background(), "codex", bytes.NewReader(bytes.Repeat([]byte("x"), MaxInputBytes+1)))

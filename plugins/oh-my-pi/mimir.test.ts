@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import extension, { __testing } from "./mimir";
 
 const originalFetch = globalThis.fetch;
@@ -21,7 +21,7 @@ type Handler = (...args: never[]) => unknown;
 type CapturedRequest = { url: string; body: unknown; authorization?: string };
 type RegisteredProvider = { headers: Record<string, string> };
 
-function createHarness(respond?: (url: string) => number) {
+function createHarness(respond?: (url: string) => number, exec = async (_command: string, _args: string[]) => ({ code: 1, stdout: "" })) {
   process.env.MIMIR_URL = "https://mimir.test";
   process.env.MIMIR_TOKEN = "token";
   const requests: CapturedRequest[] = [];
@@ -35,7 +35,7 @@ function createHarness(respond?: (url: string) => number) {
     on: (name: string, handler: Handler) => { handlers.set(name, handler); },
     registerProvider: (_name: string, value: RegisteredProvider) => { providers.push(value); },
     getSessionName: () => "OMP test",
-    exec: async () => ({ code: 1, stdout: "" }),
+    exec,
   };
   extension(pi);
   return {
@@ -94,6 +94,30 @@ function eventKinds(requests: CapturedRequest[], sessionID: string): unknown[] {
     });
 }
 
+
+describe("repo attribution", () => {
+  test("repo is the git top-level for subdirectories and absent outside git", async () => {
+    const repo = repository();
+    const outside = mkdtempSync(join(tmpdir(), "mimir-omp-no-git-"));
+    try {
+      const nested = join(repo.cwd, "worker", "src");
+      mkdirSync(nested, { recursive: true });
+      const harness = createHarness(undefined, async (command, args) => {
+        try { return { code: 0, stdout: execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }) }; }
+        catch { return { code: 1, stdout: "" }; }
+      });
+      await harness.invoke("session_start", {}, { cwd: nested, sessionManager: { getSessionId: () => "in-git" } });
+      expect(harness.providers.at(-1)?.headers["x-mimir-repo"]).toBe(basename(repo.cwd));
+      await harness.invoke("session_start", {}, { cwd: outside, sessionManager: { getSessionId: () => "no-git" } });
+      expect(harness.providers.at(-1)?.headers["x-mimir-session"]).toBe("no-git");
+      expect(harness.providers.at(-1)?.headers).not.toHaveProperty("x-mimir-repo");
+      await harness.invoke("session_shutdown", {});
+    } finally {
+      repo.cleanup();
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("Oh My Pi extension", () => {
   test("artifact metadata is safe, baseline-observed, and guarded across checkout switches", async () => {

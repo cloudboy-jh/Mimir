@@ -199,7 +199,7 @@ describe("chat.headers hook", () => {
     const fetch = globalThis.fetch;
     globalThis.fetch = async () => new Response("{}", { status: 200 });
     try {
-      const hooks = await plugin.server({ directory: "C:\\repo\\mimir" } as never);
+      const hooks = await plugin.server({ directory: "C:\\repo\\mimir\\worker", worktree: "C:\\repo\\mimir" } as never);
       const headers = { headers: {} as Record<string, string> };
       await hooks["chat.headers"]!({ sessionID: "ses_test", model: { providerID: "openrouter" } } as never, headers);
       expect(headers.headers).toEqual({ "x-mimir-session": "ses_test", "x-mimir-harness": "opencode", "x-mimir-repo": "mimir" });
@@ -208,6 +208,10 @@ describe("chat.headers hook", () => {
       expect(other.headers).toEqual({});
       await hooks["chat.headers"]!({ sessionID: "", model: { providerID: "openrouter" } } as never, other);
       expect(other.headers).toEqual({});
+      const outside = await plugin.server({ directory: "C:\\Users\\johns", worktree: "/" } as never);
+      const unattributed = { headers: {} as Record<string, string> };
+      await outside["chat.headers"]!({ sessionID: "ses_home", model: { providerID: "openrouter" } } as never, unattributed);
+      expect(unattributed.headers).toEqual({ "x-mimir-session": "ses_home", "x-mimir-harness": "opencode" });
     } finally {
       globalThis.fetch = fetch;
       process.env.MIMIR_URL = original.MIMIR_URL;
@@ -496,7 +500,7 @@ describe("direct-provider exchanges", () => {
         return new Response("{}", { status: 200 });
       };
       const client = { session: { messages: async (input: unknown) => { messageCalls.push(input); return messages; } } };
-      const hooks = await plugin.server({ client, directory: "/repo/mimir" } as never);
+      const hooks = await plugin.server({ client, directory: "/repo/mimir/src", worktree: "/repo/mimir" } as never);
       await hooks.event!({ event: { type: "message.updated", properties: { info: assistant } } } as never);
       await Bun.sleep(10);
     } finally {
@@ -575,9 +579,11 @@ describe("direct-provider exchanges", () => {
 });
 
 describe("repoName", () => {
-  it("handles posix and windows paths", () => {
+  it("names the git worktree and nothing outside git", () => {
     expect(repoName("/home/u/projects/mimir")).toBe("mimir");
     expect(repoName("C:\\Users\\u\\projects\\mimir\\")).toBe("mimir");
+    expect(repoName("/")).toBeNull();
+    expect(repoName("")).toBeNull();
     expect(repoName(undefined)).toBeNull();
   });
 });
