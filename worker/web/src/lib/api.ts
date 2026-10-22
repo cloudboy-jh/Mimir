@@ -1,5 +1,10 @@
 import { fixtureDataEnabled } from "./data-source";
-import { fixtureRequest } from "@/lib/fixture-provider";
+import { fixtureNow, fixtureRequest } from "@/lib/fixture-provider";
+
+/** Current time for date-relative views; fixture builds pin it to their recorded data. */
+export function dashboardNow() {
+  return fixtureNow ?? new Date();
+}
 
 export type Outcome = "landed" | "discarded" | "abandoned" | "unresolved";
 export type CaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
@@ -407,6 +412,75 @@ export type Overview = {
   apps: Array<{ name: string; requests: number }>;
 };
 
+export type DaySession = {
+  id: string;
+  display_title: string | null;
+  harness: string | null;
+  repo: string | null;
+  source_ref: string | null;
+  model_primary: string | null;
+  outcome: Outcome;
+  outcome_reason: string | null;
+  state: "active" | "inactive";
+  capture_status: CaptureStatus;
+  started_at: string;
+  first_at: string;
+  last_at: string;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+  sub_agents: number;
+  commit_count: number;
+  quiet: "empty" | "single_request" | null;
+  /** Sparse `[bucket, requests]` pairs counted from the local day start. */
+  activity: Array<[number, number]>;
+};
+
+export type DayCommit = {
+  commit_sha: string;
+  subject: string | null;
+  ref: string | null;
+  capture_status: string;
+  patch_files: number;
+  patch_additions: number;
+  patch_deletions: number;
+  at: string;
+  session_ids: string[];
+};
+
+export type DayWorkstream = {
+  id: string;
+  label: string;
+  repo: string | null;
+  source_ref: string | null;
+  session_ids: string[];
+  first_at: string;
+  last_at: string;
+  requests: number;
+  tokens_in: number;
+  tokens_out: number;
+  sub_agents: number;
+  active: boolean;
+  outcomes: Record<Outcome, number>;
+  commits: DayCommit[];
+};
+
+export type DaySnapshot = {
+  date: string;
+  time_zone: string;
+  start: string;
+  end: string;
+  bucket_minutes: number;
+  buckets: number;
+  previous_date: string | null;
+  next_date: string | null;
+  totals: { sessions: number; quiet_sessions: number; sub_agents: number; requests: number; tokens_in: number; tokens_out: number; commits: number; repos: number; active: number };
+  workstreams: DayWorkstream[];
+  sessions: DaySession[];
+  quiet_session_ids: string[];
+  attention: { active: string[]; unresolved: string[]; capture: string[] };
+};
+
 export type LogEnvelope = {
   schema_version: number;
   exchange_id: string;
@@ -664,6 +738,10 @@ export async function getFacets(sessionId?: string, signal?: AbortSignal, scope:
 
 export async function getOverview(signal?: AbortSignal) {
   return request<Overview>("/dashboard/api/overview", { signal });
+}
+
+export async function getDay(date: string, timeZone: string, signal?: AbortSignal) {
+  return request<DaySnapshot>(`/dashboard/api/days/${encodeURIComponent(date)}?tz=${encodeURIComponent(timeZone)}`, { signal });
 }
 
 export async function listDevices(signal?: AbortSignal) {

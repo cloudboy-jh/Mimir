@@ -189,11 +189,23 @@ Session-list filters include repository, model, outcome, and date range.
 | `PATCH` | `/dashboard/api/devices/:id` | Change a device's display name. |
 | `POST` | `/dashboard/api/devices/:id/revoke` | Irreversibly revoke a device through the dashboard. |
 | `GET` | `/dashboard/api/overview` | Return aggregate totals and top facets. |
+| `GET` | `/dashboard/api/days/:date?tz=<IANA zone>` | Return one local calendar day: root sessions with activity, commits, or a start inside the day; per-session 15-minute activity; workstreams grouped by repository, non-default branch, shared commit, or continued title; quick sessions; and sessions needing an outcome or with capture problems. |
 | `GET` | `/dashboard/api/facets` | Return indexed metadata vocabulary and observed saved-tool names, optionally scoped to own or subtree exchanges. |
 
-The Vue client reads live Access-protected dashboard APIs for Sessions, Commits,
-Requests, Overview, details, redacted R2 payloads, capture status, and outcome
-mutation. Browser credentials remain Cloudflare Access-owned.
+The Vue client reads live Access-protected dashboard APIs for Day, Sessions,
+Commits, Requests, Overview, details, redacted R2 payloads, capture status, and
+outcome mutation. Browser credentials remain Cloudflare Access-owned.
+
+The day snapshot is deterministic and makes no model calls. Day bounds come
+from the browser's IANA time zone, so 23- and 25-hour days stay exact. A root
+session belongs to every day that holds one of its subtree exchanges or
+captured commits, or its start. Requests and tokens count only exchanges inside
+the day. Inactive sessions with at most one request, no commit, and no landed
+outcome are quick sessions and stay out of workstreams. Two working sessions
+share a workstream when their repositories match and they share a non-default
+branch, a captured commit, or a continued title (Jaccard similarity of at least
+0.5 over two or more work words, ignoring leading harness tags such as
+`PLAN:`).
 
 Both exchange listings search indexed redacted request/response excerpts and
 identity fields across the entire matching dataset, not just loaded rows. They
@@ -497,6 +509,10 @@ Optional metadata headers are:
 - `x-mimir-harness`
 - `x-mimir-git-ref`
 - `x-mimir-request-kind`
+
+Adapters send `x-mimir-repo` only inside a Git work tree, using the name of its
+top-level directory. Work outside a repository, such as a home or temporary
+directory, carries no repository rather than that directory's name.
 
 Session intent is sticky and comes from the first saved primary exchange with
 a non-empty user message. Intent candidates are stored on accepted exchanges
@@ -1010,17 +1026,18 @@ manually created application's AUD tag and team domain via `--aud` and
 ## 12. Dashboard Status
 
 The Vue 3 dashboard is built and deployed as Worker static assets. Its shared
-header links Sessions, Commits, Requests, Overview, and Settings, with Sessions
+header links Day, Sessions, Commits, Requests, Overview, and Settings, with Day
 as the default arrival surface and a navigation menu on smaller screens. Detail
 routes use the same light/dark design system defined in [`DESIGN.md`](DESIGN.md).
 
 The dashboard uses `/dashboard/*` for browser routes and keeps `/sessions*`
 reserved for the canonical machine API. Direct loads and receipt links use
-`/dashboard/sessions/:id`. Sessions, request metadata, overview aggregates, and
-outcome mutation read the Access-protected dashboard API. Full redacted request
-and response payloads are loaded from R2 through `/dashboard/log-objects/*`.
-`mimir dashboard` opens the branded `/login` handoff and returns to
-`/dashboard/sessions` after Access authentication.
+`/dashboard/sessions/:id`; days use `/dashboard/days/:date`. Days, sessions,
+request metadata, overview aggregates, and outcome mutation read the
+Access-protected dashboard API. Full redacted request and response payloads are
+loaded from R2 through `/dashboard/log-objects/*`. `mimir dashboard` opens the
+branded `/login` handoff and returns to `/dashboard/days` after Access
+authentication.
 
 Production builds write `worker/web/dist` and exclude fixture data. A separate
 demo build writes `internal/demoassets/static`, embedded only for `mimir demo`.

@@ -74,7 +74,7 @@ Mimir reconstructs agent work after the fact. Its interface should feel like ope
 The system is technical, quiet, and exact. It explicitly rejects generic SaaS dashboard composition, decorative color blending, pill navigation, interchangeable metric-card walls, and oversized marketing hierarchy. The pixel-art wordmark is the only ornamental brand element.
 
 **Key Characteristics:**
-- Sessions are the primary object and default arrival surface.
+- Day is the default arrival surface; sessions are the primary object it groups.
 - Dense information uses rules and alignment, not nested cards.
 - Controls are compact, mechanical, and familiar.
 - Accent color is rare and state-bearing.
@@ -156,14 +156,20 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 - **Error / Disabled:** Explicit text and icon state; never color alone.
 
 ### Navigation
-- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, Sessions, Commits, Requests, Overview, and Settings follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band. Smaller screens use the shared navigation menu.
+- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, Day, Sessions, Commits, Requests, Overview, and Settings follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band. Smaller screens use the shared navigation menu.
+
+### Day Snapshot
+- One local calendar day in the browser's time zone. The headline names the day; one plain text line carries totals. Never a KPI card row.
+- Workstreams are ruled rows: label, repository/branch, local time span, requests, then an activity strip on a shared 24-hour axis with 6-hour ticks. Bars are ink, not teal, and their height encodes requests per 15 minutes.
+- A multi-session workstream lists its sessions in time order with outcome text; captured commits follow with short hash, subject, and line counts.
+- Quick sessions (one request or none) collapse behind one disclosure. The side column holds In progress, Unresolved with in-place outcome setting, and Capture problems; sections without entries are omitted except Unresolved, which states that every finished session has an outcome.
 
 ### Session Record
 - A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
 - Session detail may show outcome source, reason, and timestamp as audit metadata. Unresolved means no evidenced result has been recorded; it does not mean capture failed.
-- The detail header shows app, machine, and every exact-session model with saved request counts. Model names stay visible, not behind a new dropdown or disclosure. Preserve the short authored outcome reason once below the header; put deterministic reconstruction and source links in Summary evidence.
+- The detail header shows app, machine, and every exact-session model with saved request counts. Model names stay visible, not behind a new dropdown or disclosure. A facts row below it carries start time, duration, requests, tokens, saved exchanges, last save, and the session ID (IBM Plex Mono for the ID only); pending and failed capture counts appear there whenever nonzero. Preserve the short authored outcome reason once below the header; put deterministic reconstruction and source links in Summary evidence, offered only when it records actions, verification, a specific open item, or a non-default result.
 - Conversation is the default: coherent turns pair answers with code, reasoning, tools, and sources. Title/summary requests stay in Requests; compaction appears as a context boundary.
-- Keep the persistent Details/Changes sidebar in normal page flow, stacking below the reader on small screens. No sticky sidebar or independent viewport-height scroller. It holds unique identifiers, timing, outcome editing/history, usage, capture receipts, and supporting evidence, not repeated identity or summary.
+- The page grows with evidence. The Details/Changes sidebar holds only evidence: the recorded outcome with editing/history, supporting sessions, referenced files, errors, captured commits, and separate outcome evidence. A section renders only with data, never as empty-state copy; a tab appears only when its panel has content, and a session with no sidebar evidence gets no sidebar column. An unresolved outcome with no reason or history collapses to a compact Set outcome control in the header. The sidebar stays in normal page flow, stacking below the reader on small screens. No sticky sidebar or independent viewport-height scroller.
 
 ### Captured Commits
 - Begin with repository/ref selection and a compact commit table. Open the exact session-owned patch with changed-file navigation, filename search, and unified/split views; expose alternate capture selection only when needed.
@@ -177,7 +183,7 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 ## Do's and Don'ts
 
 ### Do:
-- **Do** make Sessions the default arrival route and strongest navigation item.
+- **Do** make Day the default arrival route and keep Sessions one click away for every listed session.
 - **Do** use 1px rules, exact alignment, and compact spacing to create hierarchy.
 - **Do** expose requests, files, errors, and model/provider details one click from a session.
 - **Do** preserve equal information hierarchy in light and dark themes.

@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
 import type { SessionDetail } from "@/lib/api";
+import { summaryHasEvidence } from "@/lib/sessions";
 
 const props = withDefaults(defineProps<{ session: SessionDetail["session"]; summary?: SessionDetail["summary"]; full?: boolean }>(), { full: false });
 defineEmits<{ open: []; navigate: [hash: string] }>();
@@ -24,7 +25,7 @@ const sections = computed(() => {
 <template>
   <section v-if="!full && preview" aria-label="Session summary" class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-4">
     <p class="max-w-[72ch] line-clamp-2 break-words text-sm leading-6 text-zinc-700 dark:text-zinc-300">{{ preview }}</p>
-    <button type="button" class="shrink-0 rounded-[3px] text-xs font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="$emit('open')">Summary evidence</button>
+    <button v-if="summaryHasEvidence(summary)" type="button" class="shrink-0 rounded-[3px] text-xs font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="$emit('open')">Summary evidence</button>
   </section>
   <section v-else-if="full" aria-labelledby="session-summary-heading" class="min-w-0">
     <div class="flex flex-wrap items-baseline gap-3">
@@ -32,7 +33,7 @@ const sections = computed(() => {
       <span v-if="summary?.partial" class="text-xs text-zinc-600 dark:text-zinc-400">Incomplete evidence</span>
     </div>
     <p class="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">From recorded outcomes and bounded saved evidence. Observed verification does not establish capture status.</p>
-    <dl v-if="sections.length" class="mt-6 space-y-6">
+    <dl class="mt-6 space-y-6">
       <div v-for="section in sections" :key="section.key">
         <dt class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ section.title }}</dt>
         <dd class="mt-2 space-y-2 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
@@ -46,6 +47,5 @@ const sections = computed(() => {
         </dd>
       </div>
     </dl>
-    <p v-else class="mt-6 text-sm text-zinc-600 dark:text-zinc-400">No summary evidence is available for this session.</p>
   </section>
 </template>

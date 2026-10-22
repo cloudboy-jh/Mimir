@@ -8,7 +8,7 @@ import { getIdentity, type DashboardIdentity } from "@/lib/api";
 import ThemeToggle from "./ThemeToggle.vue";
 
 const route = useRoute();
-const links = [{ to: "/sessions", label: "Sessions" }, { to: "/commits", label: "Commits" }, { to: "/requests", label: "Requests" }, { to: "/overview", label: "Overview" }, { to: "/settings", label: "Settings" }];
+const links = [{ to: "/days", label: "Day" }, { to: "/sessions", label: "Sessions" }, { to: "/commits", label: "Commits" }, { to: "/requests", label: "Requests" }, { to: "/overview", label: "Overview" }, { to: "/settings", label: "Settings" }];
 const active = (path: string) => route.path === path || route.path.startsWith(`${path}/`);
 const identity = ref<DashboardIdentity | null>(null);
 let controller: AbortController | null = null;
@@ -34,7 +34,7 @@ onBeforeUnmount(() => controller?.abort());
 <template>
   <header class="sticky top-0 z-20 border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
     <div class="mx-auto flex h-15 w-full max-w-[1600px] items-center gap-2 px-4 sm:px-6 lg:px-8">
-      <RouterLink to="/sessions" aria-label="Mimir sessions" class="flex h-9 shrink-0 items-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 sm:h-10"><img :src="logo" alt="mimir" class="h-8 w-auto max-w-none sm:h-11" /></RouterLink>
+      <RouterLink to="/" aria-label="Mimir home" class="flex h-9 shrink-0 items-center focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 sm:h-10"><img :src="logo" alt="mimir" class="h-8 w-auto max-w-none sm:h-11" /></RouterLink>
       <DropdownMenuRoot>
         <DropdownMenuTrigger as-child><button type="button" aria-label="Open navigation" class="ml-2 grid size-9 shrink-0 place-items-center rounded-[5px] text-zinc-700 hover:bg-stone-100 focus-visible:outline-2 focus-visible:outline-teal-600 lg:hidden dark:text-zinc-300 dark:hover:bg-zinc-900"><Menu class="size-4" aria-hidden="true" /></button></DropdownMenuTrigger>
         <DropdownMenuPortal>

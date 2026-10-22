@@ -4,7 +4,7 @@ Mimir v2 is a self-hosted Cloudflare Worker memory plane. The Worker proxies Ope
 
 ## Repository
 
-- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` is the composition root; feature packages under `auth/`, `config/`, `dashboard/`, `exchanges/`, `gateway/`, `integrations/`, `machines/`, `search/`, `sessions/`, and `shared/` own routes, domain logic, storage operations, and focused tests.
+- Worker API: `worker/src/` TypeScript with Hono and Wrangler. `app.ts` is the composition root; feature packages under `auth/`, `config/`, `dashboard/`, `days/`, `exchanges/`, `gateway/`, `integrations/`, `machines/`, `search/`, `sessions/`, and `shared/` own routes, domain logic, storage operations, and focused tests. `days/day-snapshot.ts` is pure and shared with the dashboard fixture build.
 - Dashboard: `worker/web/` Vue 3, Vite, Tailwind CSS 4, shadcn-vue/Reka UI primitives, and Vue Router. Manage dashboard dependencies with Bun.
 - Dashboard data comes from the Access-protected `/dashboard/api/*` routes. Keep browser API contracts and adapters in `worker/web/src/lib/api.ts`.
 - CLI: `cmd/mimir/` is the Go entrypoint and `internal/mimircli/` owns command parsing, presentation, and package adapters. Core behavior belongs to `internal/install/`, `internal/deployment/`, `internal/mimirapi/`, `internal/harness/`, `internal/sessions/`, `internal/codeindex/`, `internal/search/`, and `internal/doctor/`. Keep the Go CLI standard-library-only.
@@ -56,9 +56,9 @@ for session lifecycle checks.
 
 ## Dashboard Direction
 
-- Sessions are the default route and primary product object. Requests are supporting evidence, not the center of the product.
+- Day is the default route: one local calendar day of sessions grouped into workstreams. Sessions remain the primary product object; requests are supporting evidence, not the center of the product.
 - Keep dashboard fetch logic and live data contracts centralized in `worker/web/src/lib/api.ts`; do not store machine credentials in the browser.
-- Use real browser routes for Sessions, Requests, Overview, and detail pages.
+- Use real browser routes for Day, Sessions, Requests, Overview, and detail pages.
 - Use IBM Plex Sans for product UI and IBM Plex Mono only for identifiers and machine values.
 - Use stock Tailwind `stone`, `zinc`, `teal`, and semantic status colors. Do not create `mimir-*` color utilities or a custom brand palette.
 - Teal is reserved for focus, links, and selected state. No gradients, color blending, glow, glass, pill navigation, or generic KPI card walls.

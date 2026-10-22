@@ -24,6 +24,7 @@ var LogoPNG []byte
 //go:embed worker/src/auth/auth-middleware.ts
 //go:embed worker/src/config/config-routes.ts worker/src/config/config-store.ts
 //go:embed worker/src/dashboard/cursors.ts worker/src/dashboard/dashboard-shell-routes.ts worker/src/dashboard/date-range.ts
+//go:embed worker/src/days/day-dashboard-routes.ts worker/src/days/day-snapshot.ts
 //go:embed worker/src/exchanges/capture-pipeline.ts worker/src/exchanges/evidence.ts worker/src/exchanges/exchange-dashboard-routes.ts worker/src/exchanges/exchange-types.ts worker/src/exchanges/facet-dashboard-routes.ts worker/src/exchanges/redaction.ts worker/src/exchanges/reported-exchange-routes.ts worker/src/exchanges/reported-exchange-schema.ts worker/src/exchanges/response-codec.ts worker/src/exchanges/tool-names.ts
 //go:embed worker/src/gateway/openrouter-routes.ts worker/src/gateway/upstream-proxy.ts
 //go:embed worker/src/integrations/integration-routes.ts

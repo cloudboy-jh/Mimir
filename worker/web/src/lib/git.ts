@@ -1,4 +1,4 @@
-import type { GitArtifact, OutcomeEvidence } from "@/lib/api";
+import { outcomeCommitEvidence, type GitArtifact, type OutcomeCommitEvidence, type OutcomeEvent, type OutcomeEvidence } from "@/lib/api";
 
 // normalizeRepositoryUrl turns any recorded remote form (SCP, ssh, git, http)
 // into a browsable https URL, dropping credentials, ports, and the .git suffix.
@@ -86,4 +86,32 @@ export function outcomeUrlMatchesArtifact(url: string | undefined, artifacts: Gi
   const normalized = url?.trim().replace(/\/+$/, "");
   if (!normalized) return false;
   return artifacts.some((artifact) => gitArtifactCommitUrl(artifact)?.replace(/\/+$/, "") === normalized);
+}
+
+export type SessionCommitClaim = OutcomeCommitEvidence & { artifact: GitArtifact | null };
+
+export type SessionChangeEvidence = {
+  history: SessionCommitClaim[];
+  unmatched: SessionCommitClaim[];
+  distinctUrl: string | null;
+  invalidUrl: string | null;
+  legacy: boolean;
+  note: string | null;
+  hasOutcomeEvidence: boolean;
+  visible: boolean;
+};
+
+// Outcome commit claims matched to captured commits, plus recorded outcome
+// evidence that no captured commit already shows. The session sidebar renders
+// the Changes view only when a captured commit or such evidence exists.
+export function sessionChangeEvidence(artifacts: GitArtifact[], events: OutcomeEvent[], evidence: OutcomeEvidence | null): SessionChangeEvidence {
+  const history = outcomeCommitEvidence(events).map((entry) => ({ ...entry, artifact: outcomeEvidenceArtifact(entry.evidence, artifacts) }));
+  const unmatched = history.filter((entry) => !entry.artifact);
+  const outcomeUrl = evidence?.url ?? (!evidence?.commit ? evidence?.commit_url : undefined);
+  const distinctUrl = outcomeUrlMatchesArtifact(outcomeUrl, artifacts) ? null : externalEvidenceUrl(outcomeUrl);
+  const invalidUrl = outcomeUrl && !externalEvidenceUrl(outcomeUrl) ? outcomeUrl : null;
+  const legacy = Boolean(evidence?.patch || evidence?.patch_r2_key);
+  const note = evidence?.note || null;
+  const hasOutcomeEvidence = Boolean(unmatched.length || distinctUrl || invalidUrl || note || legacy);
+  return { history, unmatched, distinctUrl, invalidUrl, legacy, note, hasOutcomeEvidence, visible: artifacts.length > 0 || hasOutcomeEvidence };
 }

@@ -7,8 +7,8 @@ import ThemeToggle from "@/app/ThemeToggle.vue";
 
 const route = useRoute();
 const returnTo = computed(() => {
-  const value = typeof route.query.returnTo === "string" ? route.query.returnTo : "/dashboard/sessions";
-  return value.startsWith("/dashboard/") && !value.startsWith("//") ? value : "/dashboard/sessions";
+  const value = typeof route.query.returnTo === "string" ? route.query.returnTo : "/dashboard/days";
+  return value.startsWith("/dashboard/") && !value.startsWith("//") ? value : "/dashboard/days";
 });
 const continueHref = computed(() => `/dashboard/auth?returnTo=${encodeURIComponent(returnTo.value)}`);
 </script>

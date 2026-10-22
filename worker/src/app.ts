@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { authenticate } from "./auth/auth-middleware";
 import { registerConfigRoutes } from "./config/config-routes";
 import { registerDashboardAuthRoutes } from "./dashboard/dashboard-shell-routes";
+import { registerDashboardDayRoutes } from "./days/day-dashboard-routes";
 import type { AppEnv } from "./env";
 import { registerDashboardExchangeRoutes } from "./exchanges/exchange-dashboard-routes";
 import { registerDashboardFacetRoutes } from "./exchanges/facet-dashboard-routes";
@@ -31,6 +32,7 @@ registerDashboardExchangeRoutes(app);
 registerDashboardDeviceRoutes(app);
 registerDashboardFacetRoutes(app);
 registerDashboardCommitRoutes(app);
+registerDashboardDayRoutes(app);
 
 function installErrorHandling(target: Hono<AppEnv>) {
   target.onError((error, c) => {

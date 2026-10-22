@@ -7,7 +7,7 @@ import IdentityBadge from "@/components/IdentityBadge.vue";
 import SessionLivenessBadge from "@/components/session/SessionLivenessBadge.vue";
 import { errorMessage, setSessionTitle, type SessionDetail, type SessionLiveness, type SessionTitleUpdate } from "@/lib/api";
 import { displayTitle } from "@/lib/sessions";
-import { harnessLabel } from "@/lib/format";
+import { compactNumber, duration, harnessLabel, shortDate } from "@/lib/format";
 
 const MAX_TITLE_LENGTH = 200;
 const props = defineProps<{ session: SessionDetail["session"]; capture: SessionDetail["capture"]; liveness: SessionLiveness }>();
@@ -19,6 +19,24 @@ const draftTitle = ref("");
 const titleInput = useTemplateRef<HTMLInputElement>("titleInput");
 const editButton = useTemplateRef<HTMLButtonElement>("editButton");
 const headerModels = computed(() => props.session.models.length ? props.session.models : props.session.model_primary ? [{ name: props.session.model_primary, request_count: 0 }] : []);
+// Session facts that every session has. Cache and capture problems appear only
+// when present so the row stays short for ordinary sessions.
+const facts = computed(() => {
+  const { session, capture } = props;
+  const rows: Array<{ label: string; value: string; tone?: string }> = [
+    { label: "Started", value: shortDate(session.started_at) },
+    { label: "Duration", value: duration(session.started_at, session.ended_at) },
+    { label: "Requests", value: String(session.request_count) },
+    { label: "Tokens", value: `${compactNumber(session.tokens_in)} in · ${compactNumber(session.tokens_out)} out` },
+  ];
+  if (session.cache_read_tokens) rows.push({ label: "Cache read", value: compactNumber(session.cache_read_tokens) });
+  if (session.cache_write_tokens) rows.push({ label: "Cache write", value: compactNumber(session.cache_write_tokens) });
+  rows.push({ label: "Saved", value: String(capture.saved_exchanges) });
+  if (capture.pending_exchanges) rows.push({ label: "Pending", value: String(capture.pending_exchanges), tone: "text-amber-800 dark:text-amber-300" });
+  if (capture.failed_exchanges) rows.push({ label: "Failed", value: String(capture.failed_exchanges), tone: "text-red-700 dark:text-red-400" });
+  if (capture.last_saved_at) rows.push({ label: "Last saved", value: shortDate(capture.last_saved_at) });
+  return rows;
+});
 
 async function startEditing() {
   draftTitle.value = displayTitle(props.session);
@@ -85,6 +103,7 @@ async function saveTitle() {
           <strong class="break-all font-medium text-zinc-800 dark:text-zinc-200">{{ session.repo || "No repository" }}</strong>
           <span v-if="session.source_ref" class="inline-flex min-w-0 items-center gap-1"><GitBranch class="size-3.5 shrink-0" aria-hidden="true" /><span class="break-all">{{ session.source_ref }}</span></span>
           <OutcomeBadge :outcome="session.outcome" />
+          <slot name="outcome" />
           <span class="inline-flex gap-1.5"><span>Capture</span><span class="capitalize" :class="capture.failed_exchanges ? 'text-red-700 dark:text-red-400' : 'text-zinc-800 dark:text-zinc-200'">{{ capture.status }}</span></span>
           <RouterLink v-if="session.parent_session_id" :to="`/sessions/${session.parent_session_id}`" class="font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">Parent session</RouterLink>
         </div>
@@ -101,6 +120,10 @@ async function saveTitle() {
             <li v-if="!headerModels.length"><IdentityBadge label="Unknown model" /></li>
           </ul>
         </div>
+        <dl id="session-facts" aria-label="Session facts" class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-xs">
+          <div v-for="fact in facts" :key="fact.label" class="flex gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">{{ fact.label }}</dt><dd class="tabular-nums" :class="fact.tone ?? 'text-zinc-800 dark:text-zinc-200'">{{ fact.value }}</dd></div>
+          <div class="flex min-w-0 gap-1.5"><dt class="text-zinc-600 dark:text-zinc-400">ID</dt><dd class="break-all font-mono text-[11px] leading-4 text-zinc-800 dark:text-zinc-200">{{ session.id }}</dd></div>
+        </dl>
     </div>
   </div>
 </template>

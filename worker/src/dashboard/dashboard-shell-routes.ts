@@ -3,11 +3,11 @@ import type { AppEnv } from "../env";
 
 export function registerDashboardAuthRoutes(app: Hono<AppEnv>) {
   app.get("/dashboard/auth", (c) => {
-    const returnTo = c.req.query("returnTo") ?? "/dashboard/sessions";
+    const returnTo = c.req.query("returnTo") ?? "/dashboard/days";
     return c.redirect(
       returnTo.startsWith("/dashboard/") && !returnTo.startsWith("//")
         ? returnTo
-        : "/dashboard/sessions",
+        : "/dashboard/days",
     );
   });
 

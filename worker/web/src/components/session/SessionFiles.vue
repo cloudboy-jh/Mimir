@@ -26,7 +26,5 @@ watch(() => props.files, () => { showAllReferenced.value = false; });
       </ul>
       <button v-if="referenced.length > REFERENCED_PREVIEW" type="button" class="mt-2 text-xs font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="showAllReferenced = !showAllReferenced">{{ showAllReferenced ? "Show fewer files" : `Show all ${referenced.length} files` }}</button>
     </template>
-
-    <p v-if="!referenced.length" class="text-xs text-zinc-600 dark:text-zinc-400">No additional file references detected.</p>
   </div>
 </template>

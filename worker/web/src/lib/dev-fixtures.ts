@@ -18,7 +18,9 @@ import type {
 import { fixtureEnvelope, fixtureIso as iso, fixtureReference as now, fixtureSessionExchanges, fixtureTurns } from "./fixture-conversations";
 import { fixtureArtifactRows, sampleHierarchyPatch as primaryPatch } from "./fixture-git-artifacts";
 import { fixtureCommitPage, fixtureDateMatches, fixtureRepositoryKey, fixtureRepositoryPage, fixtureRefPage, fixtureRowPage } from "./fixture-queries";
+import { buildDaySnapshot, DAY_BUCKET_MINUTES, validDate, validTimeZone, zonedDate, zonedDayBounds, type DayActivityBucket } from "../../../src/days/day-snapshot";
 const clone = <T>(value: T): T => structuredClone(value);
+export const fixtureNow: Date | null = now;
 
 const devices: Device[] = [
   { id: "dev_fixture_macbook", name: "Studio MacBook", platform: "darwin", arch: "arm64", created_at: iso(28_800), updated_at: iso(1), last_seen_at: iso(1), revoked_at: null, session_count: 18, harnesses: ["opencode", "pi", "oh-my-pi", "claude-code", "cursor"] },
@@ -340,6 +342,8 @@ sessions.push(
   { ...harnessFixture("local_health", "codex", "Local readiness review", "openai/gpt-5.4", 30, devices[1]), id: "ses_fixture_unknown_repo", repo: null, source_ref: "local/health", outcome: "unresolved", outcome_src: null, outcome_reason: null },
   { ...harnessFixture("local_health_other", "pi", "Separate local repository", "anthropic/claude-sonnet-4.5", 31, devices[0]), id: "ses_fixture_unknown_repo_other", repo: null, source_ref: "local/health", outcome: "unresolved", outcome_src: null, outcome_reason: null },
   { ...harnessFixture("capture_failure", "opencode", "Archive failure receipt", "openai/gpt-5.6-sol", 45, devices[1]), id: "ses_fixture_capture_failed", outcome: "unresolved", outcome_src: null, outcome_reason: null, summary_text: "Sample archive upload failed; no response archive or work outcome is available." },
+  // Minimal evidence: a short saved conversation with no outcome, commits, files, errors, or supporting sessions.
+  { ...harnessFixture("minimal", "claude-code", "Capture queue retry question", "anthropic/claude-sonnet-4.5", 82, devices[0]), id: "ses_fixture_minimal", outcome: "unresolved", outcome_src: null, outcome_updated_at: null, outcome_reason: null, intent: "Ask how the capture queue retries failed uploads", summary_text: null },
 );
 
 const sampleDescriptions: Record<string, { title: string; summary: string; reason: string }> = {
@@ -464,7 +468,7 @@ function detailFor(session: Session, artifacts: ArtifactRow[]): SessionDetail {
       actions: rich ? ["Moved result evidence out of the model selector and retained supporting-session links.", "Captured two sample commits covering evidence hierarchy and reduced-motion behavior.", "Fixed focus restoration after a failed focused check."] : turns.filter((turn) => !turn.capture || turn.capture === "saved").slice(0, 3).map((turn) => `Recorded response: ${turn.responseText}`),
       result: session.outcome === "unresolved" ? null : `Recorded outcome: ${session.outcome}${session.outcome_reason ? ` — ${session.outcome_reason}` : ""}`,
       verification: rich ? ["Recorded focused runner output: 7 passed, 0 failed after the focus fix.", "Recorded local keyboard and reduced-motion preview review."] : [],
-      unresolved: rich ? ["Protected remote preview was not verified.", "No push receipt was supplied; captured patches do not establish shipment."] : [...(partial ? ["Capture or structured reconstruction is incomplete."] : []), ...(session.outcome === "unresolved" ? ["No final work outcome has been recorded."] : [])],
+      unresolved: rich ? ["Protected remote preview was not verified.", "No push receipt was supplied; captured patches do not establish shipment."] : [...(session.outcome === "unresolved" ? ["No resolved work outcome has been recorded."] : []), "No observed verification output is available in the inspected evidence.", ...(partial ? ["Capture or structured reconstruction is incomplete."] : [])],
       partial, source: "reconstructed",
       evidence: rich ? [
         { section: "actions", index: 1, href: "#changes-heading", label: "Captured sample commits" },
@@ -522,6 +526,42 @@ function facetsFor(ids?: Set<string>): Facets {
     finish_reasons: [...new Set(rows.flatMap((row) => row.finish_reason ? [row.finish_reason] : []))].sort(),
     tools: [...new Set(rows.flatMap((row) => row.tool_names))].sort(),
   };
+}
+
+// Uses the Worker's pure snapshot builder so fixture and live grouping cannot drift.
+function fixtureDay(date: string, timeZone: string, artifacts: ArtifactRow[]) {
+  const { start, end } = zonedDayBounds(date, timeZone);
+  const startMs = Date.parse(start), endMs = Date.parse(end);
+  const inDay = (value: string) => Date.parse(value) >= startMs && Date.parse(value) < endMs;
+  const activity = new Map<string, DayActivityBucket>();
+  const subAgents = new Map<string, Set<string>>();
+  for (const row of sessionExchanges) {
+    if (!inDay(row.ts)) continue;
+    const root = rootFor(row.session_id);
+    const bucket = Math.floor((Date.parse(row.ts) - startMs) / (DAY_BUCKET_MINUTES * 60_000));
+    const current = activity.get(`${root}:${bucket}`) ?? { root_id: root, bucket, requests: 0, tokens_in: 0, tokens_out: 0, first_at: row.ts, last_at: row.ts };
+    current.requests++;
+    current.tokens_in += row.input_tokens;
+    current.tokens_out += row.output_tokens;
+    if (row.ts < current.first_at) current.first_at = row.ts;
+    if (row.ts > current.last_at) current.last_at = row.ts;
+    activity.set(`${root}:${bucket}`, current);
+    if (row.session_id !== root) subAgents.set(root, (subAgents.get(root) ?? new Set()).add(row.session_id));
+  }
+  const commits = artifacts.flatMap(({ sessionId, artifact }) => inDay(artifact.committed_at ?? artifact.accepted_at) ? [{ ...artifact, root_id: rootFor(sessionId) }] : []);
+  const rootIds = new Set([...[...activity.values()].map((row) => row.root_id), ...commits.map((row) => row.root_id), ...sessions.filter((session) => inDay(session.started_at)).map((session) => session.id)]);
+  const instants = [...sessionExchanges.map((row) => row.ts), ...sessions.map((session) => session.started_at)].sort();
+  const previous = instants.filter((value) => Date.parse(value) < startMs).at(-1);
+  const next = instants.find((value) => Date.parse(value) >= endMs);
+  return buildDaySnapshot({
+    date, timeZone, start, end,
+    previousDate: previous ? zonedDate(previous, timeZone) : null,
+    nextDate: next ? zonedDate(next, timeZone) : null,
+    roots: sessions.filter((session) => rootIds.has(session.id)).map((session) => ({ ...session, capture: captureFor(new Set([session.id, ...descendantsFor(session.id).map((node) => node.id)])) })),
+    activity: [...activity.values()],
+    subAgents: [...subAgents].map(([root_id, ids]) => ({ root_id, sub_agents: ids.size })),
+    commits,
+  });
 }
 
 export async function fixtureRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -654,6 +694,11 @@ export async function fixtureRequest<T>(path: string, init: RequestInit = {}): P
     const exchange = exchanges.find((item) => item.id === segments[3]);
     if (!exchange) throw new Error("Fixture request not found.");
     return clone({ exchange, log_url: `/dashboard/dev-fixtures/log/${exchange.id}` }) as T;
+  }
+  if (api && segments[2] === "days" && segments.length === 4 && method === "GET") {
+    const timeZone = params.get("tz") ?? "UTC";
+    if (!validDate(segments[3]!) || !validTimeZone(timeZone)) throw new Error("Invalid fixture day.");
+    return clone(fixtureDay(segments[3]!, timeZone, artifacts)) as T;
   }
   if (url.pathname === "/dashboard/api/overview" && method === "GET") {
     const counts = (field: "model" | "provider" | "harness") => [...new Set(exchanges.flatMap((row) => row[field] ? [row[field]!] : []))].map((name) => ({ name, requests: exchanges.filter((row) => row[field] === name).length }));

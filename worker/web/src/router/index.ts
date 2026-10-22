@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from "vue-router";
+import DayPage from "@/pages/DayPage.vue";
 import SessionsPage from "@/pages/SessionsPage.vue";
 import SessionDetailPage from "@/pages/SessionDetailPage.vue";
 import SessionDiffPage from "@/pages/SessionDiffPage.vue";
@@ -12,8 +13,9 @@ import CommitsPage from "@/pages/CommitsPage.vue";
 export const router = createRouter({
   history: createWebHistory(window.location.pathname.startsWith("/dashboard") ? "/dashboard/" : "/"),
   routes: [
-    { path: "/", redirect: { name: "sessions" } },
+    { path: "/", redirect: { name: "day" } },
     { path: "/login", name: "login", component: LoginPage, meta: { standalone: true } },
+    { path: "/days/:date?", name: "day", component: DayPage },
     { path: "/sessions", name: "sessions", component: SessionsPage },
     { path: "/commits", name: "commits", component: CommitsPage },
     { path: "/sessions/:id", name: "session-detail", component: SessionDetailPage },

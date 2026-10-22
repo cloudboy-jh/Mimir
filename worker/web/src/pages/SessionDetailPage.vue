@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { AlertTriangle, ArrowLeft, BookOpen, ChevronDown, Download, FileText, GitCommitHorizontal, PanelRight, RotateCw } from "lucide-vue-next";
 import { DropdownMenuContent, DropdownMenuItem, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuSeparator, DropdownMenuTrigger } from "reka-ui";
 import RequestTimeline from "@/components/session/RequestTimeline.vue";
 import SessionConversation from "@/components/session/SessionConversation.vue";
 import SessionDetailsSidebar from "@/components/session/SessionDetailsSidebar.vue";
+import SessionOutcomeEditor from "@/components/session/SessionOutcomeEditor.vue";
 import SessionSummaryPanel from "@/components/session/SessionSummaryPanel.vue";
 import SessionHeader from "@/components/session/SessionHeader.vue";
 import SessionSummary from "@/components/session/SessionSummary.vue";
-import { ApiError, connectSessionLive, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
+import { ApiError, connectSessionLive, currentOutcomeEvidence, errorMessage, getSession, getSessionObjectState, listSessionExchanges, type LiveSessionTurn, type SessionDetail, type SessionExchange, type SessionLiveness, type SessionLiveMessage, type SessionTitleUpdate } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
+import { sessionChangeEvidence } from "@/lib/git";
 import { markdownExportLimit, sessionMarkdown } from "@/lib/markdown";
+import { outcomeRecorded, summaryHasEvidence } from "@/lib/sessions";
 import { loadSessionNoteSettings, OBSIDIAN_URI_EXCHANGE_LIMIT, prepareObsidianVault, writeAndOpenSessionNote } from "@/lib/session-notes";
 
 const route = useRoute();
@@ -32,6 +35,22 @@ const evidenceTab = ref<"conversation" | "requests">("conversation");
 const summaryOpen = ref(false);
 const sidebarSection = ref<"details" | "changes">("details");
 const panelReturnFocus = ref<HTMLElement>();
+// The page grows with evidence: the summary entry, full outcome section, and
+// each sidebar section render only when they carry recorded data.
+const hasSummary = computed(() => summaryHasEvidence(detail.value?.summary));
+const hasOutcome = computed(() => Boolean(detail.value && outcomeRecorded(detail.value)));
+const changes = computed(() => detail.value ? sessionChangeEvidence(detail.value.git_artifacts, detail.value.outcome_events, currentOutcomeEvidence(detail.value.outcome_events, detail.value.session.outcome)) : null);
+const sidebarSections = computed(() => {
+  const current = detail.value;
+  if (!current) return [];
+  const sections: Array<"details" | "changes"> = [];
+  if (hasOutcome.value || current.supporting_sessions.length || current.files.length || current.errors.length || liveTurns.value.length) sections.push("details");
+  if (changes.value?.visible) sections.push("changes");
+  return sections;
+});
+watch(sidebarSections, (sections) => {
+  if (sections[0] && !sections.includes(sidebarSection.value)) sidebarSection.value = sections[0];
+});
 function openPanel(section: "summary" | "changes" | "details", event?: Event) {
   if (section === "summary") {
     const target = event?.currentTarget ?? document.activeElement;
@@ -39,9 +58,9 @@ function openPanel(section: "summary" | "changes" | "details", event?: Event) {
     summaryOpen.value = true;
   } else {
     sidebarSection.value = section;
-    panelReturnFocus.value = document.getElementById(`session-sidebar-tab-${section}`) ?? undefined;
     summaryOpen.value = false;
     void nextTick(() => {
+      panelReturnFocus.value = document.getElementById(`session-sidebar-tab-${section}`) ?? document.getElementById("session-sidebar-heading") ?? undefined;
       panelReturnFocus.value?.focus();
       document.getElementById("session-sidebar")?.scrollIntoView({ block: "nearest" });
     });
@@ -54,12 +73,9 @@ async function revealEvidenceHash() {
     "#changes-heading": "changes",
     "#outcome-evidence-heading": "changes",
     "#outcome-heading": "details",
-    "#session-details-heading": "details",
-    "#session-usage-heading": "details",
-    "#session-capture-heading": "details",
   };
   const section = targets[route.hash];
-  if (section) openPanel(section);
+  if (section && (section === "summary" ? hasSummary.value : section === "details" ? hasOutcome.value : sidebarSections.value.includes(section))) openPanel(section);
   else summaryOpen.value = false;
   await nextTick();
   document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: "start" });
@@ -137,6 +153,14 @@ async function refreshDetail(refreshTimeline = false) {
   } catch (cause) {
     error.value = errorMessage(cause, "The updated session could not be loaded.");
   }
+}
+
+// Saving from the compact control moves the outcome into the sidebar section
+// and unmounts the trigger, so hand focus to the section heading.
+async function applyOutcomeSaved() {
+  await refreshDetail();
+  await nextTick();
+  if (document.activeElement === document.body) document.getElementById("outcome-heading")?.focus();
 }
 
 function appendTurn(turn: LiveSessionTurn) {
@@ -348,18 +372,20 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
       <p class="min-w-0 flex-1">{{ error || liveError }} The last available session data is still shown.</p>
       <button type="button" class="shrink-0 font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600" @click="retryBanner">Retry</button>
     </div>
-    <SessionHeader :session="detail.session" :capture="detail.capture" :liveness="liveness" @saved="applyTitleUpdate" />
+    <SessionHeader :session="detail.session" :capture="detail.capture" :liveness="liveness" @saved="applyTitleUpdate">
+      <template v-if="!hasOutcome" #outcome><SessionOutcomeEditor :detail="detail" compact @saved="applyOutcomeSaved" /></template>
+    </SessionHeader>
     <SessionSummary :session="detail.session" :summary="detail.summary" @open="openPanel('summary')" />
-    <div class="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+    <div class="grid min-w-0 gap-6" :class="sidebarSections.length ? 'lg:grid-cols-[minmax(0,1fr)_320px]' : ''">
     <div class="min-w-0">
       <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-zinc-200 dark:border-zinc-800">
         <div class="flex gap-4 sm:gap-5" role="tablist" aria-label="Session evidence view" @keydown="moveEvidenceTab">
           <button v-for="tab in ['conversation', 'requests'] as const" :id="`session-tab-${tab}`" :key="tab" type="button" role="tab" :aria-selected="evidenceTab === tab" :aria-controls="`session-panel-${tab}`" :tabindex="evidenceTab === tab ? 0 : -1" class="border-b-2 py-3 text-sm font-medium capitalize focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600" :class="evidenceTab === tab ? 'border-teal-700 text-zinc-950 dark:border-teal-400 dark:text-zinc-100' : 'border-transparent text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'" @click="selectEvidenceTab(tab)">{{ tab }}</button>
         </div>
         <div class="flex items-center gap-1">
-          <button type="button" :aria-label="`Changes (${detail.git_artifacts.length} commits)`" aria-controls="session-sidebar" class="inline-flex h-8.5 items-center gap-1 rounded-[5px] px-1.5 text-xs text-zinc-600 hover:bg-stone-200 focus-visible:outline-2 focus-visible:outline-teal-600 lg:hidden dark:text-zinc-400 dark:hover:bg-zinc-900" @click="openPanel('changes', $event)"><GitCommitHorizontal class="size-3.5" aria-hidden="true" />Changes<span v-if="detail.git_artifacts.length" class="font-mono">{{ detail.git_artifacts.length }}</span></button>
-          <button type="button" aria-controls="session-sidebar" class="inline-flex h-8.5 items-center gap-1 rounded-[5px] px-1.5 text-xs text-zinc-600 hover:bg-stone-200 focus-visible:outline-2 focus-visible:outline-teal-600 lg:hidden dark:text-zinc-400 dark:hover:bg-zinc-900" @click="openPanel('details', $event)"><PanelRight class="size-3.5" aria-hidden="true" />Details</button>
-        <button v-if="detail.summary && !detail.session.outcome_reason?.trim()" type="button" aria-haspopup="dialog" class="rounded-[3px] py-2 text-xs text-zinc-600 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100" @click="openPanel('summary', $event)">Summary evidence</button>
+          <button v-if="sidebarSections.includes('changes')" type="button" :aria-label="`Changes (${detail.git_artifacts.length} commits)`" aria-controls="session-sidebar" class="inline-flex h-8.5 items-center gap-1 rounded-[5px] px-1.5 text-xs text-zinc-600 hover:bg-stone-200 focus-visible:outline-2 focus-visible:outline-teal-600 lg:hidden dark:text-zinc-400 dark:hover:bg-zinc-900" @click="openPanel('changes', $event)"><GitCommitHorizontal class="size-3.5" aria-hidden="true" />Changes<span v-if="detail.git_artifacts.length" class="font-mono">{{ detail.git_artifacts.length }}</span></button>
+          <button v-if="sidebarSections.includes('details')" type="button" aria-controls="session-sidebar" class="inline-flex h-8.5 items-center gap-1 rounded-[5px] px-1.5 text-xs text-zinc-600 hover:bg-stone-200 focus-visible:outline-2 focus-visible:outline-teal-600 lg:hidden dark:text-zinc-400 dark:hover:bg-zinc-900" @click="openPanel('details', $event)"><PanelRight class="size-3.5" aria-hidden="true" />Details</button>
+        <button v-if="hasSummary && !detail.session.outcome_reason?.trim()" type="button" aria-haspopup="dialog" class="rounded-[3px] py-2 text-xs text-zinc-600 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:text-zinc-100" @click="openPanel('summary', $event)">Summary evidence</button>
         </div>
       </div>
       <div id="session-panel-conversation" v-show="evidenceTab === 'conversation'" role="tabpanel" aria-labelledby="session-tab-conversation" tabindex="0">
@@ -369,7 +395,7 @@ onBeforeUnmount(() => { controller?.abort(); stopLive(); });
         <RequestTimeline :session-id="detail.session.id" :supporting-sessions="detail.supporting_sessions" :refresh-key="timelineRevision" />
       </div>
     </div>
-      <SessionDetailsSidebar v-model="sidebarSection" :detail="detail" :live-turns="liveTurns" :liveness="liveness" @saved="refreshDetail" />
+      <SessionDetailsSidebar v-if="changes && sidebarSections.length" v-model="sidebarSection" :detail="detail" :sections="sidebarSections" :changes="changes" :outcome-recorded="hasOutcome" :live-turns="liveTurns" :liveness="liveness" @saved="applyOutcomeSaved" />
     </div>
     <SessionSummaryPanel v-model="summaryOpen" :detail="detail" :return-focus="panelReturnFocus" @navigate="navigateEvidence" />
   </section>

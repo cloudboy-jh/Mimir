@@ -95,18 +95,31 @@ mimir access
 mimir dashboard
 ```
 
-The dashboard opens on **Sessions**, with **Commits**, **Requests**, **Overview**,
-and **Settings** in the shared header. Session details open as a conversation
+The dashboard opens on **Day**: the agent work from one local calendar day,
+grouped into workstreams by repository, branch, and continued session titles.
+Each workstream shows its activity across the day, its sessions, and captured
+commits; sessions still missing an outcome can be resolved in place, and
+one-request probes collapse into quick sessions. Earlier and later active days
+are one click away. **Sessions**, **Commits**, **Requests**, **Overview**, and
+**Settings** follow in the shared header. Session details open as a conversation
 reader: compact title and status, visible app and machine, and every model used
 by that exact session with saved request counts—no model dropdown. Supporting
-sessions keep their own model lists. A short authored outcome reason appears
-once below the header when available, then the transcript. **Summary evidence**
-opens the full reconstruction and its source links.
-A persistent right sidebar holds **Details** and **Changes**, including
-captured commits, outcome editing/history, usage, and supporting evidence, without
-repeating the header or summary. It shares page scrolling and stacks below the
-reader on small screens. Assistant answers, code, saved reasoning, and linked
-tool activity stay in coherent turns.
+sessions keep their own model lists. A facts row under the header lists start
+time, duration, requests, tokens, saved exchanges, and the session ID; pending
+or failed captures appear there whenever they occur. A short authored outcome
+reason appears once below the header when available, then the transcript.
+**Summary evidence** opens the full reconstruction and its source links; it is
+offered only when the reconstruction records actions, verification, a specific
+open item, or a result beyond the default unresolved sentence.
+The page grows with evidence. A right sidebar appears only when the session has
+some: **Details** holds the recorded outcome with its history and supporting
+sessions, referenced files, and errors; **Changes** holds captured commits and
+separate outcome evidence. Empty sections are hidden rather than labelled empty,
+a session with none gives the reader the full width, and an unresolved session
+with no outcome history offers a compact **Set outcome** control in the header
+instead of an outcome section. The sidebar shares page scrolling and stacks
+below the reader on small screens. Assistant answers, code, saved reasoning,
+and linked tool activity stay in coherent turns.
 Title and summary requests stay out of Conversation; compaction appears only as
 a context boundary. Inspect those requests with the **Requests** kind filter.
 **Requests** presents labelled Input and Output together; complete redacted
