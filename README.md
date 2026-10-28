@@ -95,12 +95,15 @@ mimir access
 mimir dashboard
 ```
 
-The dashboard opens on **Day**: the agent work from one local calendar day,
-grouped into workstreams by repository, branch, and continued session titles.
-Each workstream shows its activity across the day, its sessions, and captured
-commits; sessions still missing an outcome can be resolved in place, and
-one-request probes collapse into quick sessions. Earlier and later active days
-are one click away. **Sessions**, **Commits**, **Requests**, **Overview**, and
+The dashboard opens on **Day**: a donut of the agent time spent on one local
+calendar day, one slice per workstream (grouped by repository, branch, and
+continued session titles), with the app and model on each slice. Hovering shows
+the workstream's time, share, requests, outcomes, and commits; clicking zooms
+into its sessions, and clicking a session opens it. The list beside the chart is
+its legend, where unresolved sessions can be given an outcome in place. The five
+largest workstreams get their own slice, the rest fold into **Other**, and
+one-request probes into **Quick**. Earlier and later active days are one click
+away. **Sessions**, **Commits**, **Requests**, **Overview**, and
 **Settings** follow in the shared header. Session details open as a conversation
 reader: compact title and status, visible app and machine, and every model used
 by that exact session with saved request counts—no model dropdown. Supporting

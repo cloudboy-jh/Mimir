@@ -60,7 +60,7 @@ for session lifecycle checks.
 - Keep dashboard fetch logic and live data contracts centralized in `worker/web/src/lib/api.ts`; do not store machine credentials in the browser.
 - Use real browser routes for Day, Sessions, Requests, Overview, and detail pages.
 - Use IBM Plex Sans for product UI and IBM Plex Mono only for identifiers and machine values.
-- Use stock Tailwind `stone`, `zinc`, `teal`, and semantic status colors. Do not create `mimir-*` color utilities or a custom brand palette.
+- Use stock Tailwind `stone`, `zinc`, `teal`, and semantic status colors. Do not create `mimir-*` color utilities or a custom brand palette. The one exception is the Day chart, which colors slices by app with stock Tailwind hues defined in `worker/web/src/lib/day.ts`.
 - Teal is reserved for focus, links, and selected state. No gradients, color blending, glow, glass, pill navigation, or generic KPI card walls.
 - Maintain light and dark themes, WCAG 2.2 AA contrast, keyboard operation, visible focus, and reduced-motion behavior.
 - The pixel-art wordmark is the only pixel-art treatment in the application.

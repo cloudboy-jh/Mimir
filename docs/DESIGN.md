@@ -160,9 +160,12 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 
 ### Day Snapshot
 - One local calendar day in the browser's time zone. The headline names the day; one plain text line carries totals. Never a KPI card row.
-- Workstreams are ruled rows: label, repository/branch, local time span, requests, then an activity strip on a shared 24-hour axis with 6-hour ticks. Bars are ink, not teal, and their height encodes requests per 15 minutes.
-- A multi-session workstream lists its sessions in time order with outcome text; captured commits follow with short hash, subject, and line counts.
-- Quick sessions (one request or none) collapse behind one disclosure. The side column holds In progress, Unresolved with in-place outcome setting, and Capture problems; sections without entries are omitted except Unresolved, which states that every finished session has an outcome.
+- One donut and its legend list are the whole view. A slice is agent time: each session's 15-minute blocks with requests, summed, so a workstream slice equals the total shown when zooming into it. The center states the level total.
+- Slices are colored by app, so the same agent reads the same hue every day: Oh My Pi violet, Pi indigo, Hermes sky, OpenCode pink, Claude Code orange, Codex blue, Cursor purple; other apps hash into fuchsia, lime, or yellow. Slices sharing an app step through the 500, 700, and 300 shades. Other is zinc and Quick an outlined stone slice. Teal stays reserved for the keyboard focus stroke, and the outcome colors (emerald, red, amber) never appear as slices. The model shows as an icon, not a color.
+- At most five workstreams get their own slice; two or more leftovers fold into Other. Slices of at least about 8% carry the app icon, and about 14% adds the model icon.
+- Hover or focus lifts the slice a few pixels, dims the rest, highlights the legend row, and shows one tooltip that glides between slices (150ms ease-out, no movement with reduced motion). The tooltip lists app, model, repository/branch, time and share, sessions, requests, commits, and outcomes.
+- Clicking a slice or row zooms in: a multi-session workstream, Other, or Quick redraws the donut with its members, with a "Whole day" link and a URL that the back button restores. Single sessions open the session page. A zoomed workstream lists its commits below the legend.
+- Legend rows carry In progress, capture problems, and an inline Set outcome control for unresolved finished sessions. There is no separate side column.
 
 ### Session Record
 - A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
