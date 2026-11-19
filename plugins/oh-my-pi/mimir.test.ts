@@ -39,7 +39,7 @@ afterEach(() => {
 
 type Handler = (...args: never[]) => unknown;
 type CapturedRequest = { url: string; body: unknown; authorization?: string };
-type RegisteredProvider = { headers: Record<string, string> };
+type RegisteredProvider = { baseUrl: string; apiKey: string; headers: Record<string, string>; authHeader: boolean };
 
 function createHarness(respond?: (url: string) => number, exec = async (_command: string, _args: string[]) => ({ code: 1, stdout: "" })) {
   process.env.MIMIR_URL = "https://mimir.test";
@@ -105,6 +105,13 @@ describe("repo attribution", () => {
       rmSync(repo, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+describe("provider registration", () => {
+  test("routes OpenRouter through Mimir's /v1 base with an Authorization header", () => {
+    const harness = createHarness();
+    expect(harness.providers.at(-1)).toMatchObject({ baseUrl: "https://mimir.test/v1", apiKey: "token", authHeader: true });
   });
 });
 

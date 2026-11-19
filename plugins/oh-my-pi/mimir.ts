@@ -2,7 +2,7 @@
 type ExtensionHandler = (...args: never[]) => unknown;
 type ExtensionAPI = {
   on(event: string, handler: ExtensionHandler): void;
-  registerProvider(name: string, provider: { baseUrl: string; apiKey: string; headers: Record<string, string> }): void;
+  registerProvider(name: string, provider: { baseUrl: string; apiKey: string; headers: Record<string, string>; authHeader: boolean }): void;
   getSessionName(): unknown;
   exec(command: string, args: string[], options: { timeout: number }): Promise<{ code: number; stdout: string }>;
 };
@@ -279,7 +279,9 @@ export default function (pi: ExtensionAPI) {
   });
   const headers = () => current ? headersFor(current) : { "x-mimir-harness": "oh-my-pi" };
 
-  const configureProvider = () => pi.registerProvider("openrouter", { baseUrl: config.url, apiKey: config.token, headers: headers() });
+  // Oh My Pi appends paths to the OpenAI-compatible base and sends the key only
+  // when `authHeader` is set; without either, proxied requests miss Mimir's routes.
+  const configureProvider = () => pi.registerProvider("openrouter", { baseUrl: `${config.url}/v1`, apiKey: config.token, headers: headers(), authHeader: true });
   configureProvider();
 
   const gitHook = (session: Session, input: { tool_output: string } | { refresh: true }) => runGitHook({
