@@ -4,22 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"runtime/debug"
 	"strings"
+	"text/tabwriter"
 
-	"github.com/cloudboy-jh/mimir/internal/codeindex"
 	hookintegration "github.com/cloudboy-jh/mimir/internal/harness/hooks"
-	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	searchpkg "github.com/cloudboy-jh/mimir/internal/search"
 	"github.com/cloudboy-jh/mimir/internal/sessions"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
-	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 type IO struct {
@@ -37,17 +30,6 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	}
 	if ioctx.Err == nil {
 		ioctx.Err = os.Stderr
-	}
-	// Deferred Windows updates are normally completed by their detached
-	// helper. Any later CLI command is a second recovery path if that helper
-	// timed out or was interrupted. Update handles its own marker so it can
-	// report an applied deferred version accurately.
-	if len(args) == 0 || (args[0] != "update" && args[0] != "_apply-update" && args[0] != "demo") {
-		configureInstall()
-		if _, err := installpkg.FinalizePendingUpdate(); err != nil {
-			_, _ = fmt.Fprintf(ioctx.Err, "mimir: pending update: %v\n", err)
-		}
-		installpkg.CleanupStaleUpdateArtifacts()
 	}
 	if len(args) == 0 {
 		return usage(ioctx.Out)
@@ -68,76 +50,36 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 			return advancedUsage(ioctx.Out)
 		}
 		return usage(ioctx.Out)
-	case "index":
-		fs := flag.NewFlagSet("index", flag.ContinueOnError)
-		fs.SetOutput(ioctx.Err)
-		full := fs.Bool("full", false, "force a full repository index")
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		res, err := codeindex.Build(ctx, codeindex.BuildOptions{Dir: ".", Full: *full})
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(ioctx.Out, res.Message)
-		return err
-	case "recall":
-		queryArgs, budget, jsonOut, err := parseRecallArgs(args[1:])
-		if err != nil {
-			return err
-		}
-		if len(queryArgs) == 0 {
-			return fmt.Errorf("usage: mimir recall <query> [--budget 4000] [--json]")
-		}
-		res, err := runRecall(ctx, recallOptions{Dir: ".", Query: strings.Join(queryArgs, " "), Budget: budget, JSON: jsonOut})
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(ioctx.Out, res.Output)
-		return err
 	case "whoami":
 		if !onlyJSONFlag(args[1:]) {
 			return fmt.Errorf("usage: mimir whoami [--json]")
 		}
 		return remotePrint(ctx, ioctx.Out, "GET", "/whoami", nil)
-	case "list":
-		return cmdListIO(ctx, args[1:], ioctx.In, ioctx.Out)
 	case "sessions":
-		if !onlyJSONFlag(args[1:]) {
-			return fmt.Errorf("usage: mimir sessions [--json]")
-		}
-		return remotePrint(ctx, ioctx.Out, "GET", "/sessions", nil)
+		return cmdSessions(ctx, args[1:], ioctx.Out)
 	case "session":
 		return cmdSession(ctx, args[1:], ioctx.Out)
+	case "turns":
+		return cmdTurns(ctx, args[1:], ioctx.Out)
+	case "search":
+		return cmdSearch(ctx, args[1:], ioctx.Out)
+	case "stats":
+		return cmdStats(ctx, args[1:], ioctx.Out)
+	case "day":
+		return cmdDay(ctx, args[1:], ioctx.Out)
+	case "devices":
+		return cmdDevices(ctx, args[1:], ioctx.Out)
+	case "commits":
+		return cmdCommits(ctx, args[1:], ioctx.Out)
 	case "import":
 		return cmdImport(ctx, args[1:], ioctx)
 	case "backfill":
 		return cmdBackfill(ctx, args[1:], ioctx)
-	case "search":
-		_, jsonOutput := stripJSONFlag(args[1:])
-		query, err := parseSearchArgs(args[1:])
-		if err != nil {
-			return err
-		}
-		data, err := searchpkg.New(apiRequester{}).Search(ctx, query)
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			_, err = fmt.Fprintln(ioctx.Out, string(data))
-			return err
-		}
-		return renderSearch(ioctx.Out, data)
-	case "mark":
-		if len(args) != 3 {
-			return fmt.Errorf("usage: mimir mark <session> <landed|discarded|abandoned|unresolved|promoted|unknown>")
-		}
-		return remotePrint(ctx, ioctx.Out, "POST", "/sessions/"+url.PathEscape(args[1])+"/mark", map[string]string{"outcome": args[2]})
 	case "reconcile":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir reconcile")
 		}
-		data, err := currentSessionService().Reconcile(ctx)
+		data, err := sessions.New(apiRequester{}).Reconcile(ctx)
 		if err != nil {
 			return err
 		}
@@ -161,9 +103,10 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 	case "uninstall":
 		return cmdUninstall(ctx, args[1:], ioctx.Out)
 	case "dashboard":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: mimir dashboard")
+		}
 		return dashboard(ctx, ioctx)
-	case "demo":
-		return demo(ctx, args[1:], ioctx)
 	case "connection":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: mimir connection")
@@ -171,409 +114,45 @@ func ExecuteIO(ctx context.Context, args []string, ioctx IO) error {
 		return writeConnectionManifest(ioctx.Out)
 	case "update":
 		return cmdUpdateIO(ctx, args[1:], ioctx)
-	case "_apply-update":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: mimir _apply-update")
-		}
-		return applyPendingUpdateHelper()
+	case "doctor":
+		return doctor(ctx, args[1:], ioctx.Out)
+	case "mcp":
+		return cmdMCP(ctx, args[1:], ioctx)
 	case "_hook":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: mimir _hook <claude-code|codex|cursor>")
+			return fmt.Errorf("usage: mimir _hook <git|claude-code|codex|cursor>")
+		}
+		if args[1] == "git" {
+			return hookGit(ctx, ioctx)
 		}
 		service, err := hookintegration.New()
 		if err != nil {
 			return err
 		}
 		return service.Ingest(ctx, args[1], ioctx.In)
-	case "doctor":
-		return doctor(ctx, args[1:], ioctx.Out)
-	case "_post-update", "_install-integrations":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: mimir _post-update")
-		}
-		configureInstall()
-		report := lifecycleService().Refresh(ctx, "update")
-		return json.NewEncoder(ioctx.Out).Encode(report)
-	case "outcome":
-		if len(args) != 3 || args[1] != "git" {
-			return fmt.Errorf("usage: mimir outcome git <session>")
-		}
-		data, err := currentSessionService().SetGitOutcome(ctx, args[2], checkoutGitEvidence{Dir: "."})
-		if err != nil {
-			return err
-		}
-		return printRemoteData(ioctx.Out, data)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-type versionReport struct {
-	Version        string                            `json:"version"`
-	Commit         string                            `json:"commit"`
-	Date           string                            `json:"date"`
-	BundleVersion  string                            `json:"bundle_version,omitempty"`
-	ReceiptPath    string                            `json:"receipt_path"`
-	ArtifactCounts map[installpkg.ArtifactStatus]int `json:"artifact_counts"`
-}
-
-func cmdVersion(args []string, out io.Writer) error {
-	jsonOutput := false
-	if len(args) == 1 && args[0] == "--json" {
-		jsonOutput = true
-	} else if len(args) != 0 {
-		return fmt.Errorf("usage: mimir version [--json]")
+// hookGit implements `mimir _hook git`: capture commits named on stdin and
+// print {captured, pushed, errors}. Only invalid input fails the command.
+func hookGit(ctx context.Context, ioctx IO) error {
+	in := ioctx.In
+	if in == nil {
+		in = strings.NewReader("")
 	}
-	configureInstall()
-	artifacts, err := installpkg.CheckArtifacts()
+	input, err := hookintegration.DecodeGitInput(in)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid git hook input: %w", err)
 	}
-	receipt, err := installpkg.LoadReceipt()
-	if err != nil {
-		return err
+	result := hookintegration.GitResult{Errors: []string{}}
+	if service, err := hookintegration.New(); err != nil {
+		result.Errors = append(result.Errors, err.Error())
+	} else {
+		result = service.CaptureGit(ctx, input)
 	}
-	report := versionReport{
-		Version: version, Commit: commit, Date: date,
-		BundleVersion: receipt.BundleVersion, ReceiptPath: artifacts.ReceiptPath,
-		ArtifactCounts: installpkg.ArtifactCounts(artifacts),
-	}
-	if jsonOutput {
-		return json.NewEncoder(out).Encode(report)
-	}
-	render := cliui.New(out)
-	fields := []bentotui.Field{{Label: "Version", Value: versionString()}}
-	if receipt.BundleVersion != "" {
-		fields = append(fields, bentotui.Field{Label: "Bundle", Value: receipt.BundleVersion}, bentotui.Field{Label: "Artifacts", Value: installpkg.ArtifactSummary(artifacts)})
-	}
-	_, err = fmt.Fprintln(out, render.Card("Mimir", fields...))
-	return err
-}
-
-func cmdInstall(ctx context.Context, args []string, out io.Writer) error {
-	return cmdInstallIO(ctx, args, IO{Out: out})
-}
-
-func cmdInstallIO(ctx context.Context, args []string, ioctx IO) error {
-	var selected []string
-	var explicit bool
-	var err error
-	args, selected, explicit, err = parseInstallHarnesses(args)
-	if err != nil {
-		return err
-	}
-	jsonOutput, binDir := false, ""
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--json":
-			jsonOutput = true
-		case args[i] == "--bin-dir" && i+1 < len(args):
-			if strings.HasPrefix(args[i+1], "-") {
-				return fmt.Errorf("--bin-dir requires a value")
-			}
-			binDir = args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--bin-dir="):
-			binDir = strings.TrimPrefix(args[i], "--bin-dir=")
-		default:
-			return fmt.Errorf("usage: mimir install --harness <id|all> [--harness <id>] [--bin-dir <dir>] [--json]")
-		}
-	}
-	if strings.TrimSpace(binDir) == "" && containsBinDirArg(args) {
-		return fmt.Errorf("--bin-dir requires a value")
-	}
-	selected, err = installHarnessSelection(ioctx, jsonOutput, explicit, selected)
-	if err != nil {
-		return err
-	}
-	guard := startInterruptGuard(ctx)
-	defer guard.Stop()
-	ctx = guard.Context()
-	guard.Commit()
-	lines := lineoutput.New(ioctx.Out)
-	if !jsonOutput {
-		_ = lines.Phase("Installing Mimir")
-	}
-	report, err := runLifecycleHarnessInstall(ctx, binDir, selected, func(message string) {
-		if !jsonOutput {
-			_ = lines.Phase(message)
-		}
-	})
-	if err != nil {
-		return err
-	}
-	if jsonOutput {
-		return json.NewEncoder(ioctx.Out).Encode(report)
-	}
-	return renderInstall(ioctx.Out, report)
-}
-
-func containsBinDirArg(args []string) bool {
-	for _, arg := range args {
-		if arg == "--bin-dir" || strings.HasPrefix(arg, "--bin-dir=") {
-			return true
-		}
-	}
-	return false
-}
-
-func cmdUninstall(ctx context.Context, args []string, out io.Writer) error {
-	keepBinary, jsonOutput := false, false
-	for _, arg := range args {
-		switch arg {
-		case "--keep-binary":
-			keepBinary = true
-		case "--json":
-			jsonOutput = true
-		default:
-			return fmt.Errorf("usage: mimir uninstall [--keep-binary] [--json]")
-		}
-	}
-	configureInstall()
-	report, err := lifecycleService().Uninstall(ctx, keepBinary)
-	if err != nil {
-		return err
-	}
-	if jsonOutput {
-		return json.NewEncoder(out).Encode(report)
-	}
-	render := cliui.New(out)
-	items := []cliui.StatusItem{{Title: report.Binary.Path, Stat: report.Binary.Status, Tone: cliui.ToneForStatus(report.Binary.Status)}}
-	for _, artifact := range report.Artifacts {
-		if artifact.Status == installpkg.ArtifactUnowned {
-			continue
-		}
-		status := string(artifact.Status)
-		items = append(items, cliui.StatusItem{Title: artifact.Path, Stat: status, Tone: cliui.ToneForStatus(status)})
-	}
-	items = append(items, cliui.StatusItem{Title: "Hermes", Detail: report.Hermes.Detail, Stat: report.Hermes.State, Tone: cliui.ToneForStatus(report.Hermes.State)})
-	_, err = fmt.Fprintf(out, "%s\n\n%s\n\n%s\n", render.Heading("Uninstall complete"), render.StatusItems(items), render.Callout(bentotui.ToneInfo, report.Summary, "Connection, local Worker files, Cloudflare deployment, and install log preserved."))
-	return err
-}
-
-func cmdSession(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) > 0 && args[0] == "git" {
-		return cmdSessionGit(ctx, args[1:], out)
-	}
-	if len(args) > 0 && args[0] == "get" {
-		if len(args) < 2 || strings.HasPrefix(args[1], "-") || len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
-			return fmt.Errorf("usage: mimir session get <id> [--json]")
-		}
-		return remotePrint(ctx, out, "GET", "/sessions/"+url.PathEscape(args[1]), nil)
-	}
-	if len(args) > 0 && args[0] == "status" && (len(args) < 2 || strings.HasPrefix(args[1], "-")) {
-		return fmt.Errorf("usage: mimir session status <id> [--json]")
-	}
-	if len(args) > 0 && args[0] == "end" && len(args) < 2 {
-		return fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json]")
-	}
-	if len(args) > 0 && args[0] == "outcome" && len(args) < 3 {
-		return fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json] [--json]")
-	}
-	if len(args) == 1 {
-		return remotePrint(ctx, out, "GET", "/sessions/"+url.PathEscape(args[0]), nil)
-	}
-	if len(args) >= 2 && args[0] == "end" {
-		parsed, jsonOutput := stripJSONFlag(args[1:])
-		id, body, err := parseSessionEndArgs(parsed)
-		if err != nil {
-			return err
-		}
-		status, err := currentSessionService().End(ctx, id, body)
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			data, err := sessions.StatusJSON(status)
-			if err != nil {
-				return err
-			}
-			return printRemoteData(out, data)
-		}
-		return renderEndedReceipt(out, status)
-	}
-	if len(args) >= 2 && args[0] == "status" {
-		if len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
-			return fmt.Errorf("usage: mimir session status <id> [--json]")
-		}
-		return printSessionStatus(ctx, out, args[1], len(args) == 3)
-	}
-	if len(args) >= 3 && args[0] == "outcome" {
-		parsed, _ := stripJSONFlag(args[1:])
-		id, outcome, reason, evidence, err := parseSessionOutcomeArgs(parsed)
-		if err != nil {
-			return err
-		}
-		options := sessions.SetOutcomeOptions{Outcome: outcome, Reason: reason}
-		if evidence != nil {
-			options.Evidence, options.EvidenceSet = evidence.Value, true
-		}
-		data, err := currentSessionService().SetOutcome(ctx, id, options)
-		if err != nil {
-			return err
-		}
-		return printRemoteData(out, data)
-	}
-	return fmt.Errorf("usage: mimir session <id> | mimir session status <id> [--json] | mimir session git <capture|repair|verify> (see help) | mimir session end <id> [--outcome value] [--reason text] [--evidence json] | mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
-}
-
-func parseSessionEndArgs(args []string) (string, sessions.EndOptions, error) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return "", sessions.EndOptions{}, fmt.Errorf("usage: mimir session end <id> [--outcome landed|discarded|abandoned|unresolved] [--reason text] [--evidence json]")
-	}
-	id := args[0]
-	options := sessions.EndOptions{}
-	hasOutcome, hasReason := false, false
-	for i := 1; i < len(args); i++ {
-		switch {
-		case args[i] == "--outcome" && i+1 < len(args):
-			if hasOutcome {
-				return "", sessions.EndOptions{}, fmt.Errorf("--outcome may only be specified once")
-			}
-			hasOutcome, options.Outcome = true, args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--outcome="):
-			if hasOutcome {
-				return "", sessions.EndOptions{}, fmt.Errorf("--outcome may only be specified once")
-			}
-			hasOutcome, options.Outcome = true, strings.TrimPrefix(args[i], "--outcome=")
-		case args[i] == "--reason" && i+1 < len(args):
-			if hasReason {
-				return "", sessions.EndOptions{}, fmt.Errorf("--reason may only be specified once")
-			}
-			hasReason, options.Reason = true, args[i+1]
-			i++
-		case strings.HasPrefix(args[i], "--reason="):
-			if hasReason {
-				return "", sessions.EndOptions{}, fmt.Errorf("--reason may only be specified once")
-			}
-			hasReason, options.Reason = true, strings.TrimPrefix(args[i], "--reason=")
-		case args[i] == "--evidence" && i+1 < len(args):
-			if options.EvidenceSet {
-				return "", sessions.EndOptions{}, fmt.Errorf("--evidence may only be specified once")
-			}
-			if err := json.Unmarshal([]byte(args[i+1]), &options.Evidence); err != nil {
-				return "", sessions.EndOptions{}, fmt.Errorf("invalid --evidence JSON: %w", err)
-			}
-			options.EvidenceSet = true
-			i++
-		case strings.HasPrefix(args[i], "--evidence="):
-			if options.EvidenceSet {
-				return "", sessions.EndOptions{}, fmt.Errorf("--evidence may only be specified once")
-			}
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(args[i], "--evidence=")), &options.Evidence); err != nil {
-				return "", sessions.EndOptions{}, fmt.Errorf("invalid --evidence JSON: %w", err)
-			}
-			options.EvidenceSet = true
-		default:
-			return "", sessions.EndOptions{}, fmt.Errorf("unexpected argument %q", args[i])
-		}
-	}
-	if hasOutcome && !canonicalOutcome(options.Outcome) {
-		return "", sessions.EndOptions{}, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", options.Outcome)
-	}
-	if hasReason && !hasOutcome {
-		return "", sessions.EndOptions{}, fmt.Errorf("--reason requires --outcome")
-	}
-	if options.EvidenceSet && !hasOutcome {
-		return "", sessions.EndOptions{}, fmt.Errorf("--evidence requires --outcome")
-	}
-	return id, options, nil
-}
-
-func printSessionStatus(ctx context.Context, out io.Writer, id string, jsonOutput bool) error {
-	status, err := currentSessionService().GetStatus(ctx, id)
-	if err != nil {
-		return err
-	}
-	if jsonOutput {
-		data, err := sessions.StatusJSON(status)
-		if err != nil {
-			return err
-		}
-		return printRemoteData(out, data)
-	}
-	lastSaved := "never"
-	if status.Capture.LastSavedAt != nil {
-		lastSaved = *status.Capture.LastSavedAt
-	}
-	render := cliui.New(out)
-	fields := []bentotui.Field{
-		{Label: "Capture", Value: sessions.ReceiptSummary(status)},
-		{Label: "Session", Value: status.SessionID},
-		{Label: "State", Value: render.CaptureBadge(status.Capture.Status)},
-		{Label: "Saved", Value: fmt.Sprint(status.Capture.SavedExchanges)},
-		{Label: "Pending", Value: fmt.Sprint(status.Capture.PendingExchanges)},
-		{Label: "Failed", Value: fmt.Sprint(status.Capture.FailedExchanges)},
-		{Label: "Last save", Value: lastSaved},
-		{Label: "Outcome", Value: render.OutcomeBadge(status.Outcome)},
-	}
-	if status.DashboardURL != nil {
-		fields = append(fields, bentotui.Field{Label: "Dashboard", Value: *status.DashboardURL})
-	}
-	_, err = fmt.Fprintln(out, render.Card("Session status", fields...))
-	return err
-}
-
-type outcomeEvidence struct {
-	Value any
-}
-
-func parseSessionOutcomeArgs(args []string) (id, outcome, reason string, evidence *outcomeEvidence, err error) {
-	if len(args) < 2 || strings.HasPrefix(args[0], "-") || strings.HasPrefix(args[1], "-") {
-		return "", "", "", nil, fmt.Errorf("usage: mimir session outcome <id> <landed|discarded|abandoned|unresolved> [--reason text] [--evidence json]")
-	}
-	id, outcome = args[0], args[1]
-	if !canonicalOutcome(outcome) {
-		return "", "", "", nil, fmt.Errorf("invalid outcome %q: must be landed, discarded, abandoned, or unresolved", outcome)
-	}
-	for i := 2; i < len(args); i++ {
-		switch {
-		case args[i] == "--reason":
-			if reason != "" || i+1 >= len(args) {
-				return "", "", "", nil, fmt.Errorf("--reason requires one value")
-			}
-			reason = args[i+1]
-			if strings.TrimSpace(reason) == "" {
-				return "", "", "", nil, fmt.Errorf("--reason requires one value")
-			}
-			i++
-		case strings.HasPrefix(args[i], "--reason="):
-			if reason != "" {
-				return "", "", "", nil, fmt.Errorf("--reason may only be specified once")
-			}
-			reason = strings.TrimPrefix(args[i], "--reason=")
-			if strings.TrimSpace(reason) == "" {
-				return "", "", "", nil, fmt.Errorf("--reason requires one value")
-			}
-		case args[i] == "--evidence":
-			if evidence != nil || i+1 >= len(args) {
-				return "", "", "", nil, fmt.Errorf("--evidence requires one JSON value")
-			}
-			var value any
-			if err := json.Unmarshal([]byte(args[i+1]), &value); err != nil {
-				return "", "", "", nil, fmt.Errorf("invalid --evidence JSON: %w", err)
-			}
-			evidence = &outcomeEvidence{Value: value}
-			i++
-		case strings.HasPrefix(args[i], "--evidence="):
-			if evidence != nil {
-				return "", "", "", nil, fmt.Errorf("--evidence may only be specified once")
-			}
-			var value any
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(args[i], "--evidence=")), &value); err != nil {
-				return "", "", "", nil, fmt.Errorf("invalid --evidence JSON: %w", err)
-			}
-			evidence = &outcomeEvidence{Value: value}
-		default:
-			return "", "", "", nil, fmt.Errorf("unexpected argument %q", args[i])
-		}
-	}
-	return id, outcome, reason, evidence, nil
-}
-
-func canonicalOutcome(outcome string) bool {
-	return sessions.ValidOutcome(outcome)
+	return json.NewEncoder(ioctx.Out).Encode(result)
 }
 
 func cmdConfig(ctx context.Context, args []string, out io.Writer) error {
@@ -602,19 +181,6 @@ func stripJSONFlag(args []string) ([]string, bool) {
 	return args, false
 }
 
-func parseSearchArgs(args []string) (string, error) {
-	args, _ = stripJSONFlag(args)
-	if len(args) == 0 {
-		return "", fmt.Errorf("usage: mimir search <query> [--json]")
-	}
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--") {
-			return "", fmt.Errorf("unexpected argument %q", arg)
-		}
-	}
-	return strings.Join(args, " "), nil
-}
-
 func remotePrint(ctx context.Context, out io.Writer, method, path string, body any) error {
 	data, err := remoteRequest(ctx, method, path, body)
 	if err != nil {
@@ -632,79 +198,77 @@ func printRemoteData(out io.Writer, data []byte) error {
 	return err
 }
 
-func usage(out io.Writer) error {
-	render := cliui.New(out)
-	commands := []cliui.CommandItem{
-		{Usage: "mimir setup [--account-id <id>] [--json]", Description: "Provision or reconnect Mimir."},
-		{Usage: "mimir install --harness <id|all> [--json]", Description: "Install the CLI and selected harness files."},
-		{Usage: "mimir harness [--json]", Description: "Inspect or change detected harnesses."},
-		{Usage: "mimir enable|disable <pi|opencode|hermes>", Description: "Quickly enable or disable a primary harness."},
-		{Usage: "mimir uninstall [--keep-binary] [--json]", Description: "Remove owned local files without deleting memory."},
-		{Usage: "mimir deploy [--account-id <id>] [--json]", Description: "Deploy the bundled Worker and dashboard."},
-		{Usage: "mimir access [--account-id <id>] [options] [--json]", Description: "Configure dashboard Access with --token <api-token> and --email <address>, or existing --aud and --team-domain values."},
-		{Usage: "mimir login [--account-id <id>] [--json]", Description: "Authenticate and register this machine."},
-		{Usage: "mimir demo [--no-open]", Description: "Explore sample sessions in a local browser."},
-		{Usage: "mimir dashboard", Description: "Open the private dashboard."},
-		{Usage: "mimir list [filters] [--json]", Description: "List captured work sessions."},
-		{Usage: "mimir search <query> [--json]", Description: "Search session evidence and local code."},
-		{Usage: "mimir session status <id> [--json]", Description: "Inspect capture and outcome state."},
-		{Usage: "mimir session end <id> [options]", Description: "Finalize capture and optionally record an outcome."},
-		{Usage: "mimir import [harness] [session-id...]", Description: "Select and import sessions from a local harness."},
-		{Usage: "mimir backfill [harness] [--since 7d]", Description: "Repair missing capture from local harness history."},
-		{Usage: "mimir doctor [--json]", Description: "Check the installation and connection."},
-		{Usage: "mimir update [--check] [--force] [--json]", Description: "Check or apply CLI and harness updates."},
-		{Usage: "mimir version [--json]", Description: "Show CLI, bundle, and artifact versions."},
+type commandHelp struct{ usage, description string }
+
+type commandGroup struct {
+	name     string
+	commands []commandHelp
+}
+
+func writeCommands(out io.Writer, title string, groups []commandGroup, footer string) error {
+	table := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(table, title)
+	for _, group := range groups {
+		fmt.Fprintf(table, "\n%s\n", group.name)
+		for _, command := range group.commands {
+			fmt.Fprintf(table, "  %s\t%s\n", command.usage, command.description)
+		}
 	}
-	content := bentotui.Stack(render.Commands(commands), render.ActionHint("mimir help advanced", "Show diagnostic and development commands."))
-	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir remembers"), content)
-	return err
+	if footer != "" {
+		fmt.Fprintf(table, "\n%s\n", footer)
+	}
+	return table.Flush()
+}
+
+func usage(out io.Writer) error {
+	return writeCommands(out, "Mimir remembers your agent sessions.", []commandGroup{
+		{"Query", []commandHelp{
+			{"mimir sessions [filters] [--json]", "List root sessions, newest activity first."},
+			{"mimir session <id> [--json]", "Show a session with summary, commits, and files."},
+			{"mimir session status <id> [--json]", "Show the capture receipt."},
+			{"mimir session end <id> [--json]", "End a session and print its receipt."},
+			{"mimir turns <id> [--limit n] [--order asc|desc] [--json]", "Read the conversation turns."},
+			{"mimir search <query> [--repo r] [--json]", "Full-text search across captured sessions."},
+			{"mimir stats --by <repo|harness|device|model|day> [--json]", "Aggregate sessions, requests, tokens, commits."},
+			{"mimir day [YYYY-MM-DD] [--tz zone] [--json]", "One day of sessions grouped into workstreams."},
+			{"mimir commits [filters] [--json]", "List captured commits."},
+			{"mimir devices [--json]", "List machines and their tailnet status."},
+		}},
+		{"Set up", []commandHelp{
+			{"mimir setup [--account-id <id>] [--json]", "Provision or reconnect Mimir."},
+			{"mimir login [--account-id <id>] [--json]", "Authenticate and register this machine."},
+			{"mimir install --harness <id|all> [--json]", "Install the CLI and selected harness files."},
+			{"mimir harness [--json]", "Show harness integrations and manual steps."},
+			{"mimir enable|disable <pi|opencode|hermes>", "Enable or disable a primary harness."},
+			{"mimir deploy [--account-id <id>] [--json]", "Deploy the bundled Worker and dashboard."},
+			{"mimir access [--token <api-token> --email <address>] [--json]", "Configure Cloudflare Access for the dashboard."},
+			{"mimir dashboard", "Open the private dashboard."},
+			{"mimir import [harness] [session-id...]", "Import sessions from a local harness."},
+			{"mimir backfill [harness] [--since 7d]", "Repair missing capture from local history."},
+			{"mimir doctor [--json]", "Check the installation and connection."},
+			{"mimir update [--check] [--json]", "Check for or install the latest release."},
+			{"mimir uninstall [--keep-binary] [--json]", "Remove Mimir-owned local files."},
+			{"mimir version [--json]", "Show the CLI and bundle version."},
+		}},
+	}, "Run mimir help advanced for diagnostic and integration commands.")
 }
 
 func advancedUsage(out io.Writer) error {
-	render := cliui.New(out)
-	commands := []cliui.CommandItem{
-		{Usage: "mimir connection", Description: "Print the active connection manifest."},
-		{Usage: "mimir whoami [--json]", Description: "Verify machine authentication."},
-		{Usage: "mimir sessions [--json]", Description: "Fetch the canonical session collection."},
-		{Usage: "mimir session <id>", Description: "Fetch one canonical session record."},
-		{Usage: "mimir session get <id> [--json]", Description: "Fetch the complete canonical session record."},
-		{Usage: "mimir session outcome <id> <outcome> [options]", Description: "Record an evidenced work outcome."},
-		{Usage: "mimir session git capture <id> <full-commit-sha> [--json]", Description: "Upload one commit from the current checkout to an existing session."},
-		{Usage: "mimir session git repair <id> <full-sha> --expected-digest <old-sha256> [--json]", Description: "Repair one exact commit from the current checkout, then verify the stored patch."},
-		{Usage: "mimir session git verify <id> <full-sha> [--json]", Description: "Fetch canonical detail and stored patch; verify SHA256, statistics, and multiline Git format."},
-		{Usage: "mimir reconcile", Description: "Reconcile pending session state."},
-		{Usage: "mimir mark <session> <outcome>", Description: "Compatibility alias for recording an outcome."},
-		{Usage: "mimir outcome git <session>", Description: "Infer an outcome from repository evidence."},
-		{Usage: "mimir config get [--json]", Description: "Read canonical Worker configuration."},
-		{Usage: "mimir config set <key> <json-value> [--json]", Description: "Update canonical Worker configuration."},
-		{Usage: "mimir index [--full]", Description: "Refresh the local repository code index."},
-		{Usage: "mimir recall <query> [--budget 4000] [--json]", Description: "Search local code memory."},
-		{Usage: "mimir harness <list|enable|disable> [id]", Description: "Legacy harness automation commands."},
-	}
-	_, err := fmt.Fprintf(out, "%s\n\n%s\n", render.Heading("Mimir advanced commands"), render.Commands(commands))
-	return err
-}
-
-func parseRecallArgs(args []string) ([]string, int, bool, error) {
-	budget, jsonOut := 4000, false
-	query := []string{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonOut = true
-		case "--budget":
-			if i+1 >= len(args) {
-				return nil, 0, false, fmt.Errorf("--budget requires a value")
-			}
-			if _, err := fmt.Sscanf(args[i+1], "%d", &budget); err != nil || budget <= 0 {
-				return nil, 0, false, fmt.Errorf("invalid --budget value")
-			}
-			i++
-		default:
-			query = append(query, args[i])
-		}
-	}
-	return query, budget, jsonOut, nil
+	return writeCommands(out, "Mimir advanced commands", []commandGroup{
+		{"Diagnostics", []commandHelp{
+			{"mimir whoami [--json]", "Verify machine authentication and Worker capabilities."},
+			{"mimir connection", "Print the active connection manifest."},
+			{"mimir reconcile", "Reconcile pending capture state."},
+			{"mimir config get [--json]", "Read Worker configuration."},
+			{"mimir config set <key> <json-value> [--json]", "Update Worker configuration."},
+			{"mimir harness <enable|disable> <id> [--json]", "Manage any harness integration."},
+		}},
+		{"Integrations", []commandHelp{
+			{"mimir mcp", "Stdio MCP bridge to the Worker query tools."},
+			{"mimir _hook git", "Capture commits from a JSON object on stdin."},
+			{"mimir _hook <claude-code|codex|cursor>", "Harness hook adapter."},
+		}},
+	}, "")
 }
 
 var (

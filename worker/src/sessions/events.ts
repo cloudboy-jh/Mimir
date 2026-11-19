@@ -1,10 +1,16 @@
-import type { Bindings } from "../env";
 import type { RequestKind } from "../exchanges/exchange-types";
-import { normalizeSessionTitle } from "./titles";
+import {
+  assignParent,
+  canMutateSession,
+  endSession,
+  HEURISTIC_REACTIVATION_GUARD,
+  isParentConflict,
+} from "./lifecycle";
+import { normalizeSessionTitle, titleUpdateStatement } from "./titles";
 
-// Session event format v1. Reporters (the proxy, harness plugins, native
-// harness reporting) deliver these to the Session Durable Object. The object
-// owns liveness and finalization; R2/D1 remain canonical storage.
+// Session event format v1. Harness plugins and native hooks report lifecycle
+// events; they update the D1 session row directly. Token counters stay
+// derived from saved exchanges, so turn usage is validated but not summed.
 export const SESSION_EVENT_VERSION = 1;
 export const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 export const SESSION_EVENT_KINDS = ["turn", "heartbeat", "failure", "end"] as const;
@@ -190,40 +196,64 @@ function parseTurn(
   return turn;
 }
 
-// reportSessionEvent delivers an event to the owning Session Durable Object.
-// Reporting is best-effort: capture and request paths must never fail because
-// the session object is unavailable.
-export async function reportSessionEvent(
-  env: Bindings,
+export type SessionEventResult =
+  | { status: 200; body: { accepted: true; session_id: string; state: "active" | "inactive" }; ended: boolean }
+  | { status: 403 | 404 | 409; body: { error: string }; ended: false };
+
+// applySessionEvent records one lifecycle event. Activity on an ended session
+// reopens it, except heartbeats that predate the end. `ended` asks the caller
+// to build the session summary.
+export async function applySessionEvent(
+  db: D1Database,
   event: SessionEvent,
-): Promise<void> {
+  installationID: string | null,
+): Promise<SessionEventResult> {
+  const id = event.session_id;
+  const rejected = (status: 403 | 404 | 409, error: string): SessionEventResult => ({ status, body: { error }, ended: false });
+  if (!(await canMutateSession(db, id, installationID)))
+    return rejected(409, "session belongs to another installation");
   try {
-    const stub = env.SESSIONS.get(env.SESSIONS.idFromName(event.session_id));
-    const headers = event.installation_id
-      ? { "x-mimir-installation": event.installation_id }
-      : undefined;
-    const response = await stub.fetch("https://session-object/event", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(event),
-    });
-    if (!response.ok)
-      console.error(
-        JSON.stringify({
-          message: "session event rejected",
-          session_id: event.session_id,
-          kind: event.kind,
-          status: response.status,
-        }),
-      );
+    await db.batch([
+      db
+        .prepare(
+          "INSERT OR IGNORE INTO sessions(id, installation_id, started_at, last_active_at, harness, boundary, repo, model_primary) VALUES (?, ?, ?, ?, ?, 'header', ?, ?)",
+        )
+        .bind(id, installationID, event.ts, event.ts, event.harness, event.repo ?? null, event.turn?.model ?? null),
+      db
+        .prepare(
+          "UPDATE sessions SET installation_id = COALESCE(installation_id, ?) WHERE id = ? AND ? IS NOT NULL AND installation_id IS NULL",
+        )
+        .bind(installationID, id, installationID),
+    ]);
   } catch (error) {
-    console.error(
-      JSON.stringify({
-        message: "session event delivery failed",
-        session_id: event.session_id,
-        kind: event.kind,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    if (isParentConflict(error)) return rejected(409, "invalid session parent relationship");
+    throw error;
   }
+  const owner = await db
+    .prepare("SELECT installation_id FROM sessions WHERE id = ?")
+    .bind(id)
+    .first<{ installation_id: string | null }>();
+  if (installationID && owner?.installation_id !== installationID)
+    return rejected(409, "session belongs to another installation");
+  if (event.parent_session_id) {
+    const parent = await assignParent(db, id, event.parent_session_id, installationID, true);
+    if (parent) return rejected(parent.status === 404 ? 409 : parent.status, parent.error);
+  }
+  const title = event.title ? [titleUpdateStatement(db, id, event.title, "harness", event.ts)] : [];
+  if (event.kind === "end") {
+    if (title.length) await db.batch(title);
+    await endSession(db, id, new Date().toISOString());
+    return { status: 200, body: { accepted: true, session_id: id, state: "inactive" }, ended: true };
+  }
+  const reopen = `NOT (state = 'inactive' AND ?2 = 'heartbeat' AND inactive_at IS NOT NULL AND julianday(?1) <= julianday(inactive_at)) AND ${HEURISTIC_REACTIVATION_GUARD}`;
+  const [, state] = await db.batch<{ state: "active" | "inactive" }>([
+    db
+      .prepare(
+        `UPDATE sessions SET state = CASE WHEN ${reopen} THEN 'active' ELSE state END, inactive_at = CASE WHEN ${reopen} THEN NULL ELSE inactive_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ?1 THEN ?1 ELSE last_active_at END, harness = COALESCE(harness, ?3), repo = COALESCE(repo, ?4), model_primary = COALESCE(model_primary, ?5) WHERE id = ?6`,
+      )
+      .bind(event.ts, event.kind, event.harness, event.repo ?? null, event.turn?.model ?? null, id),
+    db.prepare("SELECT state FROM sessions WHERE id = ?").bind(id),
+    ...title,
+  ]);
+  return { status: 200, body: { accepted: true, session_id: id, state: state!.results[0]?.state ?? "active" }, ended: false };
 }

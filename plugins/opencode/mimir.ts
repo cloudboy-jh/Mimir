@@ -1,8 +1,9 @@
 // Mimir capture plugin for OpenCode.
 //
-// Reports completed turns, heartbeats, and session ends to the Mimir session
-// object. Direct-provider exchanges come from OpenCode's session store;
-// OpenRouter exchanges remain canonical at the Mimir proxy.
+// Reports completed turns, heartbeats, and session ends to Mimir. Direct-provider
+// exchanges come from OpenCode's session store; OpenRouter exchanges remain
+// canonical at the Mimir proxy. Commits are captured by `mimir _hook git`, and
+// the mimir_* tools forward to the Worker's MCP endpoint.
 //
 // Install: copy this file to ~/.config/opencode/plugins/ (global) or
 // .opencode/plugins/ (project). Uninstall: delete the file.
@@ -13,16 +14,15 @@
 //   3. ~/.mimir/config + ~/.mimir/token (written by `mimir setup`/`mimir login`)
 //
 // Session deletion is reported immediately. Process loss is covered by the
-// server-side silence timer (~10 minutes without a heartbeat).
+// Worker's inactivity expiry (session.gap_minutes, checked every 10 minutes).
 
 import { tool, type Plugin } from "@opencode-ai/plugin";
-import { execFile, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 const HEARTBEAT_MS = 60_000;
 const ACTIVITY_WINDOW_MS = 5 * 60_000;
@@ -32,15 +32,13 @@ const MAX_EXCHANGE_BYTES = 512 * 1024;
 const MAX_JSON_DEPTH = 8;
 const MAX_JSON_ENTRIES = 256;
 const EXCHANGE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const COMMIT_SHA = /^[0-9a-f]{40}$/i;
-const COMMIT_REF = /^[0-9a-f]{7,40}$/i;
-const GIT_REF = /^[\w.\-/]{1,200}$/;
-const MAX_PATCH_BYTES = 20 * 1024;
-const MAX_EVIDENCE_NOTE_BYTES = 8 * 1024;
-const MAX_LIVE_PATCH_BYTES = 4 * 1024 * 1024;
-const MAX_COMMIT_CALLS = 128;
+const SHELL_TOOL = /^(?:bash|shell|exec|terminal)$/;
+const COMMIT_CONFIRMATION = /\[[^\]\r\n]+\s[0-9a-f]{7,40}\](?=\s|$)/;
+const GIT_HOOK_TIMEOUT_MS = 60_000;
+const MIMIR_TOOL_TIMEOUT_MS = 30_000;
 
 type Connection = { url: string; token: string };
+type GitHookInput = { session_id: string; cwd: string; harness: "opencode"; repo?: string; tool_output?: string; refresh?: true };
 
 type HarnessLoad = {
   version: 1;
@@ -86,13 +84,27 @@ type DirectExchange = {
 type MessageRecord = { info: Record<string, unknown>; parts: unknown[] };
 type OpenCodeClient = { session: { messages(input: { path: { id: string } }): Promise<unknown> } };
 
-function parseMimirConfig(text: string): { url?: string } {
-  const out: { url?: string } = {};
-  for (const line of text.split("\n")) {
-    const match = line.match(/^\s*([A-Za-z_]+)\s*=\s*"?([^"\n]*)"?\s*$/);
-    if (match && match[1] === "url" && match[2]) out.url = match[2].replace(/\/+$/, "");
+function parseMimirConfig(text: string): { url?: string; executable?: string } {
+  const out: { url?: string; executable?: string } = {};
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_]+)\s*=\s*"?([^"]*)"?\s*$/);
+    if (!match?.[2]) continue;
+    if (match[1] === "url") out.url = match[2].replace(/\/+$/, "");
+    else if (match[1] === "executable") out.executable = match[2];
   }
   return out;
+}
+
+function readLocalFile(path: string): string | null {
+  try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
+}
+
+function homeDirectory(): string | undefined {
+  try { return homedir(); } catch { return undefined; }
+}
+
+function mimirHome(env: Record<string, string | undefined>, home: string | undefined): string | null {
+  return env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
 }
 
 function resolveConnection(
@@ -103,7 +115,7 @@ function resolveConnection(
   const envUrl = env.MIMIR_URL?.trim();
   const envToken = env.MIMIR_TOKEN?.trim();
   if (envUrl && envToken) return { url: envUrl.replace(/\/+$/, ""), token: envToken };
-  const dir = env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
+  const dir = mimirHome(env, home);
   if (!dir) return null;
   const config = readFile(join(dir, "config"));
   const token = readFile(join(dir, "token"))?.trim();
@@ -112,41 +124,173 @@ function resolveConnection(
 }
 
 function loadConnection(): Connection | null {
-  return resolveConnection(
-    process.env,
-    (path) => {
-      try {
-        return existsSync(path) ? readFileSync(path, "utf8") : null;
-      } catch {
-        return null;
-      }
-    },
-    (() => {
-      try {
-        return homedir();
-      } catch {
-        return undefined;
-      }
-    })(),
-  );
+  return resolveConnection(process.env, readLocalFile, homeDirectory());
 }
 
-function buildHarnessLoad(source: string, receiptText: string | null): HarnessLoad {
+function mimirExecutable(env: Record<string, string | undefined>, readFile: (path: string) => string | null, home: string | undefined): string {
+  const explicit = env.MIMIR_BIN?.trim();
+  if (explicit) return explicit;
+  const dir = mimirHome(env, home);
+  const config = dir ? readFile(join(dir, "config")) : null;
+  return (config ? parseMimirConfig(config).executable : undefined) || "mimir";
+}
+
+// Commit capture runs in the Mimir CLI; a slow or missing binary must never reach OpenCode.
+function runGitHook(input: GitHookInput): void {
+  try {
+    const child = spawn(mimirExecutable(process.env, readLocalFile, homeDirectory()), ["_hook", "git"], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    const timer = setTimeout(() => child.kill(), GIT_HOOK_TIMEOUT_MS);
+    timer.unref?.();
+    child.once("error", () => clearTimeout(timer));
+    child.once("exit", () => clearTimeout(timer));
+    child.stdin?.once("error", () => {});
+    child.stdin?.end(JSON.stringify(input));
+    child.unref();
+  } catch {
+    // Commit capture is best-effort.
+  }
+}
+
+// Returns only the `[branch sha] subject` lines of a shell tool's output.
+function commitConfirmations(output: unknown): string | null {
+  if (typeof output !== "string") return null;
+  const lines = output.split(/\r?\n/).filter((line) => COMMIT_CONFIRMATION.test(line));
+  return lines.length ? lines.join("\n") : null;
+}
+
+const z = tool.schema;
+const TIME = "RFC3339 time, YYYY-MM-DD (UTC day), or relative age such as 24h or 7d";
+const McpResponse = z.object({
+  result: z.object({
+    content: z.array(z.object({ type: z.string(), text: z.string().optional() })),
+    isError: z.boolean().optional(),
+  }).optional(),
+  error: z.object({ message: z.string() }).optional(),
+});
+
+const mimirToolSpecs = {
+  search: {
+    description: "Full-text search past agent conversations and return the best-matching sessions with snippets.",
+    args: {
+      query: z.string().min(1).describe("Text to search for"),
+      repo: z.string().optional().describe("Repository name filter"),
+      from: z.string().optional().describe(`Earliest activity: ${TIME}`),
+      to: z.string().optional().describe(`Latest activity: ${TIME}`),
+      limit: z.number().int().min(1).max(50).optional().describe("Maximum sessions (default 10)"),
+    },
+  },
+  sessions: {
+    description: "List recorded agent sessions, newest activity first, filtered by text, repo, harness, device, state, git status or time.",
+    args: {
+      q: z.string().optional().describe("Title, intent, repo or conversation text"),
+      repo: z.string().optional().describe("Repository name filter"),
+      harness: z.string().optional().describe("Harness filter, such as opencode or claude-code"),
+      device: z.string().optional().describe("Device ID or name filter"),
+      state: z.enum(["active", "inactive"]).optional(),
+      git_status: z.enum(["none", "committed", "pushed"]).optional(),
+      from: z.string().optional().describe(`Earliest activity: ${TIME}`),
+      to: z.string().optional().describe(`Latest activity: ${TIME}`),
+      limit: z.number().int().min(1).max(100).optional().describe("Maximum sessions (default 20)"),
+      cursor: z.string().optional().describe("next_cursor from a previous page"),
+    },
+  },
+  session: {
+    description: "Get one session with its summary, receipt, touched files, errors, commits and supporting sessions.",
+    args: { id: z.string().min(1).describe("Session ID") },
+  },
+  turns: {
+    description: "Read a session's conversation turns (user, assistant, reasoning and tool calls) page by page.",
+    args: {
+      id: z.string().min(1).describe("Session ID"),
+      cursor: z.string().optional().describe("next_cursor from a previous page"),
+      limit: z.number().int().min(1).max(50).optional().describe("Maximum turns (default 8)"),
+      order: z.enum(["asc", "desc"]).optional(),
+    },
+  },
+  stats: {
+    description: "Aggregate sessions, requests, tokens and commits by repo, harness, device, model or day for charts and summaries.",
+    args: {
+      group_by: z.enum(["repo", "harness", "device", "model", "day"]),
+      from: z.string().optional().describe(`Range start (default 7 days ago): ${TIME}`),
+      to: z.string().optional().describe(`Range end: ${TIME}`),
+      tz: z.string().optional().describe("IANA time zone for day grouping"),
+    },
+  },
+  day: {
+    description: "Get one calendar day's sessions grouped into workstreams with git and capture status.",
+    args: {
+      date: z.string().optional().describe("YYYY-MM-DD (default today)"),
+      tz: z.string().optional().describe("IANA time zone (default UTC)"),
+    },
+  },
+  devices: {
+    description: "List the user's devices with session counts, harnesses and tailnet status.",
+    args: {},
+  },
+  commits: {
+    description: "List commits captured from agent sessions, filtered by repo, ref, text, session or time.",
+    args: {
+      repo: z.string().optional().describe("Repository filter"),
+      ref: z.string().optional().describe("Branch or ref filter"),
+      q: z.string().optional().describe("Commit subject text"),
+      session: z.string().optional().describe("Session ID filter"),
+      from: z.string().optional().describe(`Earliest commit: ${TIME}`),
+      to: z.string().optional().describe(`Latest commit: ${TIME}`),
+      limit: z.number().int().min(1).max(100).optional().describe("Maximum commits (default 20)"),
+      cursor: z.string().optional().describe("next_cursor from a previous page"),
+    },
+  },
+  commit_patch: {
+    description: "Fetch the redacted patch of a commit captured in a session.",
+    args: {
+      session_id: z.string().min(1).describe("Session ID that captured the commit"),
+      sha: z.string().min(7).describe("Commit SHA"),
+      max_bytes: z.number().int().min(1).optional().describe("Patch byte limit (default 65536)"),
+    },
+  },
+};
+
+// Forwards one tool call to the Worker's MCP endpoint and returns its JSON result text.
+async function callMimirTool(conn: Connection, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
+  const response = await fetch(`${conn.url}/mcp`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${conn.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(MIMIR_TOOL_TIMEOUT_MS)]) : AbortSignal.timeout(MIMIR_TOOL_TIMEOUT_MS),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Mimir ${name} failed (${response.status}): ${text.slice(0, 2_000)}`);
+  const message = McpResponse.parse(JSON.parse(text));
+  if (message.error) throw new Error(`Mimir ${name} failed: ${message.error.message}`);
+  const output = (message.result?.content ?? []).flatMap((part) => part.type === "text" && part.text !== undefined ? [part.text] : []).join("\n");
+  if (message.result?.isError) throw new Error(`Mimir ${name} failed: ${output}`);
+  return output;
+}
+
+function mimirTools(conn: Connection) {
+  return Object.fromEntries(Object.entries(mimirToolSpecs).map(([name, spec]) => [`mimir_${name}`, tool({
+    description: spec.description,
+    args: spec.args,
+    execute: (args, context) => callMimirTool(conn, name, args, context.abort),
+  })]));
+}
+
+function buildHarnessLoad(source: string, manifestText: string | null): HarnessLoad {
   const load: HarnessLoad = {
     version: 1,
     harness: "opencode",
     source_sha256: createHash("sha256").update(source).digest("hex"),
   };
-  if (!receiptText) return load;
+  if (!manifestText) return load;
   try {
-    const receipt = JSON.parse(receiptText) as Record<string, unknown>;
-    const cli = typeof receipt.cli === "object" && receipt.cli ? receipt.cli as Record<string, unknown> : {};
-    if (typeof receipt.bundle_version === "string" && receipt.bundle_version) load.bundle_version = receipt.bundle_version;
+    const manifest = JSON.parse(manifestText) as Record<string, unknown>;
+    const cli = typeof manifest.cli === "object" && manifest.cli ? manifest.cli as Record<string, unknown> : {};
+    if (typeof manifest.bundle_version === "string" && manifest.bundle_version) load.bundle_version = manifest.bundle_version;
     if (typeof cli.version === "string" && cli.version) load.cli_version = cli.version;
     if (typeof cli.commit === "string" && cli.commit) load.cli_commit = cli.commit;
-    if (typeof receipt.installation_id === "string" && receipt.installation_id) load.installation_id = receipt.installation_id;
+    if (typeof manifest.installation_id === "string" && manifest.installation_id) load.installation_id = manifest.installation_id;
   } catch {
-    // A missing or malformed receipt must not suppress source identity.
+    // A missing or malformed manifest must not suppress source identity.
   }
   return load;
 }
@@ -159,9 +303,9 @@ function loadHarnessLoad(
 ): HarnessLoad | null {
   const source = readFile(sourcePath);
   if (source === null) return null;
-  const dir = env.MIMIR_HOME?.trim() || (home ? join(home, ".mimir") : null);
-  const receipt = dir ? readFile(join(dir, "install-receipt.json")) : null;
-  return buildHarnessLoad(source, receipt);
+  const dir = mimirHome(env, home);
+  const manifest = dir ? readFile(join(dir, "managed.json")) : null;
+  return buildHarnessLoad(source, manifest);
 }
 
 async function postHarnessLoad(conn: Connection, load: HarnessLoad): Promise<boolean> {
@@ -413,294 +557,6 @@ function repoName(worktree: string | undefined): string | null {
   return parts[parts.length - 1] || null;
 }
 
-type GitRunner = (command: string, args: string[], cwd: string) => { status: number | null; stdout: string };
-
-type GitEvidence = {
-  commit: string;
-  base_commit?: string;
-  patch?: string;
-  repository_url?: string;
-  ref?: string;
-  provenance: "opencode-plugin";
-};
-
-const spawnGit: GitRunner = (command, args, cwd) => {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
-  return { status: result.status, stdout: typeof result.stdout === "string" ? result.stdout : "" };
-};
-
-function runGit(run: GitRunner, cwd: string, args: string[]): string | null {
-  try {
-    const result = run("git", args, cwd);
-    if (result.status !== 0) return null;
-    return result.stdout.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-// redactEvidenceText mirrors the Worker's builtin redaction so captured
-// patches never retain common credential shapes before transport.
-function redactEvidenceText(text: string): string {
-  return text
-    .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
-    .replace(/(?:sk|pk|rk)_[A-Za-z0-9_-]{16,}/g, "[REDACTED]")
-    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
-    .replace(/((?:api[_-]?key|token|secret|password)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1[REDACTED]");
-}
-
-function boundedBytes(value: string, maxBytes: number): string {
-  const encoder = new TextEncoder();
-  if (encoder.encode(value).byteLength <= maxBytes) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (encoder.encode(value.slice(0, middle)).byteLength <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  return value.slice(0, low);
-}
-
-// normalizeRemoteUrl reshapes any origin form (SCP, ssh, git, http) into a
-// browsable https URL without credentials so the dashboard can link a commit.
-// Non-URL remotes such as local paths produce no value.
-function normalizeRemoteUrl(raw: string | null): string | null {
-  const value = raw?.trim();
-  if (!value) return null;
-  const scp = /^[A-Za-z0-9._-]+@([^:/]+):(?!\/)(.+)$/.exec(value);
-  const candidate = scp
-    ? `https://${scp[1]}/${scp[2]}`
-    : value.replace(/^ssh:\/\/(?:[^@/]+@)?/i, "https://").replace(/^git:\/\//i, "https://").replace(/^http:\/\//i, "https://");
-  let url: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || !url.hostname.includes(".")) return null;
-  const path = url.pathname.replace(/\.git$/i, "").replace(/\/+$/, "");
-  if (!path || path === "/") return null;
-  return `https://${url.hostname}${path}`;
-}
-
-// gitEvidence captures the canonical commit contract for outcome events: the
-// resolved commit, its parent when present, the branch and origin needed to
-// link that commit, and a bounded redacted patch. Missing git data is not an
-// error; evidence is simply omitted.
-function gitEvidence(cwd: string | undefined, run: GitRunner = spawnGit, commitRef = "HEAD"): GitEvidence | null {
-  if (!cwd) return null;
-  if (commitRef !== "HEAD" && !COMMIT_REF.test(commitRef)) return null;
-  const commit = runGit(run, cwd, ["rev-parse", "--verify", `${commitRef}^{commit}`]);
-  if (!commit || !COMMIT_SHA.test(commit)) return null;
-  const evidence: GitEvidence = { commit, provenance: "opencode-plugin" };
-  const base = runGit(run, cwd, ["rev-parse", "--verify", `${commit}~1^{commit}`]);
-  if (base && COMMIT_SHA.test(base)) evidence.base_commit = base;
-  const repository = normalizeRemoteUrl(runGit(run, cwd, ["remote", "get-url", "origin"]));
-  if (repository) evidence.repository_url = repository;
-  const ref = runGit(run, cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (ref && ref !== "HEAD" && GIT_REF.test(ref)) evidence.ref = ref;
-  const patch = runGit(run, cwd, ["show", "--format=", "--patch", "--unified=3", commit]);
-  if (patch) evidence.patch = boundedBytes(redactEvidenceText(patch), MAX_PATCH_BYTES);
-  return evidence;
-}
-
-// mergeOutcomeEvidence attaches commit provenance to agent-supplied evidence
-// without rewriting its meaning. A bare string remains a note.
-function mergeOutcomeEvidence(agentEvidence: string | undefined, git: GitEvidence | null): unknown {
-  const note = agentEvidence?.trim();
-  let supplied: unknown = note;
-  if (note) {
-    try { supplied = JSON.parse(note); } catch { /* Plain-text evidence is a note. */ }
-  }
-  if (!git) return supplied;
-  if (supplied && typeof supplied === "object" && !Array.isArray(supplied)) return { ...supplied, ...git };
-  if (note) return { note: boundedBytes(note, MAX_EVIDENCE_NOTE_BYTES), ...git };
-  return git;
-}
-
-function workspaceGitEvidence(worktree: string | undefined, directory: string | undefined, run: GitRunner = spawnGit, commitRef = "HEAD"): GitEvidence | null {
-  const primary = gitEvidence(worktree ?? directory, run, commitRef);
-  if (primary || !worktree || worktree === directory) return primary;
-  return gitEvidence(directory, run, commitRef);
-}
-
-function noteCommitRef(note: string | undefined): string | null {
-  const matches = [...(note?.matchAll(/\bcommit\s+([0-9a-f]{7,40})(?![0-9a-f])/gi) ?? [])].map((match) => match[1]!);
-  const candidates = [...new Set(matches.map((match) => match.toLowerCase()))];
-  return candidates.length === 1 ? candidates[0] : null;
-}
-
-function outcomeGitEvidence(
-  worktree: string | undefined,
-  directory: string | undefined,
-  note: string | undefined,
-  commitRef: string | undefined,
-  run: GitRunner = spawnGit,
-): GitEvidence | null {
-  if (commitRef) return workspaceGitEvidence(worktree, directory, run, commitRef);
-  const fallback = noteCommitRef(note);
-  return fallback ? workspaceGitEvidence(worktree, directory, run, fallback) : null;
-}
-
-type CommitArtifact = {
-  commit_sha: string;
-  parent_commit_sha: string | null;
-  committed_at: string;
-  subject: string;
-  repository_url: string | null;
-  ref: string | null;
-  provenance: "opencode";
-  patch: string;
-};
-
-type AsyncGit = (cwd: string, args: string[], maxBytes?: number) => Promise<string | null>;
-type ArtifactMetadata = { repository_url: string | null; ref: string | null };
-async function artifactMetadata(cwd: string, git: AsyncGit): Promise<ArtifactMetadata> {
-  const repository_url = normalizeRemoteUrl(await git(cwd, ["remote", "get-url", "origin"]));
-  const branch = (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim();
-  return { repository_url, ref: branch && GIT_REF.test(branch) ? branch : null };
-}
-const execGit = promisify(execFile);
-const liveGit: AsyncGit = async (cwd, args, maxBytes = 64 * 1024) => {
-  try {
-    const { stdout } = await execGit("git", args, { cwd, encoding: "utf8", timeout: 5_000, maxBuffer: maxBytes, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
-    return stdout.trimEnd();
-  } catch {
-    return null;
-  }
-};
-
-function isCommitCommand(toolName: string, args: unknown): boolean {
-  if (toolName !== "bash" || !args || typeof args !== "object") return false;
-  const command = (args as Record<string, unknown>).command;
-  return typeof command === "string" && /(?:^|[;&|\n]\s*|\s)git\s+(?:(?:-[Cc]\s+\S+|--git-dir(?:=|\s+)\S+)\s+)*commit(?:\s|$)/i.test(command);
-}
-
-function commitHint(output: unknown): string | null {
-  if (typeof output !== "string") return null;
-  const hints = [...output.matchAll(/^\[[^\]\r\n]+\s(?:\(root-commit\)\s+)?([0-9a-f]{7,40})\](?=\s|$)/gim)].map((match) => match[1]!.toLowerCase());
-  return hints.length === 1 ? hints[0]! : null;
-}
-
-async function gitHead(cwd: string, git: AsyncGit): Promise<string | null> {
-  const head = await git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
-  return head && COMMIT_SHA.test(head) ? head.toLowerCase() : null;
-}
-
-async function collectLiveCommit(cwd: string, baseline: string | null, hint: string, git: AsyncGit, metadata: ArtifactMetadata = { repository_url: null, ref: null }): Promise<CommitArtifact | null> {
-  const tip = await gitHead(cwd, git);
-  if (!tip || tip === baseline) return null;
-  const range = await git(cwd, baseline ? ["rev-list", "--max-count=33", `${baseline}..${tip}`] : ["rev-list", "--max-count=2", tip], 2_000);
-  if (!range) return null;
-  const candidates = range.split("\n");
-  if (candidates.length > (baseline ? 32 : 1) || candidates.some((sha) => !COMMIT_SHA.test(sha))) return null;
-  const matches = candidates.filter((sha) => sha.toLowerCase().startsWith(hint));
-  if (matches.length !== 1) return null;
-  const sha = matches[0]!;
-  // A range is meaningful only if the original checkout HEAD remains an ancestor.
-  if (baseline && await git(cwd, ["merge-base", "--is-ancestor", baseline, tip]) === null) return null;
-  const details = await git(cwd, ["show", "-s", "--format=%H%x00%P%x00%cI%x00%s", sha], 4_096);
-  const fields = details?.split("\0");
-  if (!fields || fields.length !== 4 || fields[0] !== sha || (!baseline && fields[1])) return null;
-  const [_, parents, date, rawSubject] = fields;
-  const committed = new Date(date!);
-  if (Number.isNaN(committed.getTime())) return null;
-  const patch = await git(cwd, ["-c", "diff.external=", "show", "--format=", "--patch", "--unified=3", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", sha, "--"], MAX_LIVE_PATCH_BYTES + 1);
-  if (!patch || Buffer.byteLength(patch, "utf8") > MAX_LIVE_PATCH_BYTES) return null;
-  const cleaned = redactEvidenceText(patch);
-  if (!cleaned || Buffer.byteLength(cleaned, "utf8") > MAX_LIVE_PATCH_BYTES) return null;
-  const subject = redactEvidenceText(rawSubject!).replace(/[\p{Cc}]/gu, " ").slice(0, 500);
-  const current = await artifactMetadata(cwd, git);
-  return { commit_sha: sha, parent_commit_sha: parents!.split(" ")[0] || null, committed_at: committed.toISOString(), subject, repository_url: metadata.repository_url === current.repository_url ? metadata.repository_url : null, ref: metadata.ref === current.ref ? metadata.ref : null, provenance: "opencode", patch: cleaned };
-}
-
-async function postGitArtifact(conn: Connection, sessionID: string, artifact: CommitArtifact, repo: string | null): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
-  try {
-    const headers: Record<string, string> = { authorization: `Bearer ${conn.token}`, "content-type": "application/json", "x-mimir-harness": "opencode", "x-mimir-session": sessionID };
-    if (repo) headers["x-mimir-repo"] = repo;
-    const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(sessionID)}/git-artifacts`, {
-      method: "POST", headers, body: JSON.stringify({ version: 1, commits: [artifact] }), signal: controller.signal,
-    });
-    if (!response.ok) return false;
-    const result = await response.json() as { kind?: string; artifacts?: Array<{ capture_status?: string }> };
-    return result.kind === "ok" && result.artifacts?.[0]?.capture_status === "saved";
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function createCommitReporter(
-  cwd: string | undefined,
-  git: AsyncGit,
-  send: (sessionID: string, artifact: CommitArtifact) => Promise<boolean>,
-  schedule: (callback: () => void, delay: number) => unknown = setTimeout,
-) {
-  const calls = new Map<string, { baseline: string | null; observed: boolean; metadata: ArtifactMetadata }>();
-  const jobs = new Set<string>();
-  const uploading = new Set<string>();
-  const saved = new Set<string>();
-  const key = (sessionID: string, callID: string) => JSON.stringify([sessionID, callID]);
-  return {
-    async before(input: { tool: string; sessionID: string; callID: string }, output: { args: unknown }): Promise<void> {
-      if (!cwd || !input.sessionID || !input.callID || !isCommitCommand(input.tool, output.args)) return;
-      const id = key(input.sessionID, input.callID);
-      // Reserve the key before the async HEAD lookup; duplicate hooks cannot overwrite it.
-      if (calls.has(id)) return;
-      if (calls.size >= MAX_COMMIT_CALLS) calls.delete(calls.keys().next().value!);
-      const call = { baseline: null as string | null, observed: false, metadata: { repository_url: null, ref: null } as ArtifactMetadata };
-      calls.set(id, call);
-      try {
-        call.baseline = await gitHead(cwd, git);
-        call.metadata = await artifactMetadata(cwd, git);
-        call.observed = true;
-      } catch {
-        // Local Git failure must not interrupt the tool.
-      }
-    },
-    after(input: { sessionID: string; callID: string }, output: { output?: unknown; metadata?: Record<string, unknown> }): void {
-      if (!input.sessionID || !input.callID) return;
-      const id = key(input.sessionID, input.callID);
-      const call = calls.get(id);
-      calls.delete(id);
-      if (!cwd || !call?.observed || output.metadata?.exitCode !== undefined && output.metadata.exitCode !== 0 || output.metadata?.isError === true) return;
-      const hint = commitHint(output.output);
-      if (!hint || jobs.size >= MAX_COMMIT_CALLS) return;
-      jobs.add(id);
-      void (async () => {
-        try {
-          const artifact = await collectLiveCommit(cwd, call.baseline, hint, git, call.metadata);
-          if (!artifact) return;
-          const commitKey = key(input.sessionID, artifact.commit_sha);
-          if (saved.has(commitKey) || uploading.has(commitKey)) return;
-          uploading.add(commitKey);
-          try {
-            for (let attempt = 0; attempt < 4; attempt++) {
-              if (await send(input.sessionID, artifact)) {
-                if (saved.size >= MAX_COMMIT_CALLS) saved.delete(saved.values().next().value!);
-                saved.add(commitKey);
-                return;
-              }
-              if (attempt < 3) await new Promise<void>((resolve) => schedule(resolve, 250 * 2 ** attempt));
-            }
-          } finally {
-            uploading.delete(commitKey);
-          }
-        } catch {
-          // Git collection and delivery are strictly best-effort.
-        } finally {
-          jobs.delete(id);
-        }
-      })();
-    },
-    pending: () => calls.size,
-  };
-}
-
 function createDeliveryQueue(
   send: (event: SessionEvent) => Promise<boolean>,
   schedule: (callback: () => void, delay: number) => unknown = setTimeout,
@@ -774,54 +630,6 @@ async function postDirectExchange(conn: Connection, sessionID: string, exchange:
   }
 }
 
-async function sessionRequest(conn: Connection, sessionID: string, path: "status" | "outcome", body?: Record<string, unknown>): Promise<string> {
-  const response = await fetch(`${conn.url}/sessions/${encodeURIComponent(sessionID)}/${path}`, {
-    method: body ? "POST" : "GET",
-    headers: { authorization: `Bearer ${conn.token}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`Mimir ${path} failed (${response.status}): ${text}`);
-  return text;
-}
-
-function formatSessionReceipt(text: string): string {
-  let status: Record<string, unknown>;
-  try {
-    status = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return text;
-  }
-  const capture = typeof status.capture === "object" && status.capture ? status.capture as Record<string, unknown> : {};
-  const receipt = typeof status.receipt === "object" && status.receipt ? status.receipt as Record<string, unknown> : {};
-  const saved = typeof capture.saved_exchanges === "number" ? capture.saved_exchanges : 0;
-  const failed = typeof capture.failed_exchanges === "number" ? capture.failed_exchanges : 0;
-  const pending = typeof capture.pending_exchanges === "number" ? capture.pending_exchanges : 0;
-  const captureStatus = typeof capture.status === "string" ? capture.status : "";
-  let state = typeof receipt.label === "string" && receipt.label ? receipt.label : "Mimir status";
-  let detail = typeof receipt.detail === "string" ? receipt.detail : "";
-  if ((failed > 0 && (saved > 0 || pending > 0)) || captureStatus === "partial") {
-    state = "Partial";
-    detail = `${saved} saved · ${failed} failed${pending > 0 ? ` · ${pending} pending` : ""}`;
-  } else if (captureStatus === "saved") {
-    state = "Saved";
-    detail = `${saved} ${saved === 1 ? "exchange" : "exchanges"}`;
-  } else if (captureStatus === "pending" || pending > 0) {
-    state = "Saving…";
-    detail = pending > 0 ? `${pending} pending` : detail;
-  } else if (captureStatus === "failed") {
-    state = "Couldn’t save this session";
-    detail = failed > 0 ? `${failed} failed` : detail;
-  }
-  const outcome = typeof status.outcome === "string" && status.outcome ? status.outcome.toUpperCase() : "";
-  const parts = [`◆ Mimir  ${state}`];
-  if (detail) parts.push(detail);
-  if (outcome) parts.push(outcome);
-  let result = parts.join(" · ");
-  if (typeof status.dashboard_url === "string" && status.dashboard_url) result += `\nView session: ${status.dashboard_url}`;
-  return result;
-}
-
 function createDirectExchangeReporter(
   load: (sessionID: string) => Promise<unknown>,
   send: (sessionID: string, exchange: DirectExchange) => Promise<boolean>,
@@ -867,19 +675,17 @@ function createDirectExchangeReporter(
 const server: Plugin = async ({ client, directory, worktree }) => {
   const conn = loadConnection();
   if (!conn) return {};
-  const readLocalFile = (path: string) => {
-    try { return existsSync(path) ? readFileSync(path, "utf8") : null; } catch { return null; }
-  };
-  const home = (() => { try { return homedir(); } catch { return undefined; } })();
-  const load = loadHarnessLoad(process.env, readLocalFile, home);
+  const load = loadHarnessLoad(process.env, readLocalFile, homeDirectory());
   if (load) reportHarnessLoad(conn, load);
   const repo = repoName(worktree);
+  const gitHook = (sessionID: string, input: { tool_output: string } | { refresh: true }) => runGitHook({
+    session_id: sessionID, cwd: directory, harness: "opencode", ...(repo ? { repo } : {}), ...input,
+  });
   const delivery = createDeliveryQueue((event) => postEvent(conn, event));
   const exchangeReporter = createDirectExchangeReporter(
     (sessionID) => (client as unknown as OpenCodeClient).session.messages({ path: { id: sessionID } }),
     (sessionID, exchange) => postDirectExchange(conn, sessionID, exchange, repo),
   );
-  const commitReporter = createCommitReporter(worktree ?? directory, liveGit, (sessionID, artifact) => postGitArtifact(conn, sessionID, artifact, repo));
   const activity = createActivityTracker();
 
   const timer = setInterval(() => {
@@ -889,36 +695,12 @@ const server: Plugin = async ({ client, directory, worktree }) => {
   (timer as { unref?: () => void }).unref?.();
 
   return {
-    "tool.execute.before": async (input, output) => { await commitReporter.before(input, output); },
-    "tool.execute.after": async (input, output) => { commitReporter.after(input, output); },
-    tool: {
-      mimir_session_status: tool({
-        description: "Verify the current OpenCode session's durable Mimir capture status.",
-        args: {},
-        async execute(_args, context) {
-          context.metadata?.({ title: "Mimir receipt" });
-          if (!context.sessionID) throw new Error("OpenCode session identity is unavailable");
-          return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
-        },
-      }),
-      mimir_session_outcome: tool({
-        description: "Record the evidenced work outcome for the current OpenCode session. Call this before the final response after meaningful completed work; child-session outcomes apply to the root work session.",
-        args: {
-          outcome: tool.schema.enum(["landed", "discarded", "abandoned", "unresolved"]),
-          reason: tool.schema.string().min(1).max(2000),
-          evidence: tool.schema.string().max(32000).optional(),
-          commit: tool.schema.string().regex(COMMIT_REF).optional(),
-        },
-        async execute(args, context) {
-          context.metadata?.({ title: "Mimir receipt" });
-          if (!context.sessionID) throw new Error("OpenCode session identity is unavailable");
-          const git = outcomeGitEvidence(worktree, directory, args.evidence, args.commit);
-          const evidence = mergeOutcomeEvidence(args.evidence, git);
-          await sessionRequest(conn, context.sessionID, "outcome", { outcome: args.outcome, reason: args.reason, ...(evidence !== undefined ? { evidence } : {}) });
-          return formatSessionReceipt(await sessionRequest(conn, context.sessionID, "status"));
-        },
-      }),
+    "tool.execute.after": async (input, output) => {
+      if (!input.sessionID || !SHELL_TOOL.test(input.tool)) return;
+      const confirmations = commitConfirmations(output.output);
+      if (confirmations) gitHook(input.sessionID, { tool_output: confirmations });
     },
+    tool: mimirTools(conn),
     "chat.headers": async (input: { sessionID: string; model?: { providerID?: string } }, output: { headers: Record<string, string> }) => {
       if (input.model?.providerID !== "openrouter" || !input.sessionID) return;
       output.headers["x-mimir-session"] = input.sessionID;
@@ -947,11 +729,16 @@ const server: Plugin = async ({ client, directory, worktree }) => {
         }
         return;
       }
+      if (event.type === "session.idle") {
+        if (typeof properties.sessionID === "string" && properties.sessionID) gitHook(properties.sessionID, { refresh: true });
+        return;
+      }
       if (event.type === "session.deleted") {
         const info = properties.info as Record<string, unknown> | undefined;
         if (typeof info?.id === "string") {
           activity.clear(info.id);
           delivery.deliver({ version: 1, kind: "end", session_id: info.id, harness: "opencode", repo, ts: new Date().toISOString(), reason: "session deleted" });
+          gitHook(info.id, { refresh: true });
         }
       }
     },
@@ -963,4 +750,4 @@ export default { id: "mimir", server };
 
 // Test surface. The OpenCode plugin loader only invokes function exports, so
 // this object is inert in production.
-export const __testing = { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, sessionRequest, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes };
+export const __testing = { parseMimirConfig, resolveConnection, mimirExecutable, commitConfirmations, callMimirTool, mimirToolSpecs, buildTurnEvent, buildDirectExchange, normalizeParts, normalizeToolActivity, jsonSafe, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad };

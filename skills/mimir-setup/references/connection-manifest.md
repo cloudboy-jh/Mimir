@@ -32,9 +32,10 @@ dynamic request metadata:
 - `x-mimir-request-kind`: `primary`, `title`, `summary`, or `compaction`; only
   `primary` can establish session intent
 
-The manifest is the generic integration contract. The Mimir-owned Hermes
-integration installs its required values automatically; OpenCode and other
-harnesses consume the manifest through their supported configuration flow.
-Without an exact session ID,
-Mimir falls back to repository/harness grouping with a configurable inactivity
-gap that defaults to 15 minutes.
+The manifest covers capture. To let an unsupported harness query Mimir, add a
+stdio MCP server named `mimir` that runs `<absolute path to mimir> mcp`; it
+uses the same machine token.
+
+The bundled integrations install their required values automatically. Without
+an exact session ID, Mimir groups proxied traffic by repository, harness, and
+device with a configurable inactivity gap that defaults to 15 minutes.

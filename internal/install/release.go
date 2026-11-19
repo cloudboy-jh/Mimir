@@ -1,99 +1,75 @@
 package install
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-	"path/filepath"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 )
 
-func semverCompareRelease(left, right string) int {
-	var lmajor, lminor, lpatch, rmajor, rminor, rpatch int
-	if _, err := fmt.Sscanf(strings.TrimPrefix(left, "v"), "%d.%d.%d", &lmajor, &lminor, &lpatch); err != nil {
+const (
+	// InstallScriptURL and InstallPowerShellURL are the canonical installers.
+	InstallScriptURL     = "https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.sh"
+	InstallPowerShellURL = "https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1"
+	releaseRepository    = "cloudboy-jh/mimir"
+)
+
+var releaseClient = &http.Client{Timeout: 30 * time.Second}
+
+// LatestRelease returns the latest stable release version without a leading v.
+// MIMIR_GITHUB_API_URL overrides the GitHub API base, as in the installers.
+func LatestRelease(ctx context.Context) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("MIMIR_GITHUB_API_URL")), "/")
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+releaseRepository+"/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("accept", "application/vnd.github+json")
+	req.Header.Set("user-agent", "mimir-cli")
+	res, err := releaseClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("checking for updates: %w", err)
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", fmt.Errorf("checking for updates: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		return "", fmt.Errorf("checking for updates: GET %s: %s", req.URL, res.Status)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.Unmarshal(data, &release); err != nil || release.TagName == "" {
+		return "", fmt.Errorf("checking for updates: invalid GitHub response")
+	}
+	return strings.TrimPrefix(release.TagName, "v"), nil
+}
+
+// CompareVersions compares two x.y.z versions; unparseable versions compare equal.
+func CompareVersions(left, right string) int {
+	var l, r [3]int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(left, "v"), "%d.%d.%d", &l[0], &l[1], &l[2]); err != nil {
 		return 0
 	}
-	if _, err := fmt.Sscanf(strings.TrimPrefix(right, "v"), "%d.%d.%d", &rmajor, &rminor, &rpatch); err != nil {
+	if _, err := fmt.Sscanf(strings.TrimPrefix(right, "v"), "%d.%d.%d", &r[0], &r[1], &r[2]); err != nil {
 		return 0
 	}
-	for _, pair := range [][2]int{{lmajor, rmajor}, {lminor, rminor}, {lpatch, rpatch}} {
-		if pair[0] < pair[1] {
-			return -1
-		}
-		if pair[0] > pair[1] {
+	for i := range l {
+		if l[i] != r[i] {
+			if l[i] < r[i] {
+				return -1
+			}
 			return 1
 		}
 	}
 	return 0
-}
-
-func releaseAssetNameForPlatform(version, goos, goarch string) string {
-	format := "tar.gz"
-	if goos == "windows" {
-		format = "zip"
-	}
-	return fmt.Sprintf("mimir_%s_%s_%s.%s", version, goos, goarch, format)
-}
-
-func parseReleaseChecksum(checksums, assetName string) (string, bool) {
-	for _, line := range strings.Split(checksums, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == assetName {
-			return fields[0], true
-		}
-	}
-	return "", false
-}
-
-func extractReleaseBinary(archive []byte, goos string) ([]byte, error) {
-	if goos == "windows" {
-		reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
-		if err != nil {
-			return nil, fmt.Errorf("reading release archive: %w", err)
-		}
-		for _, file := range reader.File {
-			if filepath.Base(file.Name) != "mimir.exe" {
-				continue
-			}
-			contents, err := file.Open()
-			if err != nil {
-				return nil, err
-			}
-			defer contents.Close()
-			return io.ReadAll(contents)
-		}
-		return nil, fmt.Errorf("release archive does not contain mimir.exe")
-	}
-	reader, err := gzip.NewReader(bytes.NewReader(archive))
-	if err != nil {
-		return nil, fmt.Errorf("reading release archive: %w", err)
-	}
-	defer reader.Close()
-	tarReader := tar.NewReader(reader)
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("reading release archive: %w", err)
-		}
-		if header.Typeflag == tar.TypeReg && filepath.Base(header.Name) == "mimir" {
-			return io.ReadAll(tarReader)
-		}
-	}
-	return nil, fmt.Errorf("release archive does not contain the mimir binary")
-}
-
-func managedByKnownPackageManager(path string) bool {
-	lower := strings.ToLower(strings.ReplaceAll(path, "\\", "/"))
-	for _, marker := range []string{"/homebrew/", "/cellar/", "/linuxbrew/", "/scoop/", "/chocolatey/", "/nix/store/"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
 }

@@ -1,185 +1,141 @@
-import { describe, expect, it } from "bun:test";
-import plugin, { MimirPlugin, __testing } from "./mimir";
+import { afterEach, describe, expect, it, mock } from "bun:test";
+import * as childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
 
-const { parseMimirConfig, resolveConnection, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, createCommitReporter, collectLiveCommit, postGitArtifact, isCommitCommand, commitHint, postEvent, postDirectExchange, formatSessionReceipt, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad, gitEvidence, workspaceGitEvidence, outcomeGitEvidence, noteCommitRef, mergeOutcomeEvidence, normalizeRemoteUrl, redactEvidenceText, boundedBytes } = __testing;
-
-describe("live Git commit capture", () => {
-  const base = "a".repeat(40);
-  const sha = "b".repeat(40);
-  const command = { command: 'git add . && git commit -m "fix"' };
-  const output = { output: `[main ${sha.slice(0, 7)}] fix\n 1 file changed` };
-  const patch = 'diff --git a/f b/f\n+token=supersecretvalue\n+Bearer abc.def.ghi\n';
-  const git = async (_cwd: string, args: string[]) => {
-    const responses: Record<string, string> = {
-      "rev-parse --verify HEAD^{commit}": base,
-      [`rev-list --max-count=33 ${base}..${sha}`]: sha,
-      [`merge-base --is-ancestor ${base} ${sha}`]: "",
-      [`show -s --format=%H%x00%P%x00%cI%x00%s ${sha}`]: [sha, base, "2026-09-28T12:00:00Z", "token=supersecretvalue"].join("\0"),
-      [`-c diff.external= show --format= --patch --unified=3 --no-ext-diff --no-textconv --no-renames --no-color ${sha} --`]: patch,
-    };
-    // HEAD advances only after the tool has run.
-    return args.join(" ") === "rev-parse --verify HEAD^{commit}" ? (advanced ? sha : base) : responses[args.join(" ")] ?? null;
-  };
-  let advanced = false;
-
-  it("snapshots safe origin and branch before the tool and drops metadata after switches", async () => {
-    for (const scenario of ["normal", "missing", "detached", "branch-switch", "origin-switch"]) {
-      advanced = false;
-      const metadataGit = async (cwd: string, args: string[]) => {
-        if (args[0] === "remote") return scenario === "missing" ? null : advanced && scenario === "origin-switch" ? "https://github.com/other/repo" : "https://user:password@github.com/owner/repo.git?token=secret#fragment";
-        if (args[0] === "symbolic-ref") return scenario === "detached" ? null : advanced && scenario === "branch-switch" ? "other" : "main";
-        return git(cwd, args);
-      };
-      const sent: unknown[] = [];
-      const reporter = createCommitReporter("/repo", metadataGit, async (session, artifact) => { expect(session).toBe("exact"); sent.push(artifact); return true; });
-      await reporter.before({ tool: "bash", sessionID: "exact", callID: "call" }, { args: command });
-      advanced = true;
-      reporter.after({ sessionID: "exact", callID: "call" }, output);
-      await Bun.sleep(10);
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toMatchObject({ commit_sha: sha, repository_url: ["missing", "origin-switch"].includes(scenario) ? null : "https://github.com/owner/repo", ref: ["detached", "branch-switch"].includes(scenario) ? null : "main" });
-      expect(JSON.stringify(sent)).not.toContain("password");
-      expect(JSON.stringify(sent)).not.toContain("fragment");
-    }
-  });
-
-  it("attributes an exact successful call, redacts locally, and retries upload without waiting on the after hook", async () => {
-    advanced = false;
-    const sent: Array<{ session: string; artifact: unknown }> = [];
-    const scheduled: Array<() => void> = [];
-    let attempts = 0;
-    const reporter = createCommitReporter("/repo", git, async (session, artifact) => {
-      sent.push({ session, artifact });
-      return ++attempts === 2;
-    }, (callback) => { scheduled.push(callback); });
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "call" }, { args: command });
-    advanced = true;
-    reporter.after({ sessionID: "other", callID: "call" }, output);
-    reporter.after({ sessionID: "one", callID: "wrong" }, output);
-    expect(reporter.pending()).toBe(1);
-    reporter.after({ sessionID: "one", callID: "call" }, output);
-    reporter.after({ sessionID: "one", callID: "call" }, output);
-    await Bun.sleep(10);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.session).toBe("one");
-    expect(sent[0]?.artifact).toMatchObject({ commit_sha: sha, parent_commit_sha: base, provenance: "opencode", committed_at: "2026-09-28T12:00:00.000Z", repository_url: null, ref: null });
-    expect(JSON.stringify(sent[0]?.artifact)).not.toContain("supersecretvalue");
-    expect(JSON.stringify(sent[0]?.artifact)).not.toContain("abc.def.ghi");
-    scheduled.shift()?.();
-    await Bun.sleep(0);
-    expect(sent).toHaveLength(2);
-    expect(reporter.pending()).toBe(0);
-  });
-
-  it("rejects absent or ambiguous hints, failures, and unrelated tool calls", async () => {
-    advanced = false;
-    let uploads = 0;
-    const reporter = createCommitReporter("/repo", git, async () => { uploads++; return true; });
-    expect(isCommitCommand("read", command)).toBe(false);
-    expect(isCommitCommand("bash", { command: "git status" })).toBe(false);
-    expect(commitHint("[main abcdef0] ok\n[main 1234567] other")).toBeNull();
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "fail" }, { args: command });
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "missing" }, { args: command });
-    await reporter.before({ tool: "read", sessionID: "one", callID: "other" }, { args: command });
-    advanced = true;
-    reporter.after({ sessionID: "one", callID: "fail" }, { ...output, metadata: { exitCode: 1 } });
-    reporter.after({ sessionID: "one", callID: "missing" }, { output: "commit succeeded" });
-    reporter.after({ sessionID: "one", callID: "other" }, output);
-    await Bun.sleep(0);
-    expect(uploads).toBe(0);
-  });
-
-  it("does not attribute a commit to an absent session identity", async () => {
-    let uploads = 0;
-    const reporter = createCommitReporter("/repo", git, async () => { uploads++; return true; });
-    await reporter.before({ tool: "bash", sessionID: "", callID: "call" }, { args: command });
-    reporter.after({ sessionID: "", callID: "call" }, output);
-    expect(reporter.pending()).toBe(0);
-    expect(uploads).toBe(0);
-  });
-
-  it("never captures a commit without a pre-tool checkout baseline", async () => {
-    const reporter = createCommitReporter("/repo", async () => null, async () => { throw new Error("unexpected upload"); });
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "call" }, { args: command });
-    reporter.after({ sessionID: "one", callID: "call" }, output);
-    expect(reporter.pending()).toBe(0);
-  });
-
-  it("captures an initial root commit from Git's actual output and suppresses duplicate after hooks", async () => {
-    const sent: string[] = [];
-    let tip: string | null = null;
-    const rootGit = async (_cwd: string, args: string[]) => {
-      const command = args.join(" ");
-      if (command === "rev-parse --verify HEAD^{commit}") return tip;
-      if (command === `rev-list --max-count=2 ${sha}`) return sha;
-      if (command === `show -s --format=%H%x00%P%x00%cI%x00%s ${sha}`) return [sha, "", "2026-09-28T12:00:00Z", "initial"].join("\0");
-      if (args.includes("--patch")) return "diff --git a/f b/f\n+first\n";
-      return null;
-    };
-    const reporter = createCommitReporter("/repo", rootGit, async (session, artifact) => { sent.push(`${session}:${artifact.commit_sha}`); return true; });
-    await reporter.before({ tool: "bash", sessionID: "root", callID: "first" }, { args: command });
-    tip = sha;
-    const result = { output: `[main (root-commit) ${sha.slice(0, 7)}] initial` };
-    reporter.after({ sessionID: "root", callID: "first" }, result);
-    reporter.after({ sessionID: "root", callID: "first" }, result);
-    await Bun.sleep(10);
-    expect(sent).toEqual([`root:${sha}`]);
-    expect(await collectLiveCommit("/repo", null, "c".repeat(7), rootGit)).toBeNull();
-    const notRoot = async (cwd: string, args: string[]) => args[0] === "show" && args[1] === "-s"
-      ? [sha, base, "2026-09-28T12:00:00Z", "not root"].join("\0") : rootGit(cwd, args);
-    expect(await collectLiveCommit("/repo", null, sha.slice(0, 7), notRoot)).toBeNull();
-  });
-
-  it("uploads a shared commit once across concurrent call IDs for the same session", async () => {
-    advanced = false;
-    const sent: string[] = [];
-    let finish!: (saved: boolean) => void;
-    const reporter = createCommitReporter("/repo", git, async (session, artifact) => {
-      sent.push(`${session}:${artifact.commit_sha}`);
-      return new Promise<boolean>((resolve) => { finish = resolve; });
+type SpawnCall = { command: string; args: string[]; input: unknown };
+const spawned: SpawnCall[] = [];
+mock.module("node:child_process", () => ({
+  ...childProcess,
+  spawn: (command: string, args: string[]) => {
+    const child = Object.assign(new EventEmitter(), {
+      stdin: Object.assign(new EventEmitter(), {
+        end: (data: string) => { spawned.push({ command, args, input: JSON.parse(data) }); },
+      }),
+      kill: () => true,
+      unref: () => {},
     });
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "a" }, { args: command });
-    await reporter.before({ tool: "bash", sessionID: "one", callID: "b" }, { args: command });
-    advanced = true;
-    reporter.after({ sessionID: "one", callID: "a" }, output);
-    reporter.after({ sessionID: "one", callID: "b" }, output);
-    await Bun.sleep(10);
-    expect(sent).toEqual([`one:${sha}`]);
-    finish(true);
-    await Bun.sleep(0);
-    expect(sent).toHaveLength(1);
+    // A missing binary surfaces asynchronously, as real spawn reports ENOENT.
+    if (command === "/missing/mimir") queueMicrotask(() => child.emit("error", new Error("spawn ENOENT")));
+    return child;
+  },
+}));
+// The plugin must load after spawn is mocked, so a static import cannot be used.
+const { default: plugin, MimirPlugin, __testing } = await import("./mimir");
+
+const { parseMimirConfig, resolveConnection, mimirExecutable, commitConfirmations, mimirToolSpecs, buildTurnEvent, buildDirectExchange, repoName, createActivityTracker, createDeliveryQueue, createDirectExchangeReporter, postEvent, postDirectExchange, buildHarnessLoad, loadHarnessLoad, postHarnessLoad, reportHarnessLoad } = __testing;
+
+const originalEnv = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN, MIMIR_BIN: process.env.MIMIR_BIN };
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  spawned.length = 0;
+  globalThis.fetch = originalFetch;
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+});
+
+async function startPlugin(respond: (request: Request) => Response | Promise<Response> = () => new Response("{}")) {
+  process.env.MIMIR_URL = "https://mimir.example";
+  process.env.MIMIR_TOKEN = "tok";
+  process.env.MIMIR_BIN = "/opt/mimir/bin/mimir";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => respond(new Request(input, init))) as typeof fetch;
+  return plugin.server({ directory: "/work/mimir/worker", worktree: "/work/mimir" } as never);
+}
+
+const toolContext = { sessionID: "ses_1", abort: new AbortController().signal, metadata() {} } as never;
+
+describe("commit capture through mimir _hook git", () => {
+  it("resolves the Mimir binary from MIMIR_BIN, then config executable, then PATH", () => {
+    const files: Record<string, string> = { "/home/u/.mimir/config": 'url = "https://mimir.example"\nexecutable=/usr/local/bin/mimir\n' };
+    const read = (path: string) => files[path.replace(/\\/g, "/")] ?? null;
+    expect(mimirExecutable({ MIMIR_BIN: " /opt/mimir " }, read, "/home/u")).toBe("/opt/mimir");
+    expect(mimirExecutable({}, read, "/home/u")).toBe("/usr/local/bin/mimir");
+    files["/custom/config"] = 'executable = "C:\\Tools\\mimir.exe"\r\n';
+    expect(mimirExecutable({ MIMIR_HOME: "/custom" }, read, "/home/u")).toBe("C:\\Tools\\mimir.exe");
+    expect(mimirExecutable({}, () => null, "/home/u")).toBe("mimir");
   });
 
-  it("requires a new reachable commit matching the result and skips oversized patches", async () => {
-    advanced = true;
-    expect(await collectLiveCommit("/repo", base, "c".repeat(7), git)).toBeNull();
-    expect(await collectLiveCommit("/repo", sha, sha.slice(0, 7), git)).toBeNull();
-    const unreachable = async (cwd: string, args: string[]) => args[0] === "merge-base" ? null : git(cwd, args);
-    expect(await collectLiveCommit("/repo", base, sha.slice(0, 7), unreachable)).toBeNull();
-    const huge = async (cwd: string, args: string[]) => args.includes("--patch") ? "x".repeat(4 * 1024 * 1024 + 1) : git(cwd, args);
-    expect(await collectLiveCommit("/repo", base, sha.slice(0, 7), huge)).toBeNull();
+  it("extracts only commit confirmation lines", () => {
+    expect(commitConfirmations("lint ok\n[main 1a2b3c4] fix\n 1 file changed")).toBe("[main 1a2b3c4] fix");
+    expect(commitConfirmations("[main (root-commit) 1a2b3c4] first")).toBe("[main (root-commit) 1a2b3c4] first");
+    expect(commitConfirmations("nothing to commit, working tree clean")).toBeNull();
+    expect(commitConfirmations(undefined)).toBeNull();
   });
 
-  it("posts one bounded artifact to the authenticated Worker endpoint and handles failed saves", async () => {
-    const original = globalThis.fetch;
-    let request: Request | undefined;
-    const artifact = { commit_sha: sha, parent_commit_sha: base, committed_at: "2026-09-28T12:00:00.000Z", subject: "fix", repository_url: null, ref: null, provenance: "opencode" as const, patch: "diff --git a/f b/f" };
-    try {
-      globalThis.fetch = async (input, init) => { request = new Request(input, init); return Response.json({ kind: "ok", artifacts: [{ capture_status: "saved" }] }); };
-      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, "repo")).toBe(true);
-      expect(request?.url).toBe("https://mimir.test/sessions/session%2Fid/git-artifacts");
-      expect(request?.headers.get("authorization")).toBe("Bearer secret");
-      expect(request?.headers.get("x-mimir-harness")).toBe("opencode");
-      expect(request?.headers.get("x-mimir-session")).toBe("session/id");
-      expect(request?.headers.get("x-mimir-repo")).toBe("repo");
-      expect(await request?.json()).toEqual({ version: 1, commits: [artifact] });
-      globalThis.fetch = async () => Response.json({ kind: "partial", artifacts: [{ capture_status: "failed" }] });
-      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, null)).toBe(false);
-      globalThis.fetch = async () => { throw new Error("offline"); };
-      expect(await postGitArtifact({ url: "https://mimir.test", token: "secret" }, "session/id", artifact, null)).toBe(false);
-    } finally {
-      globalThis.fetch = original;
-    }
+  it("hands shell commit output to the exact session and refreshes on idle and deletion", async () => {
+    const hooks = await startPlugin();
+    const after = hooks["tool.execute.after"]!;
+    await after({ tool: "bash", sessionID: "ses_1", callID: "c1", args: {} }, { title: "", output: "[main 1a2b3c4] fix\n 1 file changed", metadata: {} });
+    await after({ tool: "read", sessionID: "ses_1", callID: "c2", args: {} }, { title: "", output: "[main 1a2b3c4] fix", metadata: {} });
+    await after({ tool: "bash", sessionID: "", callID: "c3", args: {} }, { title: "", output: "[main 1a2b3c4] fix", metadata: {} });
+    await after({ tool: "bash", sessionID: "ses_1", callID: "c4", args: {} }, { title: "", output: "nothing to commit", metadata: {} });
+    expect(spawned).toEqual([{
+      command: "/opt/mimir/bin/mimir",
+      args: ["_hook", "git"],
+      input: { session_id: "ses_1", cwd: "/work/mimir/worker", harness: "opencode", repo: "mimir", tool_output: "[main 1a2b3c4] fix" },
+    }]);
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "ses_1" } } } as never);
+    await hooks.event!({ event: { type: "session.deleted", properties: { info: { id: "ses_2" } } } } as never);
+    expect(spawned.slice(1).map((call) => call.input)).toEqual([
+      { session_id: "ses_1", cwd: "/work/mimir/worker", harness: "opencode", repo: "mimir", refresh: true },
+      { session_id: "ses_2", cwd: "/work/mimir/worker", harness: "opencode", repo: "mimir", refresh: true },
+    ]);
+  });
+
+  it("a failed Mimir binary never interrupts the tool", async () => {
+    const hooks = await startPlugin();
+    process.env.MIMIR_BIN = "/missing/mimir";
+    await hooks["tool.execute.after"]!({ tool: "bash", sessionID: "ses_1", callID: "c1", args: {} }, { title: "", output: "[main 1a2b3c4] fix", metadata: {} });
+    expect(spawned.map((call) => call.command)).toEqual(["/missing/mimir"]);
+  });
+});
+
+describe("Mimir MCP tools", () => {
+  it("registers exactly the forwarding query tools", async () => {
+    const hooks = await startPlugin();
+    expect(Object.keys(hooks.tool!).sort()).toEqual([
+      "mimir_commit_patch", "mimir_commits", "mimir_day", "mimir_devices", "mimir_search",
+      "mimir_session", "mimir_sessions", "mimir_stats", "mimir_turns",
+    ]);
+  });
+
+  it("declares the MCP argument contract", () => {
+    const shape = (args: Record<string, { isOptional(): boolean }>) => Object.fromEntries(Object.entries(args).map(([key, schema]) => [key, schema.isOptional() ? "optional" : "required"]));
+    expect(shape(mimirToolSpecs.search.args)).toEqual({ query: "required", repo: "optional", from: "optional", to: "optional", limit: "optional" });
+    expect(Object.keys(mimirToolSpecs.sessions.args)).toEqual(["q", "repo", "harness", "device", "state", "git_status", "from", "to", "limit", "cursor"]);
+    expect(shape(mimirToolSpecs.session.args)).toEqual({ id: "required" });
+    expect(shape(mimirToolSpecs.turns.args)).toEqual({ id: "required", cursor: "optional", limit: "optional", order: "optional" });
+    expect(shape(mimirToolSpecs.stats.args)).toEqual({ group_by: "required", from: "optional", to: "optional", tz: "optional" });
+    expect(shape(mimirToolSpecs.day.args)).toEqual({ date: "optional", tz: "optional" });
+    expect(mimirToolSpecs.devices.args).toEqual({});
+    expect(Object.keys(mimirToolSpecs.commits.args)).toEqual(["repo", "ref", "q", "session", "from", "to", "limit", "cursor"]);
+    expect(shape(mimirToolSpecs.commit_patch.args)).toEqual({ session_id: "required", sha: "required", max_bytes: "optional" });
+  });
+
+  it("forwards tools/call with the machine token and returns the result JSON text", async () => {
+    const requests: Request[] = [];
+    const result = { sessions: [], next_cursor: null };
+    const hooks = await startPlugin((request) => {
+      if (request.url.endsWith("/mcp")) requests.push(request);
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
+    });
+    expect(await hooks.tool!.mimir_sessions.execute({ repo: "mimir", limit: 5 }, toolContext)).toBe(JSON.stringify(result));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toBe("https://mimir.example/mcp");
+    expect(requests[0]!.method).toBe("POST");
+    expect(requests[0]!.headers.get("authorization")).toBe("Bearer tok");
+    expect(await requests[0]!.json()).toEqual({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "sessions", arguments: { repo: "mimir", limit: 5 } } });
+  });
+
+  it("surfaces tool errors, JSON-RPC errors and HTTP failures", async () => {
+    let reply = () => Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "query is required" }], isError: true } });
+    const hooks = await startPlugin(() => reply());
+    await expect(hooks.tool!.mimir_search.execute({ query: "x" }, toolContext)).rejects.toThrow("Mimir search failed: query is required");
+    reply = () => Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } });
+    await expect(hooks.tool!.mimir_devices.execute({}, toolContext)).rejects.toThrow("Mimir devices failed: Method not found");
+    reply = () => new Response("unauthorized", { status: 401 });
+    await expect(hooks.tool!.mimir_stats.execute({ group_by: "repo" }, toolContext)).rejects.toThrow("Mimir stats failed (401): unauthorized");
   });
 });
 
@@ -244,99 +200,8 @@ describe("session hierarchy", () => {
   });
 });
 
-describe("session outcome tools", () => {
-  it("keeps no-commit outcome evidence separate from a repository's unrelated HEAD", async () => {
-    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
-    const originalFetch = globalThis.fetch;
-    process.env.MIMIR_URL = "https://mimir.example";
-    process.env.MIMIR_TOKEN = "tok";
-    const bodies: Record<string, unknown>[] = [];
-    globalThis.fetch = async (input, init) => {
-      if (String(input).endsWith("/outcome")) bodies.push(JSON.parse(String(init?.body)));
-      return Response.json({ capture: { status: "pending" } });
-    };
-    try {
-      const hooks = await plugin.server({ directory: process.cwd() } as never);
-      await hooks.tool!.mimir_session_outcome.execute(
-        { outcome: "landed", reason: "working tree changes kept", evidence: '{"note":"tests passed"}' },
-        { sessionID: "exact-session", metadata() {} } as never,
-      );
-      expect(bodies).toEqual([{ outcome: "landed", reason: "working tree changes kept", evidence: { note: "tests passed" } }]);
-      await expect(hooks.tool!.mimir_session_outcome.execute(
-        { outcome: "landed", reason: "tests passed" }, { sessionID: "", metadata() {} } as never,
-      )).rejects.toThrow("session identity is unavailable");
-      expect(bodies).toHaveLength(1);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
-      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
-    }
-  });
-  it("uses the exact OpenCode session and returns authoritative status", async () => {
-    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
-    process.env.MIMIR_URL = "https://mimir.example";
-    process.env.MIMIR_TOKEN = "tok";
-    const originalFetch = globalThis.fetch;
-    const requests: Array<{ url: string; method: string; body?: string }> = [];
-    globalThis.fetch = async (input, init) => {
-      const url = String(input);
-      requests.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : undefined });
-      if (url.endsWith("/status")) return Response.json({ session_id: "child/session", outcome: "landed", capture: { status: "saved", saved_exchanges: 3 }, dashboard_url: "https://mimir.example/dashboard/sessions/child" });
-      return Response.json({ ok: true });
-    };
-    try {
-      const hooks = await plugin.server({ directory: "/repo/mimir" } as never);
-      let title = "";
-      const output = await hooks.tool!.mimir_session_outcome.execute({ outcome: "landed", reason: "tests passed", evidence: "commit abc123" }, { sessionID: "child/session", metadata(input: { title?: string }) { title = input.title ?? ""; } } as never);
-      expect(output).toContain("◆ Mimir  Saved · 3 exchanges · LANDED");
-      expect(output).toContain("View session: https://mimir.example/dashboard/sessions/child");
-      expect(title).toBe("Mimir receipt");
-      expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/outcome", method: "POST" }));
-      expect(requests).toContainEqual(expect.objectContaining({ url: "https://mimir.example/sessions/child%2Fsession/status", method: "GET" }));
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
-      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
-    }
-  });
-
-  it("records the outcome even when an explicit commit cannot be resolved", async () => {
-    const original = { MIMIR_URL: process.env.MIMIR_URL, MIMIR_TOKEN: process.env.MIMIR_TOKEN };
-    process.env.MIMIR_URL = "https://mimir.example";
-    process.env.MIMIR_TOKEN = "tok";
-    const originalFetch = globalThis.fetch;
-    const requests: string[] = [];
-    globalThis.fetch = async (input) => {
-      requests.push(String(input));
-      return Response.json({ ok: true });
-    };
-    try {
-      const hooks = await plugin.server({ directory: "/repo/does-not-exist" } as never);
-      const output = await hooks.tool!.mimir_session_outcome.execute(
-        { outcome: "landed", reason: "tests passed", commit: "a329f20" },
-        { sessionID: "child/session", metadata() {} } as never,
-      );
-      expect(output).toContain("Mimir status");
-      expect(requests.some((url) => url.endsWith("/sessions/child%2Fsession/outcome"))).toBe(true);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (original.MIMIR_URL === undefined) delete process.env.MIMIR_URL; else process.env.MIMIR_URL = original.MIMIR_URL;
-      if (original.MIMIR_TOKEN === undefined) delete process.env.MIMIR_TOKEN; else process.env.MIMIR_TOKEN = original.MIMIR_TOKEN;
-    }
-  });
-});
-
-describe("session receipt formatting", () => {
-  it("preserves authoritative capture states", () => {
-    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "pending", pending_exchanges: 2 }, outcome: "unresolved" }))).toBe("◆ Mimir  Saving… · 2 pending · UNRESOLVED");
-    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "partial", saved_exchanges: 12, failed_exchanges: 2 } }))).toBe("◆ Mimir  Partial · 12 saved · 2 failed");
-    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "pending", saved_exchanges: 12, failed_exchanges: 2, pending_exchanges: 1 } }))).toBe("◆ Mimir  Partial · 12 saved · 2 failed · 1 pending");
-    expect(formatSessionReceipt(JSON.stringify({ capture: { status: "failed", failed_exchanges: 1 } }))).toBe("◆ Mimir  Couldn’t save this session · 1 failed");
-  });
-});
-
 describe("startup build identity", () => {
-  it("posts only source identity and safe receipt provenance to the authenticated integration path", async () => {
+  it("posts only source identity and safe manifest provenance to the authenticated integration path", async () => {
     const load = buildHarnessLoad("loaded plugin source", JSON.stringify({
       bundle_version: "v2.3.4",
       installation_id: "install-1",
@@ -369,7 +234,7 @@ describe("startup build identity", () => {
     });
   });
 
-  it("reports source identity when the install receipt is missing", () => {
+  it("reports source identity when the managed-file manifest is missing", () => {
     const files: Record<string, string> = { "/plugin/mimir.ts": "source" };
     expect(loadHarnessLoad({ MIMIR_HOME: "/mimir" }, (path) => files[path] ?? null, undefined, "/plugin/mimir.ts"))
       .toEqual({ version: 1, harness: "opencode", source_sha256: "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d" });
@@ -399,9 +264,9 @@ describe("startup build identity", () => {
 });
 
 describe("parseMimirConfig", () => {
-  it("extracts and normalizes the url", () => {
+  it("extracts the url and executable", () => {
     expect(parseMimirConfig('url = "https://mimir.example.workers.dev"\n')).toEqual({ url: "https://mimir.example.workers.dev" });
-    expect(parseMimirConfig("url = https://mimir.example/\n")).toEqual({ url: "https://mimir.example" });
+    expect(parseMimirConfig("url = https://mimir.example/\r\nexecutable=/usr/local/bin/mimir\r\n")).toEqual({ url: "https://mimir.example", executable: "/usr/local/bin/mimir" });
     expect(parseMimirConfig("other = 1\n")).toEqual({});
   });
 });
@@ -655,204 +520,5 @@ describe("postDirectExchange", () => {
     } finally {
       globalThis.fetch = original;
     }
-  });
-});
-
-describe("gitEvidence", () => {
-  const head = "a".repeat(40);
-  const base = "b".repeat(40);
-
-  function runner(outputs: Record<string, string | null>) {
-    const calls: string[][] = [];
-    return {
-      calls,
-      run: (_command: string, args: string[]) => {
-        calls.push(args);
-        const key = args.join(" ");
-        const stdout = outputs[key];
-        return { status: stdout == null ? 1 : 0, stdout: stdout ?? "" };
-      },
-    };
-  }
-
-  it("captures commit, base, and a redacted bounded patch", () => {
-    const { run } = runner({
-      "rev-parse --verify HEAD^{commit}": `${head}\n`,
-      [`rev-parse --verify ${head}~1^{commit}`]: `${base}\n`,
-      [`show --format= --patch --unified=3 ${head}`]: "diff --git a/a.ts b/a.ts\n+const token = \"sk_live_1234567890abcdef\";\n",
-    });
-    const evidence = gitEvidence("/repo", run)!;
-    expect(evidence.commit).toBe(head);
-    expect(evidence.base_commit).toBe(base);
-    expect(evidence.provenance).toBe("opencode-plugin");
-    expect(evidence.patch).toContain("diff --git");
-    expect(evidence.patch).not.toContain("sk_live_1234567890abcdef");
-    expect(evidence.patch).toContain("[REDACTED]");
-  });
-
-  it("omits base and patch when git has no parent or fails", () => {
-    const { run } = runner({ "rev-parse --verify HEAD^{commit}": head });
-    const evidence = gitEvidence("/repo", run)!;
-    expect(evidence).toEqual({ commit: head, provenance: "opencode-plugin" });
-  });
-
-  it("returns null outside a git work tree", () => {
-    const { run } = runner({ "rev-parse --verify HEAD^{commit}": null });
-    expect(gitEvidence("/repo", run)).toBeNull();
-    expect(gitEvidence(undefined, run)).toBeNull();
-  });
-
-  it("captures the origin remote and branch needed to link a commit", () => {
-    const { run } = runner({
-      "rev-parse --verify HEAD^{commit}": head,
-      "remote get-url origin": "git@github.com:owner/repo.git\n",
-      "rev-parse --abbrev-ref HEAD": "master\n",
-    });
-    const evidence = gitEvidence("/repo", run)!;
-    expect(evidence.repository_url).toBe("https://github.com/owner/repo");
-    expect(evidence.ref).toBe("master");
-  });
-
-  it("omits a detached HEAD ref and an unusable remote", () => {
-    const { run } = runner({
-      "rev-parse --verify HEAD^{commit}": head,
-      "remote get-url origin": "/srv/git/repo.git",
-      "rev-parse --abbrev-ref HEAD": "HEAD",
-    });
-    expect(gitEvidence("/repo", run)!).toEqual({ commit: head, provenance: "opencode-plugin" });
-  });
-
-  it("caps oversized patches", () => {
-    const huge = `+${"x".repeat(64 * 1024)}\n`;
-    const { run } = runner({ "rev-parse --verify HEAD^{commit}": head, [`show --format= --patch --unified=3 ${head}`]: huge });
-    const patch = gitEvidence("/repo", run)!.patch!;
-    expect(new TextEncoder().encode(patch).byteLength).toBeLessThanOrEqual(20 * 1024);
-  });
-
-  it("resolves an explicit short SHA and captures that commit", () => {
-    const short = "a329f20";
-    const resolved = "a329f20" + "c".repeat(33);
-    const { calls, run } = runner({
-      [`rev-parse --verify ${short}^{commit}`]: resolved,
-      [`show --format= --patch --unified=3 ${resolved}`]: "explicit patch",
-    });
-    expect(gitEvidence("/repo", run, short)).toMatchObject({ commit: resolved, patch: "explicit patch" });
-    expect(calls).toContainEqual(["rev-parse", "--verify", `${short}^{commit}`]);
-  });
-});
-
-describe("workspaceGitEvidence", () => {
-  it("falls back to the OpenCode directory when its worktree is unusable", () => {
-    const head = "a".repeat(40);
-    const calls: string[] = [];
-    const run = (_command: string, args: string[], cwd: string) => {
-      calls.push(`${cwd}:${args.join(" ")}`);
-      return cwd === "/repo" && args.join(" ") === "rev-parse --verify HEAD^{commit}"
-        ? { status: 0, stdout: head }
-        : { status: 1, stdout: "" };
-    };
-    expect(workspaceGitEvidence("/stale-worktree", "/repo", run)?.commit).toBe(head);
-    expect(calls).toContain("/stale-worktree:rev-parse --verify HEAD^{commit}");
-    expect(calls).toContain("/repo:rev-parse --verify HEAD^{commit}");
-  });
-});
-
-describe("outcomeGitEvidence", () => {
-  const commit = "a329f20" + "c".repeat(33);
-
-  it("uses one commit token from the note when HEAD is unavailable", () => {
-    const { run } = (() => {
-      const calls: string[] = [];
-      return {
-        calls,
-        run: (_command: string, args: string[]) => {
-          const key = args.join(" ");
-          calls.push(key);
-          return key === "rev-parse --verify a329f20^{commit}" ? { status: 0, stdout: commit } : { status: 1, stdout: "" };
-        },
-      };
-    })();
-    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)?.commit).toBe(commit);
-  });
-
-  it("refuses an ambiguous note", () => {
-    expect(noteCommitRef("Commits a329f20 and b418e31")).toBeNull();
-    const calls: string[] = [];
-    const run = (_command: string, args: string[]) => {
-      calls.push(args.join(" "));
-      return { status: 1, stdout: "" };
-    };
-    expect(outcomeGitEvidence(undefined, "/repo", "Commits a329f20 and b418e31", undefined, run)).toBeNull();
-    expect(calls).toEqual([]);
-  });
-
-  it("never substitutes HEAD for a named commit or no-commit work", () => {
-    const head = "d".repeat(40);
-    const calls: string[] = [];
-    const run = (_command: string, args: string[]) => {
-      const key = args.join(" ");
-      calls.push(key);
-      return key === "rev-parse --verify HEAD^{commit}" ? { status: 0, stdout: head } : { status: 1, stdout: "" };
-    };
-    expect(outcomeGitEvidence(undefined, "/repo", "Commit a329f20", undefined, run)).toBeNull();
-    expect(outcomeGitEvidence(undefined, "/repo", "tests passed", undefined, run)).toBeNull();
-    expect(calls).toEqual(["rev-parse --verify a329f20^{commit}"]);
-  });
-});
-
-describe("normalizeRemoteUrl", () => {
-  it("normalizes every common remote form to a credential-free https URL", () => {
-    expect(normalizeRemoteUrl("git@github.com:owner/repo.git")).toBe("https://github.com/owner/repo");
-    expect(normalizeRemoteUrl("ssh://git@gitlab.example.com:2222/group/sub/repo.git")).toBe("https://gitlab.example.com/group/sub/repo");
-    expect(normalizeRemoteUrl("https://user:secret@github.com/owner/repo.git")).toBe("https://github.com/owner/repo");
-    expect(normalizeRemoteUrl("http://git.example.com/owner/repo/")).toBe("https://git.example.com/owner/repo");
-  });
-
-  it("rejects values that cannot be browsed", () => {
-    for (const value of ["", "   ", "/srv/git/repo.git", "C:\\repos\\repo", "git@localhost:repo.git", "https://github.com/"]) {
-      expect(normalizeRemoteUrl(value)).toBeNull();
-    }
-    expect(normalizeRemoteUrl(null)).toBeNull();
-  });
-});
-
-describe("mergeOutcomeEvidence", () => {
-  const git = { commit: "a".repeat(40), provenance: "opencode-plugin" as const };
-
-  it("keeps a bare agent string as-is without git data", () => {
-    expect(mergeOutcomeEvidence("merged in PR 42", null)).toBe("merged in PR 42");
-  });
-
-  it("wraps agent text as a note when commit evidence exists", () => {
-    expect(mergeOutcomeEvidence("merged in PR 42", git)).toEqual({ note: "merged in PR 42", ...git });
-  });
-
-  it("uses git evidence alone when the agent supplied nothing", () => {
-    expect(mergeOutcomeEvidence(undefined, git)).toEqual(git);
-    expect(mergeOutcomeEvidence("   ", git)).toEqual(git);
-  });
-
-  it("stays undefined with no evidence at all", () => {
-    expect(mergeOutcomeEvidence(undefined, null)).toBeUndefined();
-  });
-
-  it("preserves structured outcome evidence without inventing a commit", () => {
-    expect(mergeOutcomeEvidence('{"url":"https://example.com/check","note":"verified"}', null))
-      .toEqual({ url: "https://example.com/check", note: "verified" });
-  });
-});
-
-describe("redactEvidenceText and boundedBytes", () => {
-  it("redacts builtin credential shapes", () => {
-    const text = redactEvidenceText("Bearer abc.def.ghi\napi_key: supersecretvalue\npassword=hunter2value\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----");
-    expect(text).toContain("Bearer [REDACTED]");
-    expect(text).not.toContain("supersecretvalue");
-    expect(text).not.toContain("hunter2value");
-    expect(text).not.toContain("private-material");
-  });
-
-  it("bounds by bytes without splitting multibyte characters", () => {
-    const bounded = boundedBytes("é".repeat(100), 50);
-    expect(new TextEncoder().encode(bounded).byteLength).toBeLessThanOrEqual(50);
   });
 });

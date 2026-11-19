@@ -6,7 +6,7 @@ import { dayLevel, TOP_WORKSTREAMS } from "../src/lib/day";
 function session(id: string, activity: Array<[number, number]>, extra: Partial<DaySession> = {}): DaySession {
   return {
     id, display_title: `Session ${id}`, harness: "oh-my-pi", repo: "mimir", source_ref: "main", model_primary: "claude-opus-5-5",
-    outcome: "unresolved", outcome_reason: null, state: "inactive", capture_status: "saved", started_at: "2026-10-21T10:00:00Z",
+    git_status: "none", state: "inactive", capture_status: "saved", started_at: "2026-10-21T10:00:00Z",
     first_at: "2026-10-21T10:00:00Z", last_at: "2026-10-21T11:00:00Z", requests: activity.reduce((sum, [, count]) => sum + count, 0),
     tokens_in: 0, tokens_out: 0, sub_agents: 0, commit_count: 0, quiet: null, activity, ...extra,
   };
@@ -15,7 +15,7 @@ function session(id: string, activity: Array<[number, number]>, extra: Partial<D
 function stream(id: string, sessionIds: string[]): DayWorkstream {
   return {
     id, label: `Stream ${id}`, repo: "mimir", source_ref: "main", session_ids: sessionIds, first_at: "", last_at: "", requests: 0,
-    tokens_in: 0, tokens_out: 0, sub_agents: 0, active: false, outcomes: { landed: 0, discarded: 0, abandoned: 0, unresolved: 0 }, commits: [],
+    tokens_in: 0, tokens_out: 0, sub_agents: 0, active: false, git: { none: 0, committed: 0, pushed: 0 }, commits: [],
   };
 }
 
@@ -24,7 +24,7 @@ function day(sessions: DaySession[], workstreams: DayWorkstream[]): DaySnapshot 
     date: "2026-10-21", time_zone: "UTC", start: "", end: "", bucket_minutes: 15, buckets: 96, previous_date: null, next_date: null,
     totals: { sessions: sessions.length, quiet_sessions: 0, sub_agents: 0, requests: 0, tokens_in: 0, tokens_out: 0, commits: 0, repos: 1, active: 0 },
     workstreams, sessions, quiet_session_ids: sessions.filter((item) => item.quiet).map((item) => item.id),
-    attention: { active: [], unresolved: [], capture: [] },
+    attention: { active: [], capture: [] },
   };
 }
 
@@ -57,10 +57,10 @@ describe("dayLevel", () => {
     expect(dayLevel(folded, "other").items.map((item) => item.key)).toEqual(["s5", "s6", "s7"]);
   });
 
-  it("keeps quick sessions out of outcome prompts and falls back to the day for unknown focus", () => {
-    const snapshot = day([session("work", [[1, 2]]), session("probe", [[2, 1]], { quiet: "single_request" })], [stream("work", ["work"])]);
+  it("counts git status per item and falls back to the day for unknown focus", () => {
+    const snapshot = day([session("work", [[1, 2]], { git_status: "pushed" }), session("probe", [[2, 1]], { quiet: "single_request" })], [stream("work", ["work"])]);
     const whole = dayLevel(snapshot, null);
-    expect(whole.items.map((item) => [item.key, item.unresolvedIds])).toEqual([["work", ["work"]], ["quick", []]]);
+    expect(whole.items.map((item) => [item.key, item.git])).toEqual([["work", { none: 0, committed: 0, pushed: 1 }], ["quick", { none: 1, committed: 0, pushed: 0 }]]);
     expect(dayLevel(snapshot, "missing").focus).toBeNull();
     expect(dayLevel(snapshot, "work").focus).toBeNull();
   });

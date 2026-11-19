@@ -1,7 +1,7 @@
 import { readConfig, stringArray } from "../config/config-store";
 import type { Bindings } from "../env";
-import { reportSessionEvent } from "../sessions/events";
 import { resolveSession } from "../sessions/lifecycle";
+import { indexExchange } from "../search/search-index";
 import { ulid } from "../shared/ulid";
 import {
   extractGeneratedTitle,
@@ -11,7 +11,6 @@ import {
   classifyRequestKind,
   deriveIntent,
   deriveSessionFields,
-  completionResult,
   excerpt,
   extractFinishReason,
   extractProvider,
@@ -252,30 +251,7 @@ export async function capture(
   console.log(
     `saved exchange ${id} to session ${session.id} · ${input.model}${provider} · ${prepared.usage.prompt_tokens} in / ${prepared.usage.completion_tokens} out · ${latency}ms`,
   );
-  await reportSessionEvent(env, {
-    version: 1,
-    kind: "turn",
-    session_id: session.id,
-    installation_id: input.installationID,
-    harness: input.harness,
-    repo: input.repo,
-    ts: new Date().toISOString(),
-    turn: {
-      exchange_id: id,
-      model: input.model,
-      provider: prepared.provider,
-      result: completionResult(prepared.finishReason),
-      request_kind: requestKind,
-      usage: {
-        input_tokens: prepared.usage.prompt_tokens,
-        output_tokens: prepared.usage.completion_tokens,
-        cache_read_tokens: prepared.usage.cache_read_tokens,
-        cache_write_tokens: prepared.usage.cache_write_tokens,
-      },
-      latency_ms: latency,
-      excerpt: requestExcerpt.slice(0, 500),
-    },
-  });
+  await indexExchange(env.DB, id, envelope);
 }
 
 async function acceptExchange(
@@ -398,9 +374,15 @@ export async function finalizeAcceptedExchange(
   generatedTitle: string | null = null,
 ) {
   await db.batch([
+    // New evidence invalidates the summary of the session and its ancestors.
     db
       .prepare(
-        "UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cache_read_tokens = cache_read_tokens + ?, cache_write_tokens = cache_write_tokens + ?, summary_text = NULL, summary_status = 'pending', summary_source = NULL, summary_updated_at = NULL WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')",
+        "UPDATE sessions SET summary_status = 'pending' WHERE summary_status <> 'pending' AND id IN (WITH RECURSIVE ancestors(id, parent_session_id) AS (SELECT id, parent_session_id FROM sessions WHERE id = ? UNION ALL SELECT sessions.id, sessions.parent_session_id FROM sessions JOIN ancestors ON sessions.id = ancestors.parent_session_id) SELECT id FROM ancestors) AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')",
+      )
+      .bind(sessionId, exchangeId),
+    db
+      .prepare(
+        "UPDATE sessions SET ended_at = CASE WHEN ended_at IS NULL OR ended_at < ? THEN ? ELSE ended_at END, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END, harness = COALESCE(harness, ?), state = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN 'active' ELSE state END, inactive_at = CASE WHEN ? AND (inactive_at IS NULL OR ended_at IS NULL OR ended_at <> inactive_at OR inactive_at < ?) AND (boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id)) THEN NULL ELSE inactive_at END, model_primary = COALESCE(model_primary, ?), request_count = request_count + 1, tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cache_read_tokens = cache_read_tokens + ?, cache_write_tokens = cache_write_tokens + ? WHERE id = ? AND EXISTS (SELECT 1 FROM exchanges WHERE id = ? AND capture_status = 'accepted')",
       )
       .bind(
         activityAt,

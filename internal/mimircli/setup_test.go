@@ -13,13 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	mimirassets "github.com/cloudboy-jh/mimir"
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 func TestConnectExistingEndpointJSON(t *testing.T) {
@@ -80,30 +77,21 @@ func TestConnectExistingEndpointJSON(t *testing.T) {
 	if !associated {
 		t.Fatal("machine was not associated")
 	}
-	if result.Integrations.Hermes.State != "skipped" || !strings.Contains(result.Integrations.Hermes.Detail, "no managed installation receipt") {
+	if result.Integrations.Hermes.State != "skipped" || !strings.Contains(result.Integrations.Hermes.Detail, "no managed installation") {
 		t.Fatalf("Hermes integration %#v", result.Integrations.Hermes)
 	}
 	if result.Integrations.OpenCode.State != "skipped" {
 		t.Fatalf("OpenCode integration %#v", result.Integrations.OpenCode)
 	}
-	if result.Artifacts.Operation != "setup" || len(result.Artifacts.Artifacts) == 0 {
+	if len(result.Artifacts.Artifacts) != 0 {
 		t.Fatalf("artifact refresh %#v", result.Artifacts)
 	}
-	receipt, err := installpkg.LoadReceipt()
+	values, err := mimirapi.ConfigValues()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(receipt.Artifacts) != 0 {
-		t.Fatalf("setup enrolled unmanaged artifacts: %#v", receipt.Artifacts)
-	}
-	paths, err := installpkg.Paths()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{paths.Log} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("setup created installation lifecycle file %s", path)
-		}
+	if !filepath.IsAbs(values["executable"]) {
+		t.Fatalf("setup did not record the executable: %#v", values)
 	}
 	pointer, err := loadPointer()
 	if err != nil {
@@ -150,15 +138,12 @@ func TestAssociateMachineIdentitySkipsOlderWorker(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("requests = %d", requests)
 	}
-	if _, err := installpkg.LoadReceipt(); err != nil {
-		t.Fatal(err)
-	}
 	paths, err := installpkg.Paths()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(paths.Receipt); !os.IsNotExist(err) {
-		t.Fatalf("older Worker association created receipt: %v", err)
+	if _, err := os.Stat(paths.Manifest); !os.IsNotExist(err) {
+		t.Fatalf("older Worker association created the managed manifest: %v", err)
 	}
 }
 
@@ -305,11 +290,28 @@ func TestLoginExistingPointerAssociatesMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := login(context.Background(), []string{"--json"}, IO{Out: &output, Err: &output}); err != nil {
+	if err := login(context.Background(), []string{"--json"}, IO{Out: &output, Err: &bytes.Buffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	if !associated {
 		t.Fatal("fast-path login did not associate the machine")
+	}
+	var result struct {
+		State   string `json:"state"`
+		Tailnet string `json:"tailnet"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		t.Fatalf("output %q: %v", output.String(), err)
+	}
+	if result.State != "connected" || (result.Tailnet != "reported" && result.Tailnet != "unavailable") {
+		t.Fatalf("result %#v", result)
+	}
+	values, err := mimirapi.ConfigValues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(values["executable"]) {
+		t.Fatalf("login did not record the executable: %#v", values)
 	}
 }
 
@@ -323,44 +325,14 @@ func TestLoginSummaryShowsUserAndConnection(t *testing.T) {
 		Name string `json:"name"`
 	}{ID: "abc", Name: "Example Account"})
 
-	summary := loginSummary(identity, "https://mimir.example.workers.dev/", false)
-	for _, want := range []string{"◆ Cloudflare", "Email:", "user@example.com", "Account:", "Example Account", "Auth:", "OAuth Token", "◆ Connection", "Worker:", "https://mimir.example.workers.dev", "Status:", "[✓] connected"} {
+	summary := loginSummary(identity, "https://mimir.example.workers.dev/")
+	for _, want := range []string{"✓ Logged in", "Email:   user@example.com", "Account: Example Account", "Auth:    OAuth Token", "Worker:  https://mimir.example.workers.dev\n", "Machine:"} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("summary missing %q:\n%s", want, summary)
 		}
 	}
-	if strings.Contains(summary, "┌") || strings.Contains(summary, "Mimir Login") {
-		t.Fatalf("summary contains redundant title box:\n%s", summary)
-	}
 	if strings.Contains(summary, "\x1b[") {
-		t.Fatalf("plain summary contains ANSI escapes:\n%s", summary)
-	}
-}
-
-func TestLoginSummaryUsesMimirPalette(t *testing.T) {
-	identity := deployment.Identity{LoggedIn: true, AuthType: "OAuth Token", Email: "user@example.com"}
-	summary := loginSummary(identity, "https://mimir.example.workers.dev", true)
-	for _, color := range []string{
-		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Accent.R, bentotui.Mimir.Accent.G, bentotui.Mimir.Accent.B),
-		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Success.R, bentotui.Mimir.Success.G, bentotui.Mimir.Success.B),
-		fmt.Sprintf("%d;%d;%d", bentotui.Mimir.Muted.R, bentotui.Mimir.Muted.G, bentotui.Mimir.Muted.B),
-	} {
-		if !strings.Contains(summary, "38;2;"+color+"m") {
-			t.Fatalf("summary missing palette color %s", color)
-		}
-	}
-}
-
-func TestLoginSummaryFitsNarrowTerminal(t *testing.T) {
-	identity := deployment.Identity{LoggedIn: true, AuthType: "OAuth Token", Email: "user-with-a-long-address@example.com"}
-	identity.Accounts = append(identity.Accounts, struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}{Name: "A Cloudflare account with an unusually long display name"})
-	render := cliui.Renderer{Width: 40, Theme: bentotui.Mimir}
-	summary := loginSummaryWithRenderer(identity, "https://mimir.example.workers.dev/with/a/long/path", render)
-	if !bentotui.FitsWidth(summary, 40) {
-		t.Fatalf("summary exceeds terminal width:\n%s", summary)
+		t.Fatalf("summary contains ANSI escapes:\n%s", summary)
 	}
 }
 
@@ -411,59 +383,4 @@ func useStableTestExecutable(t *testing.T) {
 	t.Setenv("TMPDIR", runtimeTemp)
 	executablePath = func() (string, error) { return path, nil }
 	t.Cleanup(func() { executablePath = original })
-}
-
-func TestSetupProgressStopIsIdempotent(t *testing.T) {
-	var output bytes.Buffer
-	progress := startOperationProgress(context.Background(), IO{Out: &output}, "Mimir setup", []string{"testing"}, func() {})
-	progress.Stop()
-	first := output.String()
-	progress.Stop()
-	if output.String() != first {
-		t.Fatal("second stop wrote additional output")
-	}
-}
-
-func TestNilSetupProgressLifecycleIsSafe(t *testing.T) {
-	var progress *setupProgress
-	progress.Pause()
-	progress.Resume()
-	progress.Complete("complete")
-	progress.Stop()
-}
-
-func TestWriteITermImage(t *testing.T) {
-	var output bytes.Buffer
-	writeITermImage(&output, []byte("png"), 64)
-	if !strings.Contains(output.String(), "File=inline=1;width=64") {
-		t.Fatalf("unexpected iTerm image sequence: %q", output.String())
-	}
-}
-
-func TestWriteKittyImageChunks(t *testing.T) {
-	var output bytes.Buffer
-	writeKittyImage(&output, bytes.Repeat([]byte("x"), 5000), 64)
-	if !strings.Contains(output.String(), "a=T,f=100,t=d,c=64") || !strings.Contains(output.String(), "m=0;") {
-		t.Fatalf("unexpected Kitty image sequence")
-	}
-}
-
-func TestWriteANSIImage(t *testing.T) {
-	var output bytes.Buffer
-	if err := writeANSIImage(&output, mimirassets.LogoPNG, 32); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "\x1b[38;2;") {
-		t.Fatal("ANSI image has no true-color pixels")
-	}
-}
-
-func TestWarpUsesITermImageProtocol(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "WarpTerminal")
-	t.Setenv("TERM", "xterm-256color")
-	t.Setenv("KITTY_WINDOW_ID", "")
-	t.Setenv("LC_TERMINAL", "")
-	if got := terminalImageProtocol(); got != "iterm" {
-		t.Fatalf("terminalImageProtocol() = %q, want iterm", got)
-	}
 }

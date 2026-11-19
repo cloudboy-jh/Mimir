@@ -19,6 +19,12 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(e.Body), &body) == nil && body.Error != "" {
+		return fmt.Sprintf("Mimir API %s: %s", e.Status, body.Error)
+	}
 	return fmt.Sprintf("Mimir API %s: %s", e.Status, e.Body)
 }
 

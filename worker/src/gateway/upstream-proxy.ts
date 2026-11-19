@@ -5,7 +5,6 @@ import { capture } from "../exchanges/capture-pipeline";
 import type { RequestKind } from "../exchanges/exchange-types";
 import { readBoundedText } from "../exchanges/response-codec";
 import { SESSION_ID } from "../sessions/events";
-import { expireSessions } from "../sessions/lifecycle";
 
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
 const REQUEST_KINDS = new Set<RequestKind>([
@@ -47,7 +46,6 @@ export async function proxy(
   const repo = metadata(c.req.header("x-mimir-repo"));
   const harness = metadata(c.req.header("x-mimir-harness") ?? defaults.harness);
   const config = await readSaveConfig(c.env.DB);
-  await expireSessions(c.env.DB, config.gapMinutes);
   const headers = buildUpstreamHeaders(
     c.req.raw.headers,
     c.get("upstreamOpenRouterKey") ?? c.env.OPENROUTER_API_KEY,

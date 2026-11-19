@@ -160,3 +160,59 @@ func TestOMPParentRepairPreviewAndApproval(t *testing.T) {
 		t.Fatalf("approved repair did not apply selected history: %#v", service.uploaded)
 	}
 }
+
+func TestSelectImportHarnessReadsOneNumber(t *testing.T) {
+	var out bytes.Buffer
+	harness, err := selectImportHarness(IO{In: strings.NewReader("3\n"), Out: &out})
+	if err != nil || harness != "oh-my-pi" {
+		t.Fatalf("harness=%q error=%v", harness, err)
+	}
+	if !strings.Contains(out.String(), "  1. OpenCode\n") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if harness, err := selectImportHarness(IO{In: strings.NewReader("\n"), Out: &out}); err != nil || harness != "" {
+		t.Fatalf("empty answer: harness=%q error=%v", harness, err)
+	}
+	if _, err := selectImportHarness(IO{In: strings.NewReader("4\n"), Out: &out}); err == nil {
+		t.Fatal("out-of-range harness accepted")
+	}
+}
+
+func TestSelectImportSessionsParsesNumbers(t *testing.T) {
+	first, second := importFixtureSession(), importFixtureSession()
+	second.SourceID = "ses_2"
+	sessions := []sessionimport.Session{first, second}
+	for _, tc := range []struct {
+		answer string
+		want   []string
+	}{{"\n", nil}, {"2\n", []string{"ses_2"}}, {"2, 1,2\n", []string{"ses_1", "ses_2"}}, {"ALL\n", []string{"ses_1", "ses_2"}}} {
+		chosen, err := selectImportSessions(IO{In: strings.NewReader(tc.answer), Out: &bytes.Buffer{}}, sessions)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.answer, err)
+		}
+		var got []string
+		for _, session := range chosen {
+			got = append(got, session.SourceID)
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("%q: got %v want %v", tc.answer, got, tc.want)
+		}
+	}
+	for _, answer := range []string{"0\n", "3\n", "1,x\n"} {
+		if _, err := selectImportSessions(IO{In: strings.NewReader(answer), Out: &bytes.Buffer{}}, sessions); err == nil {
+			t.Fatalf("invalid selection %q accepted", answer)
+		}
+	}
+}
+
+func TestImportReportPlainOutput(t *testing.T) {
+	var out bytes.Buffer
+	report := sessionimport.Report{SessionsImported: 1, SessionsFailed: 1, Sessions: []sessionimport.SessionReport{{Source: "pi", SourceID: "s1", Status: "failed", Error: "boom"}}}
+	if err := printImportReport(&out, report, false, "Import"); err != nil {
+		t.Fatal(err)
+	}
+	want := "! Import complete: 1 imported, 0 partial, 0 already present, 0 skipped, 1 failed\n  pi s1: boom\n"
+	if out.String() != want {
+		t.Fatalf("output=%q", out.String())
+	}
+}

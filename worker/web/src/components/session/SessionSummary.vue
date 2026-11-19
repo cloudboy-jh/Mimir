@@ -1,51 +1,38 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { RouterLink } from "vue-router";
-import type { SessionDetail } from "@/lib/api";
-import { summaryHasEvidence } from "@/lib/sessions";
+import type { SessionSummary } from "@/lib/api";
+import { shortDate } from "@/lib/format";
 
-const props = withDefaults(defineProps<{ session: SessionDetail["session"]; summary?: SessionDetail["summary"]; full?: boolean }>(), { full: false });
-defineEmits<{ open: []; navigate: [hash: string] }>();
-// The outcome reason is authored evidence. A status-only reconstruction is not
-// a useful narrative and belongs in the evidence panel, not above the reader.
-const preview = computed(() => props.session.outcome_reason?.trim() || "");
+const props = defineProps<{ summary: SessionSummary | null; active: boolean }>();
 const sections = computed(() => {
   const summary = props.summary;
-  if (!summary) return [];
+  if (summary?.status !== "ready") return [];
   return [
     { key: "goal", title: "Goal", items: summary.goal ? [summary.goal] : [] },
-    { key: "actions", title: "Recorded actions", items: summary.actions },
-    { key: "result", title: "Recorded result", items: summary.result ? [summary.result] : [] },
-    { key: "verification", title: "Observed verification", items: summary.verification },
-    { key: "unresolved", title: "Unresolved evidence", items: summary.unresolved },
-  ].filter(section => section.items.length);
+    { key: "actions", title: "Actions", items: summary.actions },
+    { key: "result", title: "Result", items: summary.result ? [summary.result] : [] },
+    { key: "verification", title: "Verification", items: summary.verification },
+    { key: "unresolved", title: "Unresolved", items: summary.unresolved },
+  ].filter((section) => section.items.length);
 });
 </script>
 
 <template>
-  <section v-if="!full && preview" aria-label="Session summary" class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-4">
-    <p class="max-w-[72ch] line-clamp-2 break-words text-sm leading-6 text-zinc-700 dark:text-zinc-300">{{ preview }}</p>
-    <button v-if="summaryHasEvidence(summary)" type="button" class="shrink-0 rounded-[3px] text-xs font-medium text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="$emit('open')">Summary evidence</button>
-  </section>
-  <section v-else-if="full" aria-labelledby="session-summary-heading" class="min-w-0">
-    <div class="flex flex-wrap items-baseline gap-3">
-      <h2 id="session-summary-heading" class="text-base font-semibold">Summary evidence</h2>
-      <span v-if="summary?.partial" class="text-xs text-zinc-600 dark:text-zinc-400">Incomplete evidence</span>
+  <section aria-labelledby="session-summary-heading" class="border-b border-zinc-200 py-4 dark:border-zinc-800">
+    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h2 id="session-summary-heading" class="text-sm font-semibold">Summary</h2>
+      <span v-if="summary?.partial" class="text-xs text-zinc-600 dark:text-zinc-400">Built from incomplete evidence</span>
+      <span v-if="summary?.updated_at" class="text-xs text-zinc-600 dark:text-zinc-400">Updated {{ shortDate(summary.updated_at) }}</span>
     </div>
-    <p class="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">From recorded outcomes and bounded saved evidence. Observed verification does not establish capture status.</p>
-    <dl class="mt-6 space-y-6">
-      <div v-for="section in sections" :key="section.key">
-        <dt class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{{ section.title }}</dt>
-        <dd class="mt-2 space-y-2 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
-          <p v-for="(item, index) in section.items" :key="index" class="break-words">
-            {{ item }}
-            <template v-for="(link, linkIndex) in summary?.evidence?.filter(evidence => evidence.section === section.key && evidence.index === index) ?? []" :key="linkIndex">
-              <a v-if="link.href.startsWith('#')" :href="link.href" class="ml-1 text-xs text-teal-700 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click.prevent="$emit('navigate', link.href)">{{ link.label }}</a>
-              <RouterLink v-else :to="link.href" class="ml-1 text-xs text-teal-700 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ link.label }}</RouterLink>
-            </template>
-          </p>
+    <dl v-if="sections.length" class="mt-3 grid gap-x-8 gap-y-4 text-sm leading-6 md:grid-cols-2">
+      <div v-for="section in sections" :key="section.key" class="min-w-0" :class="section.key === 'actions' ? 'md:row-span-2' : ''">
+        <dt class="text-xs font-medium text-zinc-600 dark:text-zinc-400">{{ section.title }}</dt>
+        <dd class="mt-1 text-zinc-800 dark:text-zinc-200">
+          <p v-if="section.items.length === 1" class="max-w-[72ch] break-words">{{ section.items[0] }}</p>
+          <ul v-else class="max-w-[72ch] list-disc space-y-1 pl-5"><li v-for="(item, index) in section.items" :key="index" class="break-words">{{ item }}</li></ul>
         </dd>
       </div>
     </dl>
+    <p v-else class="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{{ summary?.status === "ready" ? "The summary found nothing to report." : summary?.status === "unavailable" ? "No summary could be built from the saved evidence." : active ? "The summary is built when the session ends." : "The summary is being built." }}</p>
   </section>
 </template>

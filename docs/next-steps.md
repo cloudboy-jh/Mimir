@@ -1,53 +1,67 @@
 # Next Steps
 
-This file tracks concrete unfinished work and operational decisions. Completed
-architecture-transition work belongs in git history and the implementation
-specification rather than an expanding completion log.
+Concrete unfinished work and open operational decisions. Finished work belongs
+in git history and the implementation specification.
 
-## Active Implementation Work
+## Validation
 
-OpenRouter optionality, meaningful `setup --quick` behavior, and Durable Object
-retention cleanup are separate follow-ups because they change setup or session
-lifecycle contracts.
+### MCP registration and tools
 
-### Pi capture validation
+1. Confirm Claude Code loads the `mimir` MCP server from the generated
+   `.mcp.json` in the Mimir plugin after `/reload-plugins`, and that each tool
+   returns results.
+2. Confirm Codex loads the generated `mcp.json` from the Mimir marketplace
+   plugin with the Agent Plugins schema.
+3. Confirm Cursor picks up a freshly written `~/.cursor/mcp.json`, and that
+   the snippet shown by `mimir harness` and doctor works when the file already
+   existed.
+4. Confirm OpenCode and Hermes expose the `mimir_*` tools after restart.
 
-Pi uses a managed extension rather than a separate Mimir terminal application.
-The extension routes Pi's OpenRouter provider through Mimir with exact session
-metadata and reports bounded reconstructed exchanges for direct providers.
-The installed skill and CLI remain the query surface.
+### Commit capture
 
-Remaining work:
+1. Validate `mimir _hook git` from every integration against real harness
+   sessions: commit confirmations in shell output, pushed detection, and the
+   `refresh` pass at turn and session end (OpenCode `session.idle`, Hermes
+   finalize, Pi and Oh My Pi shutdown, Claude Code/Codex/Cursor Stop and
+   session end).
+2. Confirm binary resolution through `MIMIR_BIN`, `executable=` in
+   `$MIMIR_HOME/config`, and `PATH` on macOS, Linux, and Windows.
+
+### Pi capture
 
 1. Validate extension loading, OpenRouter routing, exact session grouping,
    direct-provider reconstruction, reload, resume, compaction, and shutdown on
    macOS, Linux, and Windows.
 2. Confirm `mimir doctor --json` observes the matching Pi harness-load hash
    after restart.
-3. Confirm modified or conflicting user extension files are preserved by
-   install, update, and uninstall.
+3. Confirm modified or conflicting extension files are preserved by install,
+   update, and uninstall.
+
+### Every harness
+
+Complete real install, activation, capture, resume, compaction, offline retry,
+update, and uninstall validation for Pi, Oh My Pi, OpenCode, Hermes, Claude
+Code, Codex, and Cursor on each supported operating system.
+
+## Build
+
+- The dashboard production build warns about a large chunk. Split the bundle
+  (route-level code splitting or manual chunks) until the warning clears.
 
 ## Operational Follow-ups
 
 - After the first release that attaches `install.sh` and `install.ps1`, switch
   the README and installation guide from the branch bootstrap URLs to the
   release-attached `releases/latest/download` assets.
-- Add required-reviewer protection to the existing GitHub `release`
-  environment.
-- Complete real install, activation, capture, resume, compaction, offline retry,
-  update, and uninstall validation for Pi, OpenCode, Hermes, Claude Code, Codex,
-  and Cursor on each supported operating system. Hook and extension installation
-  remains staged until doctor observes a matching harness load.
-- Define a recommended reconciliation cadence and an explicit policy for stale
-  accepted rows and orphaned R2 objects.
-- Keep `docs/Spec.md` synchronized with the live Access-protected dashboard and
-  session-object behavior.
+- Add required-reviewer protection to the GitHub `release` environment.
+- Define a recommended `mimir reconcile` cadence (it is not part of the cron
+  maintenance) and an explicit policy for stale accepted rows and orphaned R2
+  objects.
 
 ## Parked Decisions
 
-- **Generalized harness provider router** — superseded by
-  [`session-lifecycle.md`](session-lifecycle.md). Capture moves to the
-  conversation layer (harness plugins reporting to session objects) instead of
-  a harness × provider routing matrix. The proxy remains only for API-key
+- **Generalized harness provider router.** Capture lives in the conversation
+  layer (harness integrations reporting exchanges and events) rather than a
+  harness × provider routing matrix. The proxy remains only for API-key
   providers with redirectable base URLs. Do not intercept TLS, impersonate
   OAuth clients, or turn machine tokens into provider credentials.

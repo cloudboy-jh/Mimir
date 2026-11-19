@@ -4,350 +4,80 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/cloudboy-jh/mimir/internal/harness"
-	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
-	installpkg "github.com/cloudboy-jh/mimir/internal/install"
-	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 )
 
-func TestCmdUpdateForwardsLifecycleCheckAndPreservesJSONContract(t *testing.T) {
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	called := false
-	runLifecycleUpdate = func(_ context.Context, check, force bool, _ func(string)) (lifecyclepkg.UpdateReport, error) {
-		called = true
-		if !check {
-			t.Fatal("--check was not forwarded to the lifecycle service")
-		}
-		return lifecyclepkg.UpdateReport{
-			Check:        true,
-			Binary:       installpkg.UpdateBinaryReport{Status: "available", Current: "1.0.0", Latest: "2.0.0"},
-			Artifacts:    installpkg.ArtifactReport{Operation: "check"},
-			Integrations: harness.IntegrationReport{OpenCode: harness.IntegrationState{State: "current"}},
-		}, nil
+func stubLatestRelease(t *testing.T, latest string) {
+	t.Helper()
+	old := latestRelease
+	t.Cleanup(func() { latestRelease = old })
+	latestRelease = func(context.Context) (string, error) { return latest, nil }
+}
+
+func stubRunInstaller(t *testing.T, finished bool, dir *string) {
+	t.Helper()
+	old := runInstaller
+	t.Cleanup(func() { runInstaller = old })
+	runInstaller = func(_ context.Context, _ IO, target string) (bool, error) {
+		*dir = target
+		return finished, nil
 	}
+}
+
+func TestCmdUpdateCheckOutput(t *testing.T) {
+	for _, test := range []struct{ latest, want string }{
+		{"999.0.0", "Mimir update available: " + strings.TrimPrefix(version, "v") + " -> 999.0.0\n"},
+		{strings.TrimPrefix(version, "v"), "Mimir is up to date: " + strings.TrimPrefix(version, "v") + "\n"},
+	} {
+		stubLatestRelease(t, test.latest)
+		var output bytes.Buffer
+		if err := cmdUpdateIO(context.Background(), []string{"--check"}, IO{Out: &output}); err != nil {
+			t.Fatal(err)
+		}
+		if output.String() != test.want {
+			t.Fatalf("output = %q, want %q", output.String(), test.want)
+		}
+	}
+}
+
+func TestCmdUpdateCheckJSON(t *testing.T) {
+	stubLatestRelease(t, "999.0.0")
 	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), []string{"--check", "--json"}, &output); err != nil {
+	if err := cmdUpdateIO(context.Background(), []string{"--check", "--json"}, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
-		t.Fatal("lifecycle update was not called")
-	}
-	var report lifecyclepkg.UpdateReport
+	var report map[string]any
 	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
-		t.Fatalf("invalid JSON output %q: %v", output.String(), err)
+		t.Fatal(err)
 	}
-	if !report.Check || report.Binary.Status != "available" || report.Binary.Current != "1.0.0" || report.Binary.Latest != "2.0.0" || report.Artifacts.Operation != "check" || report.Integrations.OpenCode.State != "current" {
+	if report["check"] != true || report["latest"] != "999.0.0" || report["status"] != "available" || report["current"] != strings.TrimPrefix(version, "v") {
 		t.Fatalf("report = %#v", report)
 	}
 }
 
-func TestCmdUpdateRejectsInvalidArgumentsBeforeLifecycle(t *testing.T) {
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		t.Fatal("lifecycle update called for invalid arguments")
-		return lifecyclepkg.UpdateReport{}, nil
-	}
-	if err := cmdUpdate(context.Background(), []string{"--unknown"}, &bytes.Buffer{}); err == nil {
-		t.Fatal("invalid update argument was accepted")
-	}
-}
-
-func TestCmdUpdatePrintsOnlyIssuesAndRequiredActions(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{
-			Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"},
-			Artifacts: installpkg.ArtifactReport{ReceiptPath: "/receipt.json", Artifacts: []installpkg.ArtifactResult{
-				{Status: installpkg.ArtifactUpdated, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts", Detail: "replaced managed plugin"},
-				{Status: installpkg.ArtifactCurrent, Source: "skills/mimir-use/SKILL.md", Path: "/skills/SKILL.md"},
-				{Status: installpkg.ArtifactUpdated, Source: "plugins/claude-code/hooks/hooks.json", Path: "/claude/managed-hooks.json"},
-				{Status: installpkg.ArtifactConflict, Source: "plugins/claude-code/hooks/hooks.json", Path: "/claude/hooks.json", Detail: "existing hook preserved"},
-			}},
-			Integrations: harness.IntegrationReport{
-				OpenCode:   harness.IntegrationState{State: "installed", RestartRequired: true},
-				ClaudeCode: harness.IntegrationState{State: "installed", RestartRequired: true},
-			},
-		}, nil
-	}
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
-		t.Fatal(err)
-	}
-	want := "==> Updating Mimir\n" +
-		"OK  Mimir updated: 1.0.0 -> 1.1.0\n" +
-		"WARN Needs attention\n" +
-		"    /claude/hooks.json (conflict): existing hook preserved\n" +
-		"WARN Restart required: OpenCode, Claude Code\n" +
-		"NEXT mimir deploy\n"
-	if output.String() != want {
-		t.Fatalf("output = %q, want %q", output.String(), want)
-	}
-	for _, hidden := range []string{"/opencode/mimir.ts", "/skills/SKILL.md", "/claude/managed-hooks.json", "/receipt.json"} {
-		if strings.Contains(output.String(), hidden) {
-			t.Fatalf("successful artifact noise %q remained:\n%s", hidden, output.String())
+func TestCmdUpdateRejectsRemovedFlags(t *testing.T) {
+	for _, args := range [][]string{{"--force"}, {"--json"}, {"extra"}} {
+		if err := cmdUpdateIO(context.Background(), args, IO{Out: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "usage: mimir update") {
+			t.Fatalf("args %v error = %v", args, err)
 		}
 	}
 }
 
-func TestCmdUpdateCurrentOutputIsExact(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{
-			Binary: installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0", Latest: "1.1.0"},
-			Artifacts: installpkg.ArtifactReport{Artifacts: []installpkg.ArtifactResult{
-				{Status: installpkg.ArtifactCurrent, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts"},
-			}},
-			Integrations: harness.IntegrationReport{OpenCode: harness.IntegrationState{RestartRequired: true}},
-		}, nil
-	}
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
-		t.Fatal(err)
-	}
-	if want := "==> Updating Mimir\nOK  Mimir is up to date: 1.1.0\n"; output.String() != want {
-		t.Fatalf("output = %q, want %q", output.String(), want)
-	}
-}
-
-func TestCmdUpdateProgressRemainsLineOriented(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(_ context.Context, _ bool, _ bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
-		for _, message := range []string{"Checking managed artifacts", "Checking latest release", "Downloading checksums", "Downloading Mimir 1.1.0", "Replacing Mimir executable", "Refreshing managed integrations"} {
-			progress(message)
-		}
-		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"}}, nil
-	}
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
-		t.Fatal(err)
-	}
-	if want := "==> Updating Mimir\n==> Checking managed artifacts\n==> Checking latest release\n==> Downloading checksums\n==> Downloading Mimir 1.1.0\n==> Replacing Mimir executable\n==> Refreshing managed integrations\nOK  Mimir updated: 1.0.0 -> 1.1.0\nNEXT mimir deploy\n"; output.String() != want {
-		t.Fatalf("output = %q, want plain line output %q", output.String(), want)
-	}
-}
-
-func TestUpdateRestartNamesTrackContentChanges(t *testing.T) {
-	integrations := harness.IntegrationReport{OpenCode: harness.IntegrationState{RestartRequired: true}}
-	for _, test := range []struct {
-		name   string
-		status installpkg.ArtifactStatus
-		want   int
-	}{
-		{name: "adopted ownership", status: installpkg.ArtifactAdopted, want: 0},
-		{name: "current content", status: installpkg.ArtifactCurrent, want: 0},
-		{name: "installed content", status: installpkg.ArtifactInstalled, want: 1},
-		{name: "updated content", status: installpkg.ArtifactUpdated, want: 1},
-		{name: "removed content", status: installpkg.ArtifactRemoved, want: 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			artifacts := installpkg.ArtifactReport{Artifacts: []installpkg.ArtifactResult{{
-				Status: test.status, Source: "plugins/opencode/mimir.ts", Path: "/opencode/mimir.ts",
-			}}}
-			if got := len(updateRestartNames(artifacts, integrations)); got != test.want {
-				t.Fatalf("restart count = %d, want %d", got, test.want)
-			}
-		})
-	}
-}
-
-func TestCmdUpdateFailureLeavesOneActivityLine(t *testing.T) {
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{}, errors.New("update failed")
-	}
-	var output bytes.Buffer
-	err := cmdUpdate(context.Background(), nil, &output)
-	if err == nil || err.Error() != "update failed" {
-		t.Fatalf("error = %v", err)
-	}
-	if want := "==> Updating Mimir\n"; output.String() != want {
-		t.Fatalf("output = %q, want %q", output.String(), want)
-	}
-}
-
-func TestCmdUpdateForwardsForce(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(_ context.Context, check, force bool, _ func(string)) (lifecyclepkg.UpdateReport, error) {
-		if check || !force {
-			t.Fatalf("check=%v force=%v, want check=false force=true", check, force)
-		}
-		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0", Detail: "stopped Mimir process(es) 12, 34"}}, nil
-	}
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), []string{"--force"}, &output); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "stopped Mimir process(es) 12, 34") {
-		t.Fatalf("output missing stop detail:\n%s", output.String())
-	}
-}
-
-func TestCmdUpdateRejectsCheckWithForce(t *testing.T) {
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		t.Fatal("lifecycle update called for --check --force")
-		return lifecyclepkg.UpdateReport{}, nil
-	}
-	if err := cmdUpdate(context.Background(), []string{"--check", "--force"}, &bytes.Buffer{}); err == nil {
-		t.Fatal("--check --force was accepted")
-	}
-}
-
-func TestCmdUpdateScheduledPrintsDeferralAndForceHint(t *testing.T) {
-	t.Setenv(envMimirHome, t.TempDir())
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{
-			Binary: installpkg.UpdateBinaryReport{Status: "scheduled", Current: "1.0.0", Latest: "1.1.0", Detail: "blocked by Mimir process(es) 42; the update will apply after they exit"},
-		}, nil
-	}
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), nil, &output); err != nil {
-		t.Fatal(err)
-	}
-	want := "==> Updating Mimir\n" +
-		"OK  Mimir update scheduled: 1.0.0 -> 1.1.0\n" +
-		"    blocked by Mimir process(es) 42; the update will apply after they exit\n" +
-		"NEXT mimir update --force\n"
-	if output.String() != want {
-		t.Fatalf("output = %q, want %q", output.String(), want)
-	}
-}
-
-func TestCmdUpdateAssociatesSavedMachineIdentity(t *testing.T) {
+func TestCmdUpdateRunsInstallerIntoExecutableDir(t *testing.T) {
 	isolatedInstallation(t, false)
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0", Latest: "1.1.0"}}, nil
-	}
-	associated := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer machine-token" {
-			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
-		}
-		switch r.URL.Path {
-		case "/whoami":
-			fmt.Fprint(w, `{"capabilities":["machine_identity_association"]}`)
-		case "/machine/associate":
-			associated = true
-			fmt.Fprint(w, `{"associated":true}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
-		t.Fatal(err)
-	}
-	oldHTTPClient := httpClient
-	httpClient = server.Client()
-	t.Cleanup(func() { httpClient = oldHTTPClient })
-
+	executable := filepath.Join(t.TempDir(), "mimir")
+	old := executablePath
+	executablePath = func() (string, error) { return executable, nil }
+	t.Cleanup(func() { executablePath = old })
+	var dir string
+	stubRunInstaller(t, false, &dir)
 	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), []string{"--json"}, &output); err != nil {
+	if err := cmdUpdateIO(context.Background(), nil, IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !associated {
-		t.Fatal("machine identity was not associated")
-	}
-	var report lifecyclepkg.UpdateReport
-	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.Warning != "" || strings.Contains(output.String(), `"warning"`) {
-		t.Fatalf("unexpected warning in %s", output.String())
-	}
-}
-
-func TestCmdUpdateAssociationFailureWarnsWithoutLeakingToken(t *testing.T) {
-	isolatedInstallation(t, false)
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{Binary: installpkg.UpdateBinaryReport{Status: "updated", Current: "1.0.0", Latest: "1.1.0"}}, nil
-	}
-	const token = "secret-machine-token"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "rejected "+token, http.StatusBadGateway)
-	}))
-	defer server.Close()
-	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: token}); err != nil {
-		t.Fatal(err)
-	}
-	oldHTTPClient := httpClient
-	httpClient = server.Client()
-	t.Cleanup(func() { httpClient = oldHTTPClient })
-
-	var output bytes.Buffer
-	if err := cmdUpdate(context.Background(), []string{"--json"}, &output); err != nil {
-		t.Fatalf("successful update failed: %v", err)
-	}
-	var report lifecyclepkg.UpdateReport
-	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(report.Warning, "machine identity association failed") || !strings.Contains(report.Warning, "[redacted]") {
-		t.Fatalf("warning = %q", report.Warning)
-	}
-	if strings.Contains(output.String(), token) {
-		t.Fatalf("token leaked in output: %s", output.String())
-	}
-}
-
-func TestRenderUpdatePrintsAssociationWarning(t *testing.T) {
-	var output bytes.Buffer
-	report := lifecyclepkg.UpdateReport{
-		Binary:  installpkg.UpdateBinaryReport{Status: "current", Current: "1.1.0"},
-		Warning: "machine identity association failed: unavailable",
-	}
-	if err := renderUpdate(&output, report); err != nil {
-		t.Fatal(err)
-	}
-	if want := "WARN machine identity association failed: unavailable\n"; !strings.Contains(output.String(), want) {
-		t.Fatalf("output = %q, want warning %q", output.String(), want)
-	}
-}
-
-func TestCmdUpdateCheckDoesNotAssociateMachineIdentity(t *testing.T) {
-	isolatedInstallation(t, false)
-	old := runLifecycleUpdate
-	t.Cleanup(func() { runLifecycleUpdate = old })
-	runLifecycleUpdate = func(context.Context, bool, bool, func(string)) (lifecyclepkg.UpdateReport, error) {
-		return lifecyclepkg.UpdateReport{Check: true, Binary: installpkg.UpdateBinaryReport{Status: "available"}}, nil
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("--check made an identity association request")
-	}))
-	defer server.Close()
-	if err := savePointer(mimirapi.Pointer{URL: server.URL, Token: "machine-token"}); err != nil {
-		t.Fatal(err)
-	}
-	oldHTTPClient := httpClient
-	httpClient = server.Client()
-	t.Cleanup(func() { httpClient = oldHTTPClient })
-
-	if err := cmdUpdate(context.Background(), []string{"--check", "--json"}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
+	if dir != filepath.Dir(executable) || !strings.Contains(output.String(), "continues in the background") {
+		t.Fatalf("dir=%q output=%q", dir, output.String())
 	}
 }

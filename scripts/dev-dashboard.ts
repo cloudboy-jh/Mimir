@@ -1,11 +1,7 @@
-const live = process.argv.includes("--live");
-const commands = live
-  ? [["bun", "run", "dev:api"], ["bun", "run", "dev:web"]]
-  : [["bun", "run", "dev:web"]];
-
-const children = commands.map((command) => Bun.spawn(command, {
+// Runs the local Worker (wrangler dev on 8787, local D1) and the Vite dashboard,
+// which proxies /dashboard/api and /dashboard/auth to it.
+const children = [["bun", "run", "dev:api"], ["bun", "run", "dev:web"]].map((command) => Bun.spawn(command, {
   cwd: import.meta.dir + "/..",
-  env: { ...process.env, VITE_MIMIR_DATA_SOURCE: live ? "live" : "fixtures" },
   stdin: "inherit",
   stdout: "inherit",
   stderr: "inherit",

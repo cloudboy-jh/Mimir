@@ -8,7 +8,7 @@ if (await status.exited !== 0) process.exit(status.exitCode ?? 1);
 if (changed.trim()) {
   console.error("production assets changed after rebuilding:");
   console.error(changed.trimEnd());
-  console.error("production assets are stale; run bun run build:assets and commit the result");
+  console.error("production assets are stale; run bun run build and commit the result");
   process.exit(1);
 }
 

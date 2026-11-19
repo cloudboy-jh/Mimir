@@ -1,13 +1,10 @@
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
 import {
   addMachineToken,
   createExecutionContext,
-  dashboardRequest,
   env,
   finalizeAcceptedExchange,
   request,
-  tokenHash,
   waitOnExecutionContext,
   worker,
 } from "./support";
@@ -109,6 +106,11 @@ describe("Proxy integration", () => {
       usage: { input_tokens: 5, output_tokens: 3 },
       redaction: { version: 1 },
     });
+    expect(
+      await env.DB.prepare("SELECT e.search_indexed, s.body FROM exchanges e JOIN exchange_search s ON s.exchange_id = e.id WHERE e.id = ?")
+        .bind(exchange!.id)
+        .first(),
+    ).toEqual({ search_indexed: 1, body: "src/auth.ts failed: boom" });
   });
 
   it("uses only primary requests to establish session intent", async () => {
@@ -467,106 +469,6 @@ describe("Proxy integration", () => {
     ).toEqual({ intent: "Historical user request" });
   });
 
-  it("returns capture status and maps legacy outcomes with an audit event", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('status-session', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')",
-    ).run();
-    await env.DB.prepare(
-      "INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, capture_reason, accepted_at, saved_at, schema_version) VALUES ('saved-status', 'status-session', '2026-01-01T00:00:00Z', 'chat', 1, 'log/status.json', 'saved', 'enabled', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z', 1)",
-    ).run();
-    const status = await request("/sessions/status-session/status", {
-      headers: { authorization: "Bearer machine-token" },
-    });
-    expect(await status.json()).toEqual({
-      session_id: "status-session",
-      state: "active",
-      ended_at: null,
-      inactive_at: null,
-      capture: {
-        saved_exchanges: 1,
-        failed_exchanges: 0,
-        pending_exchanges: 0,
-        last_saved_at: "2026-01-01T00:00:01Z",
-        status: "saved",
-      },
-      outcome: "unresolved",
-      outcome_src: null,
-      outcome_updated_at: null,
-      outcome_reason: null,
-      title: null,
-      title_source: null,
-      title_updated_at: null,
-      display_title: "status-session",
-      receipt: {
-        label: "Saved to Mimir",
-        detail: "1 exchange in this session",
-        action_label: null,
-      },
-      dashboard_url: null,
-    });
-
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('pending-status', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')",
-    ).run();
-    await env.DB.prepare(
-      "INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('pending-exchange', 'pending-status', '2026-01-01T00:00:00Z', 'chat', 1, 'log/pending.json', 'accepted', '2026-01-01T00:00:00Z', 1)",
-    ).run();
-    const pendingStatus = await request("/sessions/pending-status/status", {
-      headers: { authorization: "Bearer machine-token" },
-    });
-    expect(await pendingStatus.json()).toMatchObject({
-      capture: { status: "pending", pending_exchanges: 1 },
-      receipt: {
-        label: "Saving to Mimir...",
-        detail: "1 exchange",
-        action_label: null,
-      },
-      dashboard_url: null,
-    });
-
-    const marked = await request("/sessions/status-session/outcome", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer machine-token",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        outcome: "promoted",
-        source: "git",
-        reason: "merged",
-        evidence: { commit: "abc123" },
-      }),
-    });
-    expect(await marked.json()).toMatchObject({
-      outcome: "landed",
-      outcome_src: "agent",
-      outcome_reason: "merged",
-      evidence: { commit: "abc123" },
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome, outcome FROM sessions WHERE id = 'status-session'",
-      ).first(),
-    ).toEqual({ work_outcome: "landed", outcome: "promoted" });
-    expect(
-      await env.DB.prepare(
-        "SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'status-session'",
-      ).first(),
-    ).toEqual({
-      outcome: "landed",
-      source: "agent",
-      reason: "merged",
-      evidence_json: '{"commit":"abc123"}',
-    });
-    const detail = await request("/sessions/status-session", {
-      headers: { authorization: "Bearer machine-token" },
-    });
-    expect(
-      ((await detail.json()) as { session: { outcome: string } }).session
-        .outcome,
-    ).toBe("landed");
-  });
-
   it("does not reactivate a session when pre-end capture finishes late", async () => {
     await env.DB.prepare(
       "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-race', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')",
@@ -578,19 +480,12 @@ describe("Proxy integration", () => {
       authorization: "Bearer machine-token",
       "content-type": "application/json",
     };
-    const endBody = JSON.stringify({
-      outcome: "landed",
-      reason: "race verified",
-      evidence: { test: "late-finalize" },
-    });
     const ended = await request("/sessions/end-race/end", {
       method: "POST",
       headers,
-      body: endBody,
+      body: "{}",
     });
-    const endTime = (
-      (await ended.json()) as { session: { inactive_at: string } }
-    ).session.inactive_at;
+    const endTime = ((await ended.json()) as { ended_at: string }).ended_at;
 
     await finalizeAcceptedExchange(
       env.DB,
@@ -612,20 +507,13 @@ describe("Proxy integration", () => {
         "SELECT state, inactive_at, request_count FROM sessions WHERE id = 'end-race'",
       ).first(),
     ).toEqual({ state: "inactive", inactive_at: endTime, request_count: 1 });
-    expect(
-      (
-        await request("/sessions/end-race/end", {
-          method: "POST",
-          headers,
-          body: endBody,
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-race'",
-      ).first(),
-    ).toEqual({ count: 1 });
+    const again = await request("/sessions/end-race/end", {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ session_id: "end-race", state: "inactive", ended_at: endTime });
   });
 
   it("sweeps stale accepted exchanges with no R2 object to failed", async () => {
@@ -750,16 +638,8 @@ describe("Proxy integration", () => {
         "SELECT intent FROM sessions WHERE id = 'intent-session'",
       ).first(),
     ).toEqual({ intent: "Fix the login redirect loop" });
-    const found = await request("/search", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query: "login redirect", types: ["intent"] }),
-    });
-    const result = (await found.json()) as {
-      matches: { session_id: string }[];
-    };
-    expect(result.matches.map((match) => match.session_id)).toContain(
-      "intent-session",
-    );
+    const found = await request("/api/sessions?q=login%20redirect", { headers });
+    const result = (await found.json()) as { sessions: { id: string }[] };
+    expect(result.sessions.map((session) => session.id)).toContain("intent-session");
   });
 });

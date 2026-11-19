@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -62,16 +60,16 @@ func NormalizeHarnesses(values []string) ([]string, error) {
 }
 
 func Harnesses() ([]Harness, error) {
-	paths, err := managedInstallationPaths()
+	paths, err := Paths()
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := loadInstallReceipt()
+	manifest, err := loadManifest(paths)
 	if err != nil {
 		return nil, err
 	}
 	detected := detectedHarnessSet(paths)
-	selected := stringSet(receipt.Harnesses)
+	selected := stringSet(manifest.Harnesses)
 	result := CanonicalHarnesses()
 	for i := range result {
 		result[i].Detected = detected[result[i].ID]
@@ -81,7 +79,7 @@ func Harnesses() ([]Harness, error) {
 }
 
 func DetectedHarnesses() ([]string, error) {
-	paths, err := managedInstallationPaths()
+	paths, err := Paths()
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +93,7 @@ func DetectedHarnesses() ([]string, error) {
 	return result, nil
 }
 
-func detectedHarnessSet(paths installationPaths) map[string]bool {
+func detectedHarnessSet(paths InstallationPaths) map[string]bool {
 	result := map[string]bool{"hermes": paths.HermesDetected}
 	checks := []struct{ id, home, executable string }{
 		{"opencode", paths.OpenCodeHome, "opencode"}, {"pi", paths.PiHome, "pi"},
@@ -115,66 +113,10 @@ func detectedHarnessSet(paths installationPaths) map[string]bool {
 	return result
 }
 
-func legacyHarnesses(paths installationPaths, artifacts map[string]installReceiptArtifact) []string {
-	selected := map[string]bool{"opencode": true, "pi": true, "claude-code": true, "codex": true, "cursor": true}
-	if paths.HermesDetected {
-		selected["hermes"] = true
-	}
-	for target, artifact := range artifacts {
-		if harness := artifactHarness(paths, target, artifact.Source); harness != "" {
-			selected[harness] = true
-		}
-	}
-	var result []string
-	for _, harness := range canonicalHarnesses {
-		if selected[harness.ID] {
-			result = append(result, harness.ID)
-		}
-	}
-	return result
-}
-
-func artifactHarness(paths installationPaths, target, source string) string {
-	source = filepath.ToSlash(filepath.Clean(source))
-	switch {
-	case strings.HasPrefix(source, "plugins/opencode/"):
-		return "opencode"
-	case strings.HasPrefix(source, "plugins/pi/"):
-		return "pi"
-	case strings.HasPrefix(source, "plugins/oh-my-pi/"):
-		return "oh-my-pi"
-	case strings.HasPrefix(source, "plugins/hermes/"):
-		return "hermes"
-	case strings.HasPrefix(source, "plugins/claude-code/"):
-		return "claude-code"
-	case strings.HasPrefix(source, "plugins/codex/"):
-		return "codex"
-	case strings.HasPrefix(source, "plugins/cursor/"):
-		return "cursor"
-	case strings.HasPrefix(source, "skills/"):
-		if paths.HermesHome != "" && pathWithin(filepath.Join(paths.HermesHome, "skills"), target) {
-			return "hermes"
-		}
-		if pathWithin(filepath.Join(paths.OpenCodeHome, "skills"), target) {
-			return "opencode"
-		}
-	}
-	return ""
-}
-
 func stringSet(values []string) map[string]bool {
 	result := make(map[string]bool, len(values))
 	for _, value := range values {
 		result[value] = true
 	}
 	return result
-}
-
-func sortedArtifactTargets(artifacts map[string]installReceiptArtifact) []string {
-	targets := make([]string, 0, len(artifacts))
-	for target := range artifacts {
-		targets = append(targets, target)
-	}
-	sort.Strings(targets)
-	return targets
 }

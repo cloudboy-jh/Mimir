@@ -1,5 +1,22 @@
 name: mimir
 version: "1.0.0"
-description: "Reports direct-provider exchanges for Worker redaction; proxied OpenRouter traffic remains proxy-owned."
+description: "Reports direct-provider exchanges for Worker redaction and adds mimir_* memory query tools; proxied OpenRouter traffic remains proxy-owned."
 author: Mimir
 kind: standalone
+provides_tools:
+  - mimir_search
+  - mimir_sessions
+  - mimir_session
+  - mimir_turns
+  - mimir_stats
+  - mimir_day
+  - mimir_devices
+  - mimir_commits
+  - mimir_commit_patch
+provides_hooks:
+  - pre_api_request
+  - post_api_request
+  - post_tool_call
+  - post_llm_call
+  - on_session_start
+  - on_session_finalize

@@ -4,176 +4,99 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
-	"github.com/cloudboy-jh/mimir/internal/harness"
-	lifecyclepkg "github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	installpkg "github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
-var runLifecycleUpdate = func(ctx context.Context, check, force bool, progress func(string)) (lifecyclepkg.UpdateReport, error) {
-	configureInstall()
-	service := lifecycleService()
-	service.Step = progress
-	return service.Update(ctx, check, force)
-}
+var latestRelease = installpkg.LatestRelease
 
-func cmdUpdate(ctx context.Context, args []string, out io.Writer) error {
-	return cmdUpdateIO(ctx, args, IO{Out: out})
+// runInstaller reruns the release installer into dir. Unix runs install.sh in
+// the foreground; Windows hands off to a hidden PowerShell that waits for this
+// process to exit so mimir.exe can be replaced. It reports whether the update
+// already finished.
+var runInstaller = func(ctx context.Context, ioctx IO, dir string) (bool, error) {
+	if runtime.GOOS == "windows" {
+		script := fmt.Sprintf("Start-Sleep -Seconds 2; irm %s | iex", installpkg.InstallPowerShellURL)
+		outer := fmt.Sprintf("Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','%s'", script)
+		command := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", outer)
+		command.Env = append(os.Environ(), "MIMIR_INSTALL_DIR="+dir)
+		if output, err := command.CombinedOutput(); err != nil {
+			return false, fmt.Errorf("starting the Mimir installer: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return false, nil
+	}
+	command := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("curl -fsSL %s | sh", installpkg.InstallScriptURL))
+	command.Env = append(os.Environ(), "MIMIR_INSTALL_DIR="+dir)
+	command.Stdin, command.Stdout, command.Stderr = ioctx.In, ioctx.Out, ioctx.Err
+	if err := command.Run(); err != nil {
+		return false, fmt.Errorf("running the Mimir installer: %w", err)
+	}
+	return true, nil
 }
 
 func cmdUpdateIO(ctx context.Context, args []string, ioctx IO) error {
-	check, jsonOutput, force := false, false, false
+	check, jsonOutput := false, false
 	for _, arg := range args {
 		switch arg {
 		case "--check":
 			check = true
 		case "--json":
 			jsonOutput = true
-		case "--force":
-			force = true
 		default:
-			return fmt.Errorf("usage: mimir update [--check] [--force] [--json]")
+			return fmt.Errorf("usage: mimir update [--check [--json]]")
 		}
 	}
-	if check && force {
-		return fmt.Errorf("--force cannot be combined with --check")
+	if jsonOutput && !check {
+		return fmt.Errorf("usage: mimir update [--check [--json]]")
 	}
-	var guard *interruptGuard
-	lines := lineoutput.New(ioctx.Out)
-	if !check {
-		guard = startInterruptGuard(ctx)
-		defer guard.Stop()
-		ctx = guard.Context()
-		if !jsonOutput {
-			_ = lines.Phase("Updating Mimir")
-		}
+	configureInstall()
+	if check {
+		return checkForUpdate(ctx, ioctx, jsonOutput)
 	}
-	lastProgress := ""
-	progress := func(message string) {
-		if guard != nil && message == "Replacing Mimir executable" {
-			guard.Commit()
-		}
-		message = strings.TrimSpace(message)
-		if !jsonOutput && message != "" && message != lastProgress {
-			_ = lines.Phase(message)
-			lastProgress = message
-		}
-	}
-	report, err := runLifecycleUpdate(ctx, check, force, progress)
+	executable, err := executablePath()
 	if err != nil {
 		return err
 	}
-	if !check {
-		if pointer, pointerErr := loadPointer(); pointerErr == nil {
-			client := mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
-			if associationErr := associateMachineIdentity(ctx, client); associationErr != nil {
-				detail := strings.ReplaceAll(associationErr.Error(), pointer.Token, "[redacted]")
-				report.Warning = "machine identity association failed: " + detail
-			}
-		}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
 	}
-	if jsonOutput {
-		return json.NewEncoder(ioctx.Out).Encode(report)
-	}
-	return renderUpdate(ioctx.Out, report)
-}
-
-func renderUpdate(out io.Writer, report lifecyclepkg.UpdateReport) error {
-	message := "Mimir update complete"
-	switch report.Binary.Status {
-	case "current":
-		message = fmt.Sprintf("Mimir is up to date: %s", report.Binary.Current)
-	case "available":
-		message = fmt.Sprintf("Mimir update available: %s -> %s", report.Binary.Current, report.Binary.Latest)
-	case "updated":
-		message = fmt.Sprintf("Mimir updated: %s -> %s", report.Binary.Current, report.Binary.Latest)
-	case "scheduled":
-		message = fmt.Sprintf("Mimir update scheduled: %s -> %s", report.Binary.Current, report.Binary.Latest)
-	}
-	lines := lineoutput.New(out)
-	if err := lines.Success(message); err != nil {
+	finished, err := runInstaller(ctx, ioctx, filepath.Dir(executable))
+	if err != nil {
 		return err
 	}
-	if detail := strings.TrimSpace(report.Binary.Detail); detail != "" {
-		if err := lines.Detail(detail); err != nil {
-			return err
-		}
-	}
-	if warning := strings.TrimSpace(report.Warning); warning != "" {
-		if err := lines.Warning(warning); err != nil {
-			return err
-		}
-	}
-	integrations := []namedIntegration{
-		{name: "Pi", state: report.Integrations.Pi},
-		{name: "Oh My Pi", state: report.Integrations.OhMyPi},
-		{name: "OpenCode", state: report.Integrations.OpenCode},
-		{name: "Hermes", state: report.Integrations.Hermes},
-		{name: "Claude Code", state: report.Integrations.ClaudeCode},
-		{name: "Codex", state: report.Integrations.Codex},
-		{name: "Cursor", state: report.Integrations.Cursor},
-	}
-	if err := writeAttention(out, report.Artifacts, integrations); err != nil {
+	if !finished {
+		_, err = fmt.Fprintln(ioctx.Out, "Mimir update continues in the background; run mimir version in a few seconds to confirm.")
 		return err
 	}
-	if restarts := updateRestartNames(report.Artifacts, report.Integrations); len(restarts) > 0 {
-		if err := lines.Warning("Restart required: " + strings.Join(restarts, ", ")); err != nil {
-			return err
-		}
-	}
-	switch report.Binary.Status {
-	case "scheduled":
-		return lines.Next("mimir update --force")
-	case "updated":
-		return lines.Next("mimir deploy")
+	if err := mimirapi.SaveExecutable(executable); err != nil && ioctx.Err != nil {
+		_, _ = fmt.Fprintf(ioctx.Err, "warning: recording executable path: %v\n", err)
 	}
 	return nil
 }
 
-func updateRestartNames(artifacts installpkg.ArtifactReport, integrations harness.IntegrationReport) []string {
-	changed := map[string]bool{}
-	for _, artifact := range artifacts.Artifacts {
-		switch artifact.Status {
-		case installpkg.ArtifactInstalled, installpkg.ArtifactMigrated, installpkg.ArtifactUpdated, installpkg.ArtifactRemoved:
-		default:
-			continue
-		}
-		source := strings.TrimPrefix(strings.ReplaceAll(artifact.Source, "\\", "/"), "./")
-		switch {
-		case strings.HasPrefix(source, "plugins/pi/"):
-			changed["Pi"] = true
-		case strings.HasPrefix(source, "plugins/oh-my-pi/"):
-			changed["Oh My Pi"] = true
-		case strings.HasPrefix(source, "plugins/opencode/"):
-			changed["OpenCode"] = true
-		case strings.HasPrefix(source, "plugins/hermes/"):
-			changed["Hermes"] = true
-		case strings.HasPrefix(source, "plugins/claude-code/"):
-			changed["Claude Code"] = true
-		case strings.HasPrefix(source, "plugins/codex/"):
-			changed["Codex"] = true
-		case strings.HasPrefix(source, "plugins/cursor/"):
-			changed["Cursor"] = true
-		}
+func checkForUpdate(ctx context.Context, ioctx IO, jsonOutput bool) error {
+	latest, err := latestRelease(ctx)
+	if err != nil {
+		return err
 	}
-	candidates := []namedIntegration{
-		{name: "Pi", state: integrations.Pi},
-		{name: "Oh My Pi", state: integrations.OhMyPi},
-		{name: "OpenCode", state: integrations.OpenCode},
-		{name: "Hermes", state: integrations.Hermes},
-		{name: "Claude Code", state: integrations.ClaudeCode},
-		{name: "Codex", state: integrations.Codex},
-		{name: "Cursor", state: integrations.Cursor},
+	current := strings.TrimPrefix(version, "v")
+	status := "current"
+	if installpkg.CompareVersions(current, latest) < 0 {
+		status = "available"
 	}
-	names := make([]string, 0, len(candidates))
-	for _, integration := range candidates {
-		if changed[integration.name] && integration.state.RestartRequired {
-			names = append(names, integration.name)
-		}
+	if jsonOutput {
+		return json.NewEncoder(ioctx.Out).Encode(map[string]any{"check": true, "current": current, "latest": latest, "status": status})
 	}
-	return names
+	if status == "available" {
+		_, err = fmt.Fprintf(ioctx.Out, "Mimir update available: %s -> %s\n", current, latest)
+	} else {
+		_, err = fmt.Fprintf(ioctx.Out, "Mimir is up to date: %s\n", current)
+	}
+	return err
 }

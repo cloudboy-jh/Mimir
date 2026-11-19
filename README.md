@@ -4,15 +4,16 @@
 
 # Private memory for coding agents
 
-Mimir records what your coding agents attempted, which models and files were
-involved, what failed, and whether the work landed. The Worker, storage, and
-private dashboard run inside your Cloudflare account. Agents can search prior
-sessions before trying the same approach again.
+Mimir records every coding-agent session automatically: what was asked and
+done, which models, files, and errors were involved, and which commits were
+made and pushed. Your agents query that memory through MCP, native tools, or
+the CLI to answer "how did I fix this before?" in one or two calls. The Worker,
+storage, and private dashboard run inside your Cloudflare account.
 
-## Get started
+## Install
 
-Install the latest checksum-verified release. During installation, select the
-coding agent you use so Mimir can install its integration.
+Install the latest checksum-verified release and select the coding agents you
+use.
 
 macOS and Linux:
 
@@ -26,207 +27,111 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/cloudboy-jh/mimir/master/install.ps1 | iex
 ```
 
-Default integration locations on macOS and Linux:
+## Set up
 
-| Harness | Installed integration | Activate |
-| --- | --- | --- |
-| OpenCode | `~/.config/opencode/plugins/mimir.ts` | Restart OpenCode |
-| Pi | `~/.pi/agent/extensions/mimir.ts` | Restart Pi |
-| Oh My Pi | `~/.omp/agent/extensions/mimir.ts` | Restart Oh My Pi |
-| Hermes | `~/.hermes/plugins/mimir/` | Restart Hermes |
-| Claude Code | `~/.claude/skills/mimir/` (plugin manifest and hooks) | `/reload-plugins` or restart |
-| Codex | `~/.agents/plugins/plugins/mimir/` (marketplace plugin and hooks) | Restart Codex |
-| Cursor | `~/.cursor/hooks.json` | Open or continue an agent session |
-
-Configured agent homes and active profiles can change these paths; on Windows,
-Hermes defaults to `%LOCALAPPDATA%\hermes\plugins\mimir\`. Run `mimir harness`
-to inspect selected integrations. See [integration details](docs/installation.md#integration-details)
-for ownership and path variations.
-
-Want to look around first? `mimir demo` opens a local dashboard with synthetic
-sessions. It needs no Cloudflare account, connection, model credentials,
-Node.js, Bun, or Go. Demo changes reset on reload; it does not capture your work.
-
-### Capture your first session
-
-A fresh deployment requires a Cloudflare account, an OpenRouter API key,
-Node.js 22 with npm, and network access to npm and Cloudflare. You do not need
-Bun, Go, or a source checkout.
+A fresh deployment needs a Cloudflare account, an OpenRouter API key, and
+Node.js 22 with npm. You do not need Bun, Go, or a source checkout.
 
 ```bash
 mimir setup
 ```
 
-Setup deploys the embedded Worker and dashboard, provisions D1 and R2, registers
-this machine, and stores the OpenRouter key as a Worker secret. It reads
-`OPENROUTER_API_KEY` first, reuses an existing Worker secret, or asks through a
-masked prompt. If the installer did not enroll your agent, run `mimir install`
-and select it; setup does not silently add integrations.
+Setup deploys the embedded Worker and dashboard, provisions D1 and R2,
+registers this machine, and stores the OpenRouter key as a Worker secret
+(from `OPENROUTER_API_KEY`, an existing secret, or a masked prompt). If the
+installer did not enroll your agent, run `mimir install --harness <id>`.
 
-Apply the activation action above, then check the deployment and active
-integration:
+Apply the activation action for your agent (see the table below), then check
+everything:
 
 ```bash
 mimir doctor --json
 ```
 
-Resolve any failed checks using the reported action. In the activated agent,
-start a normal session and send a real prompt. Then find its ID and check that
-its capture was saved:
+Start a normal session in your agent, then confirm it was saved:
 
 ```bash
-mimir list --json
-mimir session status <id> --json
+mimir sessions --json
+mimir session status <id>
 ```
 
-The status receipt is the authority for durable capture. A successful model
-response or a queued capture does not prove the exchange was saved. Do not use
-a paid model route merely to test deployment connectivity. See [installation
-and first-session verification](docs/installation.md) if you need the exact
-activation or recovery steps.
-
-### Open the private dashboard
-
-Cloudflare Access is optional during setup, but required to use the deployed
-private dashboard in a browser. If you did not configure it during setup, run:
-
-```bash
-mimir access
-mimir dashboard
-```
-
-The dashboard opens on **Day**: a donut of the agent time spent on one local
-calendar day, one slice per workstream (grouped by repository, branch, and
-continued session titles), with the app and model on each slice. Hovering shows
-the workstream's time, share, requests, outcomes, and commits; clicking zooms
-into its sessions, and clicking a session opens it. The list beside the chart is
-its legend, where unresolved sessions can be given an outcome in place. The five
-largest workstreams get their own slice, the rest fold into **Other**, and
-one-request probes into **Quick**. Earlier and later active days are one click
-away. **Sessions**, **Commits**, **Requests**, **Overview**, and
-**Settings** follow in the shared header. Session details open as a conversation
-reader: compact title and status, visible app and machine, and every model used
-by that exact session with saved request counts—no model dropdown. Supporting
-sessions keep their own model lists. A facts row under the header lists start
-time, duration, requests, tokens, saved exchanges, and the session ID; pending
-or failed captures appear there whenever they occur. A short authored outcome
-reason appears once below the header when available, then the transcript.
-**Summary evidence** opens the full reconstruction and its source links; it is
-offered only when the reconstruction records actions, verification, a specific
-open item, or a result beyond the default unresolved sentence.
-The page grows with evidence. A right sidebar appears only when the session has
-some: **Details** holds the recorded outcome with its history and supporting
-sessions, referenced files, and errors; **Changes** holds captured commits and
-separate outcome evidence. Empty sections are hidden rather than labelled empty,
-a session with none gives the reader the full width, and an unresolved session
-with no outcome history offers a compact **Set outcome** control in the header
-instead of an outcome section. The sidebar shares page scrolling and stacks
-below the reader on small screens. Assistant answers, code, saved reasoning,
-and linked tool activity stay in coherent turns.
-Title and summary requests stay out of Conversation; compaction appears only as
-a context boundary. Inspect those requests with the **Requests** kind filter.
-**Requests** presents labelled Input and Output together; complete redacted
-payloads remain under **Debug JSON**.
-Summary evidence is a deterministic reconstruction of bounded saved evidence,
-not a paid-model call or proof that an observed check passed.
-
-**Commits** starts with recorded repository and ref choices, then a compact table
-of captured work grouped by repository and full SHA. Opening a commit shows its
-owning session's patch with changed-file navigation, filename search, and
-unified/split diffs.
-Alternate capture selection appears only when needed; filters and exact capture
-selection are URL-backed, with return navigation preserving the table.
-Remote links open the repository host for complete source browsing; Mimir does
-not reconstruct a full repository source tree. Saved patches do not prove a
-push, merge, or landed outcome.
-
-Dashboard pickers share keyboard navigation and selected-state styling.
-Repositories and longer lists are searchable; repository choices show their
-host or exact local-session identity. Short lists use compact dropdowns.
-
-Search and URL-backed filters run server-side across matching indexed records,
-not just loaded rows. Requests filters cover redacted request/response excerpts,
-request kind, capture state, tools/errors, dates, and session scope. Tool filters
-use observed structured activity; older captures can have incomplete tool
-indexes ([historical limits](docs/Spec.md#43-dashboard-api)). The dashboard also
-shows harnesses, models, provider-reported cache reads/writes, and token usage.
-
-![Mimir private dashboard showing captured coding-agent sessions, outcomes, capture state, models, and token usage.](assets/images/mimir-dash-screenshot.png)
-
-To upgrade an existing deployment, update the binary with `mimir update`, then
-run `mimir deploy` to apply its bundled Worker, dashboard, and D1 migrations.
-Publishing or installing a release does not deploy your Cloudflare Worker.
-See [update operations](docs/operations.md#update).
+Never use a paid model call just to test connectivity. See
+[installation](docs/installation.md) for every path and recovery step.
 
 ## Use the memory
 
-Ask an installed agent for recent sessions, prior decisions, or evidence. The
-`mimir-use` skill queries the machine-readable CLI and presents readable
-results instead of raw JSON. Pi and Oh My Pi expose the exact active session as
-`MIMIR_SESSION_ID`; OpenCode supplies native status and outcome tools. After
-meaningful work, the skill records an evidenced outcome before fetching the
-capture receipt.
+Mimir captures on its own; agents never record, mark, or end anything. They
+read memory when prior work would help. Ask your agent things like:
 
-You can also search and inspect sessions yourself:
+- "How did I fix the token validation error last time?"
+- "What did I do in this repo last week, and what got pushed?"
+- "Chart my sessions this week by repo."
+
+Claude Code, Codex, and Cursor get an MCP server named `mimir`; OpenCode and
+Hermes get native `mimir_*` tools; Pi and Oh My Pi run the CLI with `--json`.
+All of them return the same data:
 
 ```bash
 mimir search "token validation" --json
-mimir session get <id> --json
-mimir session outcome <id> landed --reason "merged in PR 42"
+mimir sessions --repo mimir --from 7d --git-status pushed --json
+mimir stats --by repo --from 7d --json
+mimir session <id> --json
 ```
 
-Mimir keeps **capture state** (Empty, Pending, Saved, Failed, or Partial)
-separate from **work outcome** (Landed, Discarded, Abandoned, or Unresolved).
-A saved exchange does not mean the work landed. Sessions can retain independent
-Git patches across commits even when work was discarded or abandoned.
+Each session carries a **capture status** (Saved, Pending, Partial, Failed,
+Empty) that says whether Mimir stored it, and a **Git status** (`none`,
+`committed`, `pushed`) derived from captured commits. To recover local Pi or
+OpenCode history, run `mimir import` or `mimir backfill`. See the
+[CLI reference](docs/cli.md).
 
-To recover supported local Pi or OpenCode history, run `mimir import` in a
-terminal. Use `mimir backfill` to repair gaps. Hermes history is not imported
-automatically, and the current import command does not support Hermes. See
-[import and backfill commands](docs/cli.md#local-import-and-backfill).
+## Dashboard
+
+Run `mimir access` once to put the dashboard behind Cloudflare Access, then
+`mimir dashboard`. It has three pages: **Day** draws one calendar day as a
+donut of workstreams with their sessions and commits; **Sessions** lists and
+filters sessions, and each session page shows its summary, conversation,
+commits with patches, files, and errors; **Devices** lists your machines with
+their tailnet status and lets you rename or revoke them.
+
+![Mimir private dashboard showing captured coding-agent sessions.](assets/images/mimir-dash-screenshot.png)
 
 ## What gets captured
 
-A session is one episode of agent work, not a bag of disconnected requests.
-Mimir combines model exchanges, harness lifecycle events, and Git evidence so
-you can inspect the task, repository, models, files, errors, and result.
+| Agent | Integration | Activate | Evidence |
+| --- | --- | --- | --- |
+| OpenCode | `~/.config/opencode/plugins/mimir.ts` | Restart OpenCode | Proxy exchanges for OpenRouter; bounded reconstructions for direct providers |
+| Pi | `~/.pi/agent/extensions/mimir.ts` | Restart Pi | Proxy exchanges for OpenRouter; bounded reconstructions for direct providers |
+| Oh My Pi | `~/.omp/agent/extensions/mimir.ts` | Restart Oh My Pi | Proxy exchanges for OpenRouter; bounded reconstructions for direct providers |
+| Hermes | `~/.hermes/plugins/mimir/` | Restart Hermes | Proxy exchanges for OpenRouter; bounded request/response and tool reconstructions for direct providers |
+| Claude Code | `~/.claude/skills/mimir/` (plugin, hooks, MCP) | `/reload-plugins` or restart | Bounded prompt/response reconstructions |
+| Codex | `~/.agents/plugins/plugins/mimir/` (plugin, hooks, MCP) | Restart Codex | Bounded prompt/response reconstructions with token usage |
+| Cursor | `~/.cursor/hooks.json`, plus `~/.cursor/mcp.json` when absent | Open or continue a session | Bounded prompt/response reconstructions |
 
-| Path | Evidence |
-| --- | --- |
-| OpenRouter traffic routed through Mimir | Full redacted request and response, including streamed responses |
-| Pi, Oh My Pi, OpenCode, Claude Code, Codex, and Cursor direct or subscription paths | Bounded prompt and response reconstructions where supported; not provider transport archives |
-| Hermes direct providers (including Codex and Nous) | Bounded request/response reconstructions and supported tool interactions from Hermes hooks; not provider transport archives |
+Every integration also reports session lifecycle and captures commits through
+`mimir _hook git`. `x-mimir-session` is the authoritative session boundary;
+traffic without it is grouped by repository, harness, and device with an
+inactivity gap. The Worker redacts before writing exchanges and patches to R2;
+redaction reduces accidental retention but cannot guarantee every secret is
+removed. Run `mimir harness` to see your integrations and paths.
 
-`x-mimir-session` is the authoritative session boundary when available. Traffic
-without an exact ID uses bounded inactivity grouping. The Worker redacts before
-writing full exchanges and imported Git patches to R2; searchable metadata and
-R2 references live in D1. Redaction reduces accidental retention but cannot
-guarantee that every secret is removed. Local code recall stays in
-`<repo>/.mimir/index.json` and is not uploaded.
-
-![The agent harness captures full proxy exchanges, reconstructed direct-provider turns, and lifecycle events. The private Mimir Worker makes that evidence durable, while the separate CLI handles setup and search.](assets/images/mimir-system-map.png)
+![The agent harness captures proxy exchanges, reconstructed direct-provider turns, lifecycle events, and commits. The private Mimir Worker makes them durable and serves them to agents over MCP and the CLI.](assets/images/mimir-system-map.png)
 
 There is no Mimir account or hosted backend. Machine requests use per-machine
-bearer tokens; deployed dashboard APIs and redacted logs require verified
-Cloudflare Access JWTs. Mimir uses your account's shared Cloudflare allowances,
-not a dedicated free quota. See [capture fidelity and Free plan
-units](docs/installation.md#capture-fidelity) and [session lifecycle and capture
-boundaries](docs/session-lifecycle.md) for the detailed guarantees.
+bearer tokens; the deployed dashboard requires verified Cloudflare Access
+JWTs. Mimir uses your account's shared Cloudflare allowances.
 
 ## More paths
 
-- **Another machine:** Install Mimir there, then run `mimir login`. Discovery
-  requires Node.js 22 with npm/npx and access to the Cloudflare account, but
-  not the OpenRouter key. [Direct URL/token recovery](docs/installation.md#direct-url-and-token)
-  is also available.
-- **Other model clients:** Run `mimir connection` for proxy URLs, credential
-  sources, and supported metadata headers. The CLI itself does not capture
-  unrelated model traffic.
-- **Operations:** [Deploy, diagnose, update, Access, and devices](docs/operations.md)
-  · [Troubleshooting](docs/troubleshooting.md)
-- **Reference:** [CLI and machine-readable contract](docs/cli.md) ·
-  [Implementation, APIs, storage, and security](docs/Spec.md) ·
-  [Product direction](docs/PRODUCT.md) · [Dashboard design](docs/DESIGN.md)
-- **Development:** [Dashboard and Worker development](docs/operations.md#local-development)
-  · [OpenCode capture](docs/opencode-capture-setup.md) ·
-  [Hermes capture](docs/hermes-capture-setup.md)
+- **Another machine:** install Mimir there and run `mimir login`
+  ([direct URL and token](docs/installation.md#direct-url-and-token) also work).
+- **Upgrade:** `mimir update`, then `mimir deploy` to apply the bundled Worker,
+  dashboard, and migrations ([operations](docs/operations.md#update)).
+- **Other model clients:** `mimir connection` prints proxy URLs, credential
+  sources, and metadata headers.
+- **Operations:** [deploy, diagnose, update, Access, devices](docs/operations.md)
+  · [troubleshooting](docs/troubleshooting.md)
+- **Reference:** [CLI](docs/cli.md) · [APIs, MCP, storage, security](docs/Spec.md)
+  · [session lifecycle](docs/session-lifecycle.md) · [product](docs/PRODUCT.md)
+  · [dashboard design](docs/DESIGN.md)
+- **Harness details:** [OpenCode](docs/opencode-capture-setup.md) ·
+  [Hermes](docs/hermes-capture-setup.md)

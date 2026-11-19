@@ -12,26 +12,13 @@ import (
 	"github.com/cloudboy-jh/mimir/internal/harness"
 	"github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
-func connectionSummary(out io.Writer, url string) string {
-	machine, _ := os.Hostname()
-	if strings.TrimSpace(machine) == "" {
-		machine = "registered"
-	}
+func connectionSummary(url string) string {
 	credential, _ := tokenPath()
 	manifest, _ := currentConnectionManifest(url)
-	render := cliui.New(out)
-	return render.Card("Ready",
-		bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")},
-		bentotui.Field{Label: "Machine", Value: machine},
-		bentotui.Field{Label: "Credential", Value: credential},
-		bentotui.Field{Label: "OpenAI", Value: manifest.OpenAIBaseURL},
-		bentotui.Field{Label: "Anthropic", Value: manifest.AnthropicBaseURL},
-		bentotui.Field{Label: "Memory", Value: "enabled"},
-	)
+	return fmt.Sprintf("✓ Mimir ready\n  Worker:     %s\n  Machine:    %s\n  Credential: %s\n  OpenAI:     %s\n  Anthropic:  %s",
+		strings.TrimRight(url, "/"), machineName(), credential, manifest.OpenAIBaseURL, manifest.AnthropicBaseURL)
 }
 
 func currentConnectionManifest(url string) (harness.ConnectionManifest, error) {

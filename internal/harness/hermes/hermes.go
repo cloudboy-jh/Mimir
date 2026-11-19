@@ -19,16 +19,9 @@ import (
 )
 
 const (
-	pluginSourcePrefix = "plugins/hermes/"
-	managedStart       = "# >>> mimir managed openrouter route"
-	managedEnd         = "# <<< mimir managed openrouter route"
+	managedStart = "# >>> mimir managed openrouter route"
+	managedEnd   = "# <<< mimir managed openrouter route"
 )
-
-func ArtifactSourcePrefixes() []string { return []string{pluginSourcePrefix} }
-
-func OwnsArtifactSource(source string) bool {
-	return strings.HasPrefix(filepath.ToSlash(source), pluginSourcePrefix)
-}
 
 var dotenvExpansion = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 

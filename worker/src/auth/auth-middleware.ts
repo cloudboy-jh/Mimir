@@ -3,11 +3,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { AppEnv, Bindings, DashboardIdentity } from "../env";
 
 export async function authenticate(c: Context<AppEnv>, next: Next) {
-  if (
-    c.req.path === "/dashboard/auth" ||
-    c.req.path.startsWith("/dashboard/api/") ||
-    c.req.path.startsWith("/dashboard/log-objects/")
-  ) {
+  if (c.req.path === "/dashboard/auth" || c.req.path.startsWith("/dashboard/api/")) {
     const identity = await dashboardAccessIdentity(c.req.raw, c.env);
     if (!identity)
       return c.json(

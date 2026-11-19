@@ -1,7 +1,7 @@
 // Pure day-snapshot construction shared by the Worker route and the dashboard
 // fixture build. Keep this module free of Worker bindings and storage access.
 
-export type DayOutcome = "landed" | "discarded" | "abandoned" | "unresolved";
+export type DayGitStatus = "none" | "committed" | "pushed";
 export type DayCaptureStatus = "empty" | "pending" | "saved" | "failed" | "partial";
 
 export const DAY_BUCKET_MINUTES = 15;
@@ -15,8 +15,7 @@ export type DayRoot = {
   repo: string | null;
   source_ref: string | null;
   model_primary: string | null;
-  outcome: DayOutcome;
-  outcome_reason: string | null;
+  git_status: DayGitStatus;
   state: "active" | "inactive";
   started_at: string;
   activity_at: string;
@@ -40,6 +39,7 @@ export type DayCommitRow = {
   subject: string | null;
   ref: string | null;
   capture_status: string;
+  pushed: number;
   patch_files: number;
   patch_additions: number;
   patch_deletions: number;
@@ -56,8 +56,7 @@ export type DaySession = {
   repo: string | null;
   source_ref: string | null;
   model_primary: string | null;
-  outcome: DayOutcome;
-  outcome_reason: string | null;
+  git_status: DayGitStatus;
   state: "active" | "inactive";
   capture_status: DayCaptureStatus;
   started_at: string;
@@ -78,6 +77,7 @@ export type DayCommit = {
   subject: string | null;
   ref: string | null;
   capture_status: string;
+  pushed: boolean;
   patch_files: number;
   patch_additions: number;
   patch_deletions: number;
@@ -98,7 +98,7 @@ export type DayWorkstream = {
   tokens_out: number;
   sub_agents: number;
   active: boolean;
-  outcomes: Record<DayOutcome, number>;
+  git: Record<DayGitStatus, number>;
   commits: DayCommit[];
 };
 
@@ -125,7 +125,7 @@ export type DaySnapshot = {
   workstreams: DayWorkstream[];
   sessions: DaySession[];
   quiet_session_ids: string[];
-  attention: { active: string[]; unresolved: string[]; capture: string[] };
+  attention: { active: string[]; capture: string[] };
 };
 
 export type DaySnapshotInput = {
@@ -257,7 +257,7 @@ export function buildDaySnapshot(input: DaySnapshotInput): DaySnapshot {
     const commitCount = new Set((commitsByRoot.get(root.id) ?? []).map((row) => row.commit_sha)).size;
     const requests = rows.reduce((sum, row) => sum + Number(row.requests), 0);
     const totalRequests = Math.max(Number(root.request_count) || 0, requests);
-    const quiet: DayQuietReason | null = root.state === "active" || commitCount > 0 || root.outcome === "landed" || totalRequests > 1
+    const quiet: DayQuietReason | null = root.state === "active" || commitCount > 0 || root.git_status !== "none" || totalRequests > 1
       ? null
       : totalRequests === 0 ? "empty" : "single_request";
     const firstAt = rows.reduce<string | null>((min, row) => (!min || row.first_at < min ? row.first_at : min), null);
@@ -269,8 +269,7 @@ export function buildDaySnapshot(input: DaySnapshotInput): DaySnapshot {
       repo: root.repo,
       source_ref: root.source_ref,
       model_primary: root.model_primary,
-      outcome: root.outcome,
-      outcome_reason: root.outcome_reason,
+      git_status: root.git_status,
       state: root.state,
       capture_status: root.capture.status,
       started_at: root.started_at,
@@ -338,16 +337,17 @@ export function buildDaySnapshot(input: DaySnapshotInput): DaySnapshot {
       if (existing) {
         if (!existing.session_ids.includes(row.root_id)) existing.session_ids.push(row.root_id);
         if (row.capture_status === "saved") existing.capture_status = "saved";
+        if (Number(row.pushed) === 1) existing.pushed = true;
         continue;
       }
       commits.set(row.commit_sha, {
-        commit_sha: row.commit_sha, subject: row.subject, ref: row.ref, capture_status: row.capture_status,
+        commit_sha: row.commit_sha, subject: row.subject, ref: row.ref, capture_status: row.capture_status, pushed: Number(row.pushed) === 1,
         patch_files: Number(row.patch_files), patch_additions: Number(row.patch_additions), patch_deletions: Number(row.patch_deletions),
         at: row.committed_at ?? row.accepted_at, session_ids: [row.root_id],
       });
     }
-    const outcomes: Record<DayOutcome, number> = { landed: 0, discarded: 0, abandoned: 0, unresolved: 0 };
-    for (const session of members) outcomes[session.outcome]++;
+    const git: Record<DayGitStatus, number> = { none: 0, committed: 0, pushed: 0 };
+    for (const session of members) git[session.git_status]++;
     return {
       id: members[0]!.id,
       label: dominant.display_title ?? "Untitled session",
@@ -361,7 +361,7 @@ export function buildDaySnapshot(input: DaySnapshotInput): DaySnapshot {
       tokens_out: members.reduce((sum, session) => sum + session.tokens_out, 0),
       sub_agents: members.reduce((sum, session) => sum + session.sub_agents, 0),
       active: members.some((session) => session.state === "active"),
-      outcomes,
+      git,
       commits: [...commits.values()].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
     };
   }).sort((a, b) => Number(b.active) - Number(a.active) || (a.last_at < b.last_at ? 1 : a.last_at > b.last_at ? -1 : 0));
@@ -392,7 +392,6 @@ export function buildDaySnapshot(input: DaySnapshotInput): DaySnapshot {
     quiet_session_ids: quiet.map((session) => session.id),
     attention: {
       active: working.filter((session) => session.state === "active").map((session) => session.id),
-      unresolved: working.filter((session) => session.state === "inactive" && session.outcome === "unresolved").map((session) => session.id),
       capture: sessions.filter((session) => session.capture_status === "failed" || session.capture_status === "partial").map((session) => session.id),
     },
   };

@@ -359,33 +359,6 @@ export function extractFinishReason(response: unknown) {
   return null;
 }
 
-export type CompletionResult = "completed" | "pending" | "failed";
-
-export function completionResult(
-  finishReason: string | null,
-): CompletionResult {
-  const reason = finishReason?.trim().toLowerCase().replaceAll("-", "_");
-  if (
-    reason === "tool_calls" ||
-    reason === "function_call" ||
-    reason === "tool_use"
-  )
-    return "pending";
-  if (
-    reason === "error" ||
-    reason === "failed" ||
-    reason === "cancelled" ||
-    reason === "canceled" ||
-    reason === "aborted" ||
-    reason === "interrupted" ||
-    reason === "length" ||
-    reason === "max_tokens" ||
-    reason === "content_filter"
-  )
-    return "failed";
-  return "completed";
-}
-
 export function excerpt(value: string) {
   return value.slice(0, 8_000);
 }

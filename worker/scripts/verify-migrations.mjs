@@ -297,6 +297,35 @@ try {
     auto_outcome_source: 1,
   });
 
+  execute("UPDATE sessions SET summary_text = 'Old text summary', summary_status = 'ready' WHERE id = 'legacy-session';");
+  cpSync(join(root, "migrations", "0023_session_api.sql"), join(migrations, "0023_session_api.sql"));
+  applyMigrations();
+  execute(`
+    INSERT INTO exchange_search(exchange_id, body) VALUES ('legacy-exchange', 'migrated searchable text');
+    UPDATE session_git_artifacts SET pushed = 1, pushed_at = '2026-07-15T12:11:00Z' WHERE session_id = 'legacy-session';
+  `);
+  const sessionAPI = JSON.parse(execute(`
+    SELECT
+      (SELECT summary_status FROM sessions WHERE id = 'legacy-session') AS legacy_summary_status,
+      (SELECT summary_json FROM sessions WHERE id = 'legacy-session') AS legacy_summary_json,
+      (SELECT search_indexed FROM exchanges WHERE id = 'legacy-exchange') AS legacy_search_indexed,
+      (SELECT exchange_id FROM exchange_search WHERE exchange_search MATCH 'searchable') AS search_hit,
+      (SELECT pushed FROM session_git_artifacts WHERE session_id = 'legacy-session') AS pushed,
+      (SELECT COUNT(*) FROM pragma_table_info('machines') WHERE name LIKE 'tailnet_%') AS tailnet_columns,
+      (SELECT work_outcome FROM sessions WHERE id = 'legacy-session') AS preserved_outcome,
+      (SELECT COUNT(*) FROM session_outcome_events WHERE session_id = 'legacy-session') AS preserved_outcome_events;
+  `, true));
+  assert.deepEqual(sessionAPI.flatMap((entry) => entry.results ?? [])[0], {
+    legacy_summary_status: "pending",
+    legacy_summary_json: null,
+    legacy_search_indexed: 0,
+    search_hit: "legacy-exchange",
+    pushed: 1,
+    tailnet_columns: 6,
+    preserved_outcome: "landed",
+    preserved_outcome_events: 1,
+  });
+
   execute("UPDATE sessions SET outcome = 'discarded', outcome_src = 'git' WHERE id = 'legacy-session';");
   const compatibilityOutput = JSON.parse(execute(`
     SELECT

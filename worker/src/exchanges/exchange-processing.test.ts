@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyRequestKind,
-  completionResult,
   deriveIntent,
   deriveSessionFields,
   extractFinishReason,
@@ -51,25 +50,18 @@ describe("capture", () => {
     expect(redact("Bearer machine-secret", [])).toBe("Bearer [REDACTED]");
   });
 
-  it("classifies terminal model results without treating tool continuations as complete", () => {
-    expect(completionResult("stop")).toBe("completed");
-    expect(completionResult("tool_calls")).toBe("pending");
-    expect(completionResult("length")).toBe("failed");
+  it("extracts terminal finish reasons from harness payloads", () => {
     expect(
-      completionResult(
-        extractFinishReason({
-          assistant_message: { role: "assistant", tool_calls: [{ name: "terminal" }] },
-          finish_reason: "tool_calls",
-        }),
-      ),
-    ).toBe("pending");
+      extractFinishReason({
+        assistant_message: { role: "assistant", tool_calls: [{ name: "terminal" }] },
+        finish_reason: "tool_calls",
+      }),
+    ).toBe("tool_calls");
     expect(
-      completionResult(
-        extractFinishReason({
-          message: { stopReason: "aborted", errorMessage: "cancelled" },
-        }),
-      ),
-    ).toBe("failed");
+      extractFinishReason({
+        message: { stopReason: "aborted", errorMessage: "cancelled" },
+      }),
+    ).toBe("error");
   });
 
   it("rejects streams above the capture limit", async () => {

@@ -1,6 +1,12 @@
 import { readSaveConfig } from "../config/config-store";
 import { ulid } from "../shared/ulid";
+
 const HERMES_EXACT_ADOPTION_MS = 30_000;
+
+/** A heuristic session may become active only while no other heuristic session owns its key. */
+export const HEURISTIC_REACTIVATION_GUARD =
+  "(boundary = 'header' OR NOT EXISTS (SELECT 1 FROM sessions active WHERE active.id <> sessions.id AND active.boundary = 'heuristic' AND active.state = 'active' AND active.repo IS sessions.repo AND active.harness IS sessions.harness AND active.installation_id IS sessions.installation_id))";
+
 export async function resolveSession(
   db: D1Database,
   declared: string | null,
@@ -37,13 +43,9 @@ export async function resolveSession(
     return { id: declared };
   }
   const config = await readSaveConfig(db);
-  const cutoff = new Date(
-    Date.parse(now) - config.gapMinutes * 60_000,
-  ).toISOString();
+  const cutoff = new Date(Date.parse(now) - config.gapMinutes * 60_000).toISOString();
   if (harness === "hermes") {
-    const exactCutoff = new Date(
-      Date.parse(now) - HERMES_EXACT_ADOPTION_MS,
-    ).toISOString();
+    const exactCutoff = new Date(Date.parse(now) - HERMES_EXACT_ADOPTION_MS).toISOString();
     const exact = await db
       .prepare(
         "SELECT id FROM sessions WHERE boundary = 'header' AND state = 'active' AND repo IS ? AND harness = 'hermes' AND installation_id IS ? AND last_active_at >= ? ORDER BY last_active_at DESC LIMIT 1",
@@ -59,6 +61,14 @@ export async function resolveSession(
     .bind(repo, harness, installationID, cutoff)
     .first<{ id: string }>();
   if (prior) return prior;
+  // A silent heuristic session for this key has ended; release its slot so
+  // the new boundary can start without waiting for scheduled expiry.
+  await db
+    .prepare(
+      "UPDATE sessions SET state = 'inactive', inactive_at = COALESCE(inactive_at, ?), ended_at = COALESCE(ended_at, last_active_at) WHERE boundary = 'heuristic' AND state = 'active' AND repo IS ? AND harness IS ? AND installation_id IS ? AND last_active_at < ?",
+    )
+    .bind(now, repo, harness, installationID, cutoff)
+    .run();
   const id = ulid();
   await db
     .prepare(
@@ -76,19 +86,30 @@ export async function resolveSession(
   return active;
 }
 
-export async function expireSessions(
-  db: D1Database,
-  gapMinutes?: number,
-  now = new Date().toISOString(),
-) {
-  const gap = gapMinutes ?? (await readSaveConfig(db)).gapMinutes;
-  const cutoff = new Date(Date.parse(now) - gap * 60_000).toISOString();
-  await db
+/** Marks sessions silent for longer than the configured gap inactive; returns their ids. */
+export async function expireSessions(db: D1Database, now = new Date().toISOString()) {
+  const { gapMinutes } = await readSaveConfig(db);
+  const cutoff = new Date(Date.parse(now) - gapMinutes * 60_000).toISOString();
+  const expired = await db
     .prepare(
-      "UPDATE sessions SET state = 'inactive', inactive_at = COALESCE(inactive_at, ?), ended_at = COALESCE(ended_at, last_active_at) WHERE state = 'active' AND last_active_at < ?",
+      "UPDATE sessions SET state = 'inactive', inactive_at = COALESCE(inactive_at, ?), ended_at = COALESCE(ended_at, last_active_at) WHERE state = 'active' AND COALESCE(last_active_at, started_at) < ? RETURNING id",
     )
     .bind(now, cutoff)
-    .run();
+    .all<{ id: string }>();
+  return expired.results.map((row) => row.id);
+}
+
+/** Ends an active session. Returns false when the session does not exist. Idempotent. */
+export async function endSession(db: D1Database, id: string, at: string) {
+  const [, session] = await db.batch<{ id: string }>([
+    db
+      .prepare(
+        "UPDATE sessions SET state = 'inactive', ended_at = ?, inactive_at = ?, last_active_at = CASE WHEN last_active_at IS NULL OR last_active_at < ? THEN ? ELSE last_active_at END WHERE id = ? AND state = 'active'",
+      )
+      .bind(at, at, at, at, id),
+    db.prepare("SELECT id FROM sessions WHERE id = ?").bind(id),
+  ]);
+  return session!.results.length > 0;
 }
 
 export async function canMutateSession(
@@ -102,9 +123,39 @@ export async function canMutateSession(
     )
     .bind(id)
     .first<{ installation_id: string | null }>();
-  return (
-    !root?.installation_id ||
-    !installationID ||
-    root.installation_id === installationID
-  );
+  return !root?.installation_id || !installationID || root.installation_id === installationID;
+}
+
+export type ParentRejection = { status: 403 | 404 | 409; error: string };
+
+// assignParent records parent intent; the D1 triggers resolve it once the
+// parent exists and reject conflicts, cycles and cross-installation trees.
+export async function assignParent(
+  db: D1Database,
+  sessionID: string,
+  parentID: string,
+  installationID: string | null,
+  allowMissing: boolean,
+): Promise<ParentRejection | null> {
+  const parent = await db.prepare("SELECT id FROM sessions WHERE id = ?").bind(parentID).first();
+  if (!parent && !allowMissing) return { status: 404, error: "parent session not found" };
+  if (
+    !(await canMutateSession(db, sessionID, installationID)) ||
+    (parent && !(await canMutateSession(db, parentID, installationID)))
+  )
+    return { status: 403, error: "session belongs to another installation" };
+  try {
+    await db
+      .prepare("UPDATE sessions SET requested_parent_session_id = ? WHERE id = ?")
+      .bind(parentID, sessionID)
+      .run();
+  } catch (error) {
+    if (isParentConflict(error)) return { status: 409, error: "invalid session parent relationship" };
+    throw error;
+  }
+  return null;
+}
+
+export function isParentConflict(error: unknown) {
+  return error instanceof Error && error.message.includes("session parent");
 }

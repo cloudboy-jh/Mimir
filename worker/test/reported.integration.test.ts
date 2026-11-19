@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addMachineToken,
   createExecutionContext,
-  dashboardRequest,
   env,
   finalizeAcceptedExchange,
   request,
@@ -128,10 +127,12 @@ describe("Reported exchange integration", () => {
       ).first(),
     ).toEqual({ signature: "compile_failed: compile error" });
 
-    const indexedTools = await dashboardRequest("/dashboard/api/log?tool=read");
-    expect((await indexedTools.json<{ exchanges: Array<{ id: string }> }>()).exchanges.map((item) => item.id)).toEqual(["reported-exchange-1"]);
-    const absentTool = await dashboardRequest("/dashboard/api/log?tool=not-observed");
-    expect((await absentTool.json<{ exchanges: Array<{ id: string }> }>()).exchanges).toEqual([]);
+    expect(
+      (await env.DB.prepare("SELECT name FROM exchange_tools WHERE exchange_id = 'reported-exchange-1' ORDER BY name").all()).results,
+    ).toEqual([{ name: "edit" }, { name: "read" }]);
+    expect(
+      await env.DB.prepare("SELECT search_indexed FROM exchanges WHERE id = 'reported-exchange-1'").first(),
+    ).toEqual({ search_indexed: 1 });
 
     const objectText = await (await env.LOGS.get(exchange!.r2_key))!.text();
     expect(objectText).not.toContain("private-value");
@@ -173,26 +174,12 @@ describe("Reported exchange integration", () => {
       usage: { input_tokens: 12, output_tokens: 4, cache_read_tokens: 5, cache_write_tokens: 2 },
       redaction: { version: 1 },
     });
-    const state = (await (
-      await request("/sessions/reported-session/object-state", {
-        headers: { authorization: "Bearer machine-token" },
-      })
-    ).json()) as Record<string, unknown>;
-    expect(state).toMatchObject({
-      turn_count: 1,
-      tokens_in: 12,
-      tokens_out: 4,
-      cache_read_tokens: 5,
-      cache_write_tokens: 2,
-    });
   });
 
   it.each(["pi", "oh-my-pi", "opencode"])(
-    "conforms %s tool-bearing exchanges through ingestion and diff retrieval",
+    "conforms %s tool-bearing exchanges through ingestion and turn retrieval",
     async (harness) => {
       const sessionID = `${harness}-conformance`;
-      const patch =
-        "diff --git a/src/conformance.ts b/src/conformance.ts\n--- a/src/conformance.ts\n+++ b/src/conformance.ts\n@@ -1 +1 @@\n-old\n+new\n";
       const headers = {
         authorization: "Bearer machine-token",
         "content-type": "application/json",
@@ -287,24 +274,30 @@ describe("Reported exchange integration", () => {
         ).results,
       ).toEqual([{ signature: "Error: write failed" }]);
 
-      const outcome = await request(`/sessions/${sessionID}/outcome`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer machine-token",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          outcome: "landed",
-          reason: "fixture landed",
-          evidence: { commit: "a".repeat(40), provenance: harness, patch },
-        }),
+      const turns = await request(`/api/sessions/${sessionID}/turns`, {
+        headers: { authorization: "Bearer machine-token" },
       });
-      expect(outcome.status).toBe(200);
-      const diff = await dashboardRequest(
-        `/dashboard/api/sessions/${sessionID}/diff`,
-      );
-      expect(diff.status).toBe(200);
-      expect(await diff.text()).toBe(patch);
+      expect(await turns.json()).toEqual({
+        turns: [
+          {
+            exchange_id: `${harness}:conformance`,
+            session_id: sessionID,
+            ts: "2026-08-17T12:00:00.000Z",
+            model: "openai/gpt-5",
+            request_kind: "primary",
+            capture_status: "saved",
+            user: "Update src/conformance.ts",
+            assistant: "attempted update",
+            reasoning: null,
+            tools: [
+              { name: "read", input: JSON.stringify({ path: "src/conformance.ts" }, null, 2), output: "old", error: false },
+              { name: "edit", input: JSON.stringify({ path: "src/conformance.ts" }, null, 2), output: "Error: write failed", error: true },
+            ],
+            truncated: false,
+          },
+        ],
+        next_cursor: null,
+      });
     },
   );
 
@@ -379,7 +372,7 @@ describe("Reported exchange integration", () => {
     },
   );
 
-  it("deduplicates canonical harness exchange retries without changing aggregates or DO turns", async () => {
+  it("deduplicates canonical harness exchange retries without changing aggregates", async () => {
     const payload = {
       exchange_id: "reported-duplicate-1",
       ts: "2026-07-26T12:01:00Z",
@@ -422,12 +415,6 @@ describe("Reported exchange integration", () => {
         "SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'reported-duplicate'",
       ).first(),
     ).toEqual({ request_count: 1, tokens_in: 5, tokens_out: 2 });
-    const state = (await (
-      await request("/sessions/reported-duplicate/object-state", {
-        headers: { authorization: "Bearer machine-token" },
-      })
-    ).json()) as Record<string, unknown>;
-    expect(state).toMatchObject({ turn_count: 1, tokens_in: 5, tokens_out: 2 });
   });
 
   it("retries reported exchanges after a failed R2 write", async () => {
@@ -479,9 +466,9 @@ describe("Reported exchange integration", () => {
     ).toEqual({ request_count: 1, tokens_in: 3, tokens_out: 1 });
   });
 
-  it("records failed receipts without exposing payloads or changing work outcome", async () => {
+  it("records failed receipts without exposing payloads or changing aggregates", async () => {
     await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, boundary, work_outcome) VALUES ('failed-receipt', '2026-07-26T12:00:00Z', 'header', 'landed')",
+      "INSERT INTO sessions(id, started_at, boundary) VALUES ('failed-receipt', '2026-07-26T12:00:00Z', 'header')",
     ).run();
     const init = {
       method: "POST",
@@ -523,27 +510,18 @@ describe("Reported exchange integration", () => {
       saved_at: null,
       failed_at: expect.any(String),
     });
-    const status = await request("/sessions/failed-receipt/status", {
+    const status = await request("/api/sessions/failed-receipt/receipt", {
       headers: { authorization: "Bearer machine-token" },
     });
     expect(await status.json()).toMatchObject({
-      outcome: "landed",
       capture: { status: "failed", failed_exchanges: 1, saved_exchanges: 0 },
+      line: "Mimir couldn't save this session · 1 failed",
     });
     expect(
       await env.DB.prepare(
-        "SELECT work_outcome, request_count, tokens_in, tokens_out FROM sessions WHERE id = 'failed-receipt'",
+        "SELECT request_count, tokens_in, tokens_out FROM sessions WHERE id = 'failed-receipt'",
       ).first(),
-    ).toEqual({ work_outcome: "landed", request_count: 0, tokens_in: 0, tokens_out: 0 });
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'failed-receipt'",
-      ).first(),
-    ).toEqual({ count: 0 });
-    const state = await request("/sessions/failed-receipt/object-state", {
-      headers: { authorization: "Bearer machine-token" },
-    });
-    expect(state.status).toBe(404);
+    ).toEqual({ request_count: 0, tokens_in: 0, tokens_out: 0 });
     const duplicate = await request("/sessions/failed-receipt/exchange-failures", init);
     expect(duplicate.status).toBe(200);
     expect(await duplicate.json()).toMatchObject({ capture_status: "failed", duplicate: true });

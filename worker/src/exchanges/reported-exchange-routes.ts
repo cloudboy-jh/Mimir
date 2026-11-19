@@ -7,15 +7,15 @@ import {
   stringArray,
 } from "../config/config-store";
 import type { AppEnv } from "../env";
-import { reportSessionEvent, SESSION_ID } from "../sessions/events";
+import { SESSION_ID } from "../sessions/events";
 import { resolveSession } from "../sessions/lifecycle";
-import { extractGeneratedTitle } from "../sessions/titles";
+import { indexExchange } from "../search/search-index";
+import { extractGeneratedTitle, titleUpdateStatement } from "../sessions/titles";
 import { finalizeAcceptedExchange } from "./capture-pipeline";
 import {
   classifyRequestKind,
   deriveIntent,
   deriveSessionFields,
-  completionResult,
   excerpt,
   extractFinishReason,
   extractProvider,
@@ -226,6 +226,7 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
       true,
       titleCandidate,
     );
+    await indexExchange(c.env.DB, parsed.exchange_id, envelope);
   } catch (error) {
     await c.env.DB.prepare(
       "UPDATE exchanges SET capture_status = 'failed', capture_reason = 'reported', failed_at = ?, failure_code = ? WHERE id = ? AND capture_status = 'accepted'",
@@ -247,26 +248,8 @@ export async function ingestReportedExchange(c: Context<AppEnv>) {
     return c.json({ error: "exchange save failed" }, 500);
   }
 
-  await reportSessionEvent(c.env, {
-    version: 1,
-    kind: "turn",
-    session_id: sessionId,
-    installation_id: installationID,
-    harness,
-    repo,
-    ...(parsed.title ? { title: parsed.title } : {}),
-    ts: parsed.ts,
-    turn: {
-      exchange_id: parsed.exchange_id,
-      model: parsed.model,
-      provider,
-      result: completionResult(finishReason),
-      request_kind: requestKind,
-      usage: parsed.usage,
-      latency_ms: parsed.latency_ms,
-      excerpt: requestExcerpt.slice(0, 500),
-    },
-  });
+  if (parsed.title)
+    await titleUpdateStatement(c.env.DB, sessionId, parsed.title, "harness", parsed.ts).run();
   return c.json(
     {
       exchange_id: parsed.exchange_id,

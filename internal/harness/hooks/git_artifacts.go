@@ -3,13 +3,10 @@ package hooks
 import (
 	"context"
 	"encoding/json"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/cloudboy-jh/mimir/internal/sessionimport"
 )
 
 var commitCommand = regexp.MustCompile(`(?:^|[;&|]\s*)git\s+(?:(?:-C\s+(?:"[^"]+"|'[^']+'|\S+)|-c\s+(?:"[^"]+"|'[^']+'|\S+)|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+))\s+)*commit(?:\s|$)`)
@@ -87,37 +84,16 @@ func (s Service) normalizeCommit(ctx context.Context, harness, session, repo, cw
 	if len(match) != 2 {
 		return normalizedInput{}
 	}
-	hint := strings.ToLower(match[1])
-	if !commitHint.MatchString(hint) {
-		return normalizedInput{}
-	}
-	// Resolve only the SHA emitted by Git; never treat HEAD or an unrelated
+	// Capture only the SHA emitted by Git; never treat HEAD or an unrelated
 	// commit as evidence of this tool invocation.
-	sha := hint
-	if len(hint) < 40 {
-		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", hint+"^{commit}")
-		cmd.Dir = cwd
-		resolved, err := cmd.Output()
-		if err != nil {
-			return normalizedInput{}
-		}
-		sha = strings.TrimSpace(string(resolved))
-		if len(sha) != 40 || !strings.HasPrefix(sha, hint) {
-			return normalizedInput{}
-		}
-	}
-	collector := s.Collector
-	if collector == nil {
-		collector = sessionimport.CheckoutArtifactCollector{MaxPatchBytes: 4 << 20}
-	}
-	artifact, err := collector.CollectCommit(ctx, cwd, sha)
-	if err != nil || artifact.CommitSHA != sha {
+	artifacts, _ := s.collectCommits(ctx, cwd, []string{strings.ToLower(match[1])})
+	if len(artifacts) == 0 {
 		return normalizedInput{}
 	}
 	repo = repoName(cwd)
 	return normalizedInput{deliveries: []Delivery{{
 		Kind: "git-artifacts", Harness: harness, SessionID: session, Repo: repo,
-		Body: map[string]any{"version": 1, "commits": []sessionimport.GitArtifact{artifact}},
+		Body: map[string]any{"version": 1, "commits": artifacts},
 	}}}
 }
 

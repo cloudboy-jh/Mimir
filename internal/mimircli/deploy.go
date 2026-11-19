@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
-	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
 )
 
 // deploy is the single supported way to ship Worker code and dashboard assets.
@@ -20,10 +19,7 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	}
 	domainOpts := deployment.Options{WorkerDir: opts.WorkerDir, WorkerName: opts.WorkerName, DatabaseName: opts.DatabaseName, BucketName: opts.BucketName, AccountID: opts.AccountID}
 	domainOpts.Noninteractive = opts.JSON
-	lines := lineoutput.New(ioctx.Out)
-	if !opts.JSON {
-		_ = lines.Phase("Preparing deployment")
-	}
+	setupStep(ioctx.Out, opts.JSON, "Preparing deployment")
 	fallback := ""
 	if pointer, err := loadPointer(); err == nil {
 		fallback = pointer.URL
@@ -31,30 +27,18 @@ func deploy(ctx context.Context, args []string, ioctx IO) error {
 	service := newDeploymentService(httpClient)
 	domainResult, err := service.Deploy(ctx, domainOpts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
-		Step: func(message string) {
-			if !opts.JSON {
-				_ = lines.Phase(message)
-			}
-		},
-		Login: func(ctx context.Context, dir string) error {
-			if !opts.JSON {
-				_ = lines.Warning("Cloudflare login required; opening Wrangler authentication")
-			}
-			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
-		},
+		Step:    func(message string) { setupStep(ioctx.Out, opts.JSON, message) },
+		Login:   func(ctx context.Context, dir string) error { return cloudflareLogin(ctx, dir, ioctx) },
 	}, fallback)
 	if err != nil {
 		return err
 	}
-	url := domainResult.URL
-	result := map[string]any{"state": "deployed", "url": strings.TrimRight(url, "/")}
-	if opts.JSON {
-		return writeSetupResult(ioctx.Out, true, result, "")
+	url := strings.TrimRight(domainResult.URL, "/")
+	human := "✓ Deployment complete"
+	if url != "" {
+		human += ": " + url
 	}
-	if url == "" {
-		return lines.Success("Deployment complete")
-	}
-	return lines.Success("Deployment complete: " + strings.TrimRight(url, "/"))
+	return writeSetupResult(ioctx.Out, opts.JSON, map[string]any{"state": "deployed", "url": url}, human)
 }
 
 func parseDeployOptions(args []string) (setupOptions, error) {

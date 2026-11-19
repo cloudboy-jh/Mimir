@@ -63,3 +63,9 @@ func TestReconcileReturnsEmptyArrays(t *testing.T) {
 		}
 	}
 }
+
+type requestFunc func(context.Context, string, string, any) ([]byte, error)
+
+func (f requestFunc) Request(ctx context.Context, method, path string, body any) ([]byte, error) {
+	return f(ctx, method, path, body)
+}

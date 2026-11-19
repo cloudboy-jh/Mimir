@@ -129,7 +129,7 @@ func (api AccessClient) ListApps(ctx context.Context, accountID string) ([]Acces
 }
 
 func DashboardAccessDomains(host string) []string {
-	return []string{host + "/dashboard/auth", host + "/dashboard/api/*", host + "/dashboard/log-objects/*"}
+	return []string{host + "/dashboard/auth", host + "/dashboard/api/*"}
 }
 
 func (api AccessClient) EnsureApp(ctx context.Context, accountID, host string) (AccessApp, error) {

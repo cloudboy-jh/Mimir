@@ -203,9 +203,9 @@ for harness in $harnesses; do
   set -- "$@" --harness "$harness"
 done
 if [ -z "$harnesses" ] && [ -t 1 ] && [ -r /dev/tty ]; then
-  MIMIR_INSTALL_SOURCE=release "$binary" "$@" </dev/tty
+  "$binary" "$@" </dev/tty
 else
-  MIMIR_INSTALL_SOURCE=release "$binary" "$@"
+  "$binary" "$@"
 fi
 
 case ":${PATH:-}:" in

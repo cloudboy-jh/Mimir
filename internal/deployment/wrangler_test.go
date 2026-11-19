@@ -369,24 +369,6 @@ func (f fakeInstaller) EnsureDashboardDependencies(context.Context, string) erro
 }
 func (f fakeInstaller) BuildDashboard(context.Context, string) error { return nil }
 
-func TestObserveWranglerCopiesCommandOutputAndErrors(t *testing.T) {
-	base := &fakeWrangler{vars: map[string]string{}}
-	var observed strings.Builder
-	wrapped := ObserveWrangler(base, &observed)
-	if _, err := wrapped.Run(context.Background(), ".", nil, "whoami"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(observed.String(), `"loggedIn":true`) {
-		t.Fatalf("success output not observed: %q", observed.String())
-	}
-	if _, err := wrapped.Run(context.Background(), ".", nil, "deploy"); err == nil {
-		t.Fatal("expected fake deploy failure")
-	}
-	if !strings.Contains(observed.String(), "unexpected EOF") {
-		t.Fatalf("failure not observed: %q", observed.String())
-	}
-}
-
 func TestConfigureAccessPersistsManualVarsBeforeDeploy(t *testing.T) {
 	wrangler := &fakeWrangler{}
 	service := NewService(nil)

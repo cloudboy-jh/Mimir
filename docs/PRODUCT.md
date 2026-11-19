@@ -6,60 +6,69 @@ product
 
 ## Platform
 
-web
+agents first, web second
 
 ## Users
 
-Mimir is for an individual developer working across coding agents, repositories, and machines. They open the dashboard while investigating what an agent did, why a session succeeded or failed, or what prior work should inform the next attempt. The interface must support fast scanning on desktop and remain usable as responsive web UI.
+Mimir is for an individual developer working across coding agents, repositories,
+and machines. Their agents query Mimir to recall prior work, chart activity, and
+inspect captured commits from inside whichever harness they run, through MCP,
+native harness tools, or the CLI. The developer opens the dashboard occasionally
+to look over a day, browse sessions, or manage devices.
 
 ## Product Purpose
 
-The dashboard turns Mimir's captured model traffic and recovered local harness history into understandable work sessions. Its primary job is one-click session understanding: what the agent attempted, which models and tools were involved, what files, errors, and independent Git commits mattered, and whether the work landed, was discarded, was abandoned, or remains unresolved. The request log is supporting evidence, not the center of the product.
+Mimir turns captured model traffic and recovered local harness history into
+work sessions that agents can query in one or two calls: what was attempted,
+which models, files, errors and commits were involved, and whether the work was
+committed or pushed. Capture is automatic; agents never record, mark, verify, or
+end anything.
 
-Success means a developer can open Mimir, recognize the relevant session, and understand its shape and outcome without reading a transcript from the beginning.
+Success means an agent answers "how did I fix this before?", "what did I do on
+this repository last week?", or "chart my sessions by repo" with one or two tool
+calls and structured results it can present as text, tables, or charts.
 
-Sessions, Commits, Requests, Overview, and Settings share one compact navigation
-header. Session detail leads with app, machine, and every exact-session model
-with request counts, followed once by the authored outcome reason when present.
-Conversation is the default reader; paired tools, code, reasoning, and sources
-stay with their turns. Title/summary traffic belongs in Requests, while
-compaction is a conversation boundary.
-
-Details and Changes remain beside the reader in normal page flow, holding
-unique metadata, outcome editing/history, usage, capture, and supporting
-evidence rather than duplicating the header. Summary evidence reconstructs
-bounded saved facts deterministically; it must expose uncertainty rather than
-invent a result or make an automatic paid-model call.
-
-Commits starts with recorded repositories and refs, then opens an exact
-session-owned capture in a searchable unified/split patch reader. Alternate
-captures remain distinct. This is captured work evidence, not a full source
-browser or proof of a push or merge; complete source browsing belongs on the
-recorded repository host.
+The dashboard is a small secondary viewer with three pages: Day, Sessions (with
+the session page), and Devices.
 
 ## Positioning
 
-Mimir is a private memory plane that makes agent work legible across time while keeping the data inside the developer's own Cloudflare account.
+Mimir is a private memory plane that makes agent work queryable across time,
+harnesses, and machines while keeping the data inside the developer's own
+Cloudflare account.
 
 ## Brand Personality
 
-Technical, quiet, exact. Mimir should feel like a trusted developer instrument: direct, information-dense, and confident without becoming sterile or ornamental. The pixel-art wordmark carries the brand personality; the product interface should remain operational and restrained.
+Technical, quiet, exact. Mimir should feel like a trusted developer instrument:
+direct, information-dense, and confident without becoming sterile or ornamental.
+The pixel-art wordmark carries the brand personality; the product interface
+should remain operational and restrained.
 
 ## Anti-references
 
-Do not resemble a generic SaaS dashboard. Avoid pill navigation, decorative gradients, blended color washes, interchangeable KPI card walls, oversized marketing typography, and arbitrary accent color. Do not turn the product into an OpenRouter clone: its activity-table clarity is a useful reference, but Mimir's defining experience is session comprehension.
+Do not resemble a generic SaaS dashboard. Avoid pill navigation, decorative
+gradients, blended color washes, interchangeable KPI card walls, oversized
+marketing typography, and arbitrary accent color. Do not build an analytics
+suite: agents draw their own charts from the query API.
 
 ## Design Principles
 
-1. Lead with sessions, not infrastructure. Organize the interface around understandable episodes of agent work.
-2. Make evidence one click away. Requests, files, errors, models, providers, and raw exchanges should support the session story without overwhelming it.
-3. Preserve operational density. Use familiar tables and controls with clear hierarchy rather than decorative containers.
-4. Let the wordmark carry the identity. Keep the surrounding interface quiet enough that Mimir feels distinctive without themed component gimmicks.
-5. Keep persistence and work result separate. Empty, Pending, Saved, Failed, or Partial capture describes durable memory; Landed, Discarded, Abandoned, or Unresolved describes the work outcome.
-6. Make persistence visible without turning it into log output. After meaningful work, the harness should show one compact receipt such as `Saved to Mimir · 14 exchanges`; when dashboard Access is configured, a `View session` action provides exact IDs, timestamps, and failure details.
-7. Preserve work evidence independently from outcome. A session can contain several commit artifacts even when it was discarded, abandoned, or remains unresolved; do not collapse Git history into a single landed-state badge.
-8. Make repair safe and unsurprising. Local import and backfill should preview bounded candidates in a terminal, require explicit confirmation for noninteractive bulk work, and merge deterministically so reruns fill gaps without duplicating evidence.
+1. Agents first. Every fact the dashboard shows is available to agents through
+   the same query API, MCP tools, and CLI.
+2. Few calls. Prefer one query that answers a whole question (`stats`, `day`,
+   `search`) over chains of lookups.
+3. Lead with sessions, not infrastructure. Requests are evidence inside a
+   session, not a product of their own.
+4. Derive, don't ask. Git status (`none`, `committed`, `pushed`) comes from
+   captured commits; agents are never asked to judge or mark their work.
+5. Keep persistence separate from work. Capture status (Empty, Pending, Saved,
+   Failed, Partial) describes durable memory, not whether work succeeded.
+6. Make repair safe and unsurprising. Import and backfill merge
+   deterministically so reruns fill gaps without duplicating evidence.
 
 ## Accessibility & Inclusion
 
-Target WCAG 2.2 AA. Maintain sufficient text and control contrast in light and dark themes, complete keyboard operation, visible focus states, reduced-motion support, non-color state cues, semantic tables, and responsive layouts that do not require whole-page horizontal scrolling.
+Target WCAG 2.2 AA. Maintain sufficient text and control contrast in light and
+dark themes, complete keyboard operation, visible focus states, reduced-motion
+support, non-color state cues, semantic tables, and responsive layouts that do
+not require whole-page horizontal scrolling.

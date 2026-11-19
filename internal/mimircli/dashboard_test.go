@@ -3,9 +3,9 @@ package mimircli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
@@ -28,10 +28,18 @@ func TestDashboardOpensDeploymentURL(t *testing.T) {
 	if err := dashboard(context.Background(), IO{Out: &output}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(opened, "/login?returnTo=%2Fdashboard%2Fsessions") {
+	if opened != server.URL+"/dashboard/" {
 		t.Fatalf("opened %q", opened)
 	}
-	if strings.Contains(opened, "test-token") {
-		t.Fatalf("machine token leaked in URL %q", opened)
+	if output.String() != "Dashboard: "+server.URL+"/dashboard/\n" {
+		t.Fatalf("output %q", output.String())
+	}
+	openBrowser = func(context.Context, string) error { return errors.New("no browser") }
+	output.Reset()
+	if err := dashboard(context.Background(), IO{Out: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Open "+server.URL+"/dashboard/\n" {
+		t.Fatalf("fallback output %q", output.String())
 	}
 }

@@ -1,6 +1,7 @@
 package mimircli
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -28,4 +29,14 @@ func isolatedInstallation(t *testing.T, hermes bool) installpkg.InstallationPath
 		t.Fatal(err)
 	}
 	return paths
+}
+
+func writeTestManifest(t *testing.T, paths installpkg.InstallationPaths, content string) {
+	t.Helper()
+	if err := os.MkdirAll(paths.MimirHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Manifest, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

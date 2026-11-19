@@ -6,7 +6,7 @@
     "directory": "./web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/dashboard/auth", "/dashboard/api/*", "/dashboard/log-objects/*", "/v1/*", "/whoami", "/machine/*", "/sessions*", "/search", "/config", "/reconcile", "/log/*", "/integrations/*"]
+    "run_worker_first": ["/dashboard/auth", "/dashboard/api/*", "/api/*", "/mcp", "/v1/*", "/whoami", "/machine/*", "/sessions/*", "/config", "/reconcile", "/integrations/*"]
   },
   "compatibility_date": "2026-07-14",
   "compatibility_flags": ["nodejs_compat"],
@@ -29,18 +29,17 @@
       "bucket_name": "mimir-logs"
     }
   ],
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "SESSIONS",
-        "class_name": "SessionObject"
-      }
-    ]
+  "triggers": {
+    "crons": ["*/10 * * * *"]
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["SessionObject"]
+    },
+    {
+      "tag": "v2",
+      "deleted_classes": ["SessionObject"]
     }
   ]
 }

@@ -5,12 +5,11 @@ interface __BaseEnv_Env {
 	LOGS: R2Bucket;
 	DB: D1Database;
 	ASSETS: Fetcher;
-	SESSIONS: DurableObjectNamespace /* SessionObject */;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
-		durableNamespaces: "SessionObject";
+		durableNamespaces: never;
 	}
 	interface Env extends __BaseEnv_Env {}
 }

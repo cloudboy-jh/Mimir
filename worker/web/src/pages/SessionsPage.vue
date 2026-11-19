@@ -1,238 +1,84 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ArrowRight, ChevronRight, Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-next";
-import OutcomeBadge from "@/components/OutcomeBadge.vue";
+import { Filter, GitBranch, RotateCw, Search, X } from "lucide-vue-next";
+import CaptureStatus from "@/components/CaptureStatus.vue";
 import DeviceIdentity from "@/components/DeviceIdentity.vue";
-import SessionModelStack from "@/components/session/SessionModelStack.vue";
-import SessionLivenessBadge from "@/components/session/SessionLivenessBadge.vue";
+import GitStatus from "@/components/GitStatus.vue";
+import IdentityBadge from "@/components/IdentityBadge.vue";
 import Button from "@/components/ui/Button.vue";
 import DropdownPanel from "@/components/ui/DropdownPanel.vue";
 import Select from "@/components/ui/Select.vue";
-import { errorMessage, listSessions, setSessionsOutcome, type Outcome, type Session, type SessionFilters } from "@/lib/api";
+import { errorMessage, getStats, listDevices, listSessions, type Session } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
-import { facetSelectOptions, useFacets } from "@/lib/facets";
-import { compactNumber, duration, relativeDate } from "@/lib/format";
-import { outcomeOptions, pageSizeOptions } from "@/lib/options";
-import { displayTitle } from "@/lib/sessions";
+import { harnessLabel, relativeDate } from "@/lib/format";
+import { pageSizeOptions, type SelectOption } from "@/lib/options";
 
 const SEARCH_DEBOUNCE_MS = 350;
-const facetKeys = ["repo", "outcome", "app", "model", "from", "to", "state", "capture", "provider", "errors", "commits"] as const;
-const facetLabels: Record<string, string> = { repo: "Repository", outcome: "Outcome", app: "App", model: "Model", from: "From (UTC)", to: "To (UTC)", state: "State", capture: "Capture", provider: "Provider", errors: "Errors", commits: "Commits" };
+const DEFAULT_LIMIT = "20";
+// Filter option lists cover every recorded value, not only the visible page.
+const ALL_TIME = "3650d";
+const panelKeys = ["harness", "device", "state", "git_status", "from", "to"] as const;
+const labels: Record<string, string> = { repo: "Repository", harness: "App", device: "Device", state: "State", git_status: "Git", from: "From (UTC)", to: "To (UTC)" };
+const stateOptions: SelectOption[] = [{ value: "", label: "All states" }, { value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }];
+const gitOptions: SelectOption[] = [{ value: "", label: "Any Git status" }, { value: "none", label: "No commits" }, { value: "committed", label: "Committed" }, { value: "pushed", label: "Pushed" }];
 
 const route = useRoute();
 const router = useRouter();
 const sessions = ref<Session[]>([]);
-const descendants = ref<Session[]>([]);
-const expandedSubAgents = ref<Map<string, boolean>>(new Map());
-type TreeRow = { session: Session; continuations: boolean[]; last: boolean };
-type SessionBlock = { root: Session; rows: TreeRow[] };
-
-function buildBlocks(roots: Session[], loose: Session[]): SessionBlock[] {
-  const byParent = new Map<string, Session[]>();
-  const seen = new Set(roots.map((root) => root.id));
-  for (const child of loose) {
-    if (!child.parent_session_id || seen.has(child.id)) continue;
-    seen.add(child.id);
-    const siblings = byParent.get(child.parent_session_id) ?? [];
-    siblings.push(child);
-    byParent.set(child.parent_session_id, siblings);
-  }
-  for (const siblings of byParent.values()) {
-    siblings.sort((a, b) => a.started_at.localeCompare(b.started_at) || a.id.localeCompare(b.id));
-  }
-  return roots.map((root) => {
-    const rows: TreeRow[] = [];
-    const visited = new Set([root.id]);
-    const pending: TreeRow[] = [];
-    const appendChildren = (parentId: string, continuations: boolean[]) => {
-      const siblings = byParent.get(parentId) ?? [];
-      for (let index = siblings.length - 1; index >= 0; index--) {
-        pending.push({ session: siblings[index], continuations, last: index === siblings.length - 1 });
-      }
-    };
-    appendChildren(root.id, []);
-    while (pending.length) {
-      const row = pending.pop()!;
-      if (visited.has(row.session.id)) continue;
-      visited.add(row.session.id);
-      rows.push(row);
-      appendChildren(row.session.id, [...row.continuations, !row.last]);
-    }
-    return { root, rows };
-  });
-}
-
-const blocks = computed(() => buildBlocks(sessions.value, descendants.value));
 const nextCursor = ref<string | null>(null);
-const loadedPageCount = ref(1);
 const loading = ref(true);
-const loadingMore = ref(false);
 const error = ref("");
 const filtersOpen = ref(false);
 const search = ref("");
-const draft = reactive<Record<string, string>>(Object.fromEntries(facetKeys.map((key) => [key, ""])));
-const { facets } = useFacets();
-const repoOptions = computed(() => facetSelectOptions(facets.value.repos, queryValue("repo"), "All repositories"));
-const appOptions = computed(() => facetSelectOptions(facets.value.apps, draft.app, "All apps"));
-const modelOptions = computed(() => facetSelectOptions(facets.value.models, draft.model, "All models"));
-const providerOptions = computed(() => facetSelectOptions(facets.value.providers, draft.provider, "All providers"));
-const stateOptions = [{ value: "", label: "All states" }, { value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }];
-const captureOptions = ["", "empty", "pending", "saved", "failed", "partial"].map((value) => ({ value, label: value ? value[0]!.toUpperCase() + value.slice(1) : "All capture states" }));
-const errorsOptions = [{ value: "", label: "All sessions" }, { value: "true", label: "Errors or capture failures" }];
-const commitsOptions = [{ value: "", label: "All sessions" }, { value: "true", label: "With captured commits" }];
-const selectedSessionIds = ref<Set<string>>(new Set());
-const bulkOutcome = ref<Outcome>("landed");
-const bulkReason = ref("");
-const bulkApplying = ref(false);
-const bulkError = ref("");
-const selectedCount = computed(() => selectedSessionIds.value.size);
-const allLoadedSelected = computed(
-  () =>
-    sessions.value.length > 0 &&
-    sessions.value.every((session) => selectedSessionIds.value.has(session.id)),
-);
+const draft = reactive<Record<string, string>>(Object.fromEntries(panelKeys.map((key) => [key, ""])));
+const repoOptions = ref<SelectOption[]>([{ value: "", label: "All repositories" }]);
+const harnessOptions = ref<SelectOption[]>([{ value: "", label: "All apps" }]);
+const deviceOptions = ref<SelectOption[]>([{ value: "", label: "All devices" }]);
+const deviceNames = computed(() => new Map(deviceOptions.value.map((option) => [option.value, option.label])));
 let controller: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
-function toggleSession(id: string) {
-  const next = new Set(selectedSessionIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  selectedSessionIds.value = next;
-}
-
-function toggleAllLoaded() {
-  const next = new Set(selectedSessionIds.value);
-  if (allLoadedSelected.value) {
-    for (const session of sessions.value) next.delete(session.id);
-  } else {
-    for (const session of sessions.value) next.add(session.id);
-  }
-  selectedSessionIds.value = next;
-}
-
-function cacheHitRate(session: Session) {
-  const cacheRead = session.cache_read_tokens ?? 0;
-  const promptTokens = session.tokens_in + cacheRead;
-  return promptTokens > 0 ? Math.round((cacheRead / promptTokens) * 100) : 0;
-}
-
-async function applyBulkOutcome() {
-  if (!selectedCount.value || bulkApplying.value) return;
-  bulkApplying.value = true;
-  bulkError.value = "";
-  const ids = [...selectedSessionIds.value];
-  try {
-    await setSessionsOutcome(ids, bulkOutcome.value, bulkReason.value);
-    for (const session of sessions.value) {
-      if (!selectedSessionIds.value.has(session.id)) continue;
-      session.outcome = bulkOutcome.value;
-      session.outcome_reason = bulkReason.value.trim() || null;
-      session.outcome_src = "user";
-      session.outcome_updated_at = new Date().toISOString();
-    }
-    selectedSessionIds.value = new Set();
-    bulkReason.value = "";
-  } catch (cause) {
-    bulkError.value = errorMessage(cause, "Selected sessions could not be updated.");
-  } finally {
-    bulkApplying.value = false;
-  }
-}
-
-function subAgentsExpanded(id: string) {
-  return expandedSubAgents.value.get(id) ?? Boolean(queryValue("q") || queryValue("app") || queryValue("model"));
-}
-
-function toggleSubAgents(id: string) {
-  expandedSubAgents.value.set(id, !subAgentsExpanded(id));
-}
-
-function queryValue(key: string) {
+function param(key: string) {
   const value = route.query[key];
   return typeof value === "string" ? value : "";
 }
 
-const limit = computed(() => queryValue("limit") || "25");
-const activeFacets = computed(() => facetKeys.flatMap((key) => queryValue(key) ? [{ key, label: facetLabels[key], value: queryValue(key) }] : []));
-const secondaryFacets = computed(() => activeFacets.value.filter((facet) => facet.key !== "repo"));
-const activeFilterCount = computed(() => activeFacets.value.length + (queryValue("q") ? 1 : 0));
+const limit = computed(() => param("limit") || DEFAULT_LIMIT);
+const cursor = computed(() => param("cursor"));
+const activeFilters = computed(() => panelKeys.flatMap((key) => {
+  const value = param(key);
+  if (!value) return [];
+  const shown = key === "device" ? deviceNames.value.get(value) ?? value : key === "harness" ? harnessLabel(value) : value;
+  return [{ key, label: labels[key], value: shown }];
+}));
+const filtered = computed(() => Boolean(activeFilters.value.length || param("q") || param("repo")));
 
+// Any filter change returns to the first page; only paging sets a cursor.
 function setParams(patch: Record<string, string>) {
   const query = { ...route.query } as Record<string, string>;
+  delete query.cursor;
   for (const [key, raw] of Object.entries(patch)) {
     const value = raw.trim();
-    if (!value || (key === "limit" && value === "25")) delete query[key];
+    if (!value || (key === "limit" && value === DEFAULT_LIMIT)) delete query[key];
     else query[key] = value;
   }
   void router.push({ name: "sessions", query });
 }
 
-function currentFilters(cursor?: string): SessionFilters {
-  const from = queryValue("from");
-  const to = queryValue("to");
-  return {
-    q: queryValue("q") || undefined,
-    repo: queryValue("repo") || undefined,
-    outcome: (queryValue("outcome") || undefined) as Outcome | undefined,
-    app: queryValue("app") || undefined,
-    model: queryValue("model") || undefined,
-    from: from || undefined,
-    to: to || undefined,
-    state: (queryValue("state") || undefined) as SessionFilters["state"],
-    capture: (queryValue("capture") || undefined) as SessionFilters["capture"],
-    provider: queryValue("provider") || undefined,
-    errors: (queryValue("errors") || undefined) as "true" | undefined,
-    commits: (queryValue("commits") || undefined) as "true" | undefined,
-    limit: Number(limit.value),
-    cursor,
-  };
-}
-
-async function load(silent = false, targetPages = 1) {
+async function load(silent = false) {
   controller?.abort();
   const active = new AbortController();
   controller = active;
-  loadingMore.value = false;
-  if (!silent) {
-    loading.value = true;
-    nextCursor.value = null;
-  }
+  if (!silent) loading.value = true;
   error.value = "";
   try {
-    const refreshed: Session[] = [];
-    const seen = new Set<string>();
-    let cursor: string | undefined;
-    let refreshedCursor: string | null = null;
-    let pagesLoaded = 0;
-    for (let page = 0; page < targetPages; page++) {
-      const result = await listSessions(currentFilters(cursor), active.signal);
-      for (const session of result.sessions) {
-        if (!seen.has(session.id)) {
-          refreshed.push(session);
-          seen.add(session.id);
-        }
-      }
-      for (const child of result.descendants) {
-        if (!seen.has(child.id)) {
-          refreshed.push(child);
-          seen.add(child.id);
-        }
-      }
-      pagesLoaded++;
-      refreshedCursor = result.next_cursor;
-      if (!refreshedCursor) break;
-      cursor = refreshedCursor;
-    }
-    sessions.value = refreshed.filter((session) => !session.parent_session_id);
-    descendants.value = refreshed.filter((session) => session.parent_session_id);
-    const loadedRootIDs = new Set(sessions.value.map((session) => session.id));
-    selectedSessionIds.value = new Set(
-      [...selectedSessionIds.value].filter((id) => loadedRootIDs.has(id)),
-    );
-    nextCursor.value = refreshedCursor;
-    loadedPageCount.value = pagesLoaded;
+    const result = await listSessions({
+      q: param("q"), repo: param("repo"), harness: param("harness"), device: param("device"), state: param("state"),
+      git_status: param("git_status"), from: param("from"), to: param("to"), limit: Number(limit.value), cursor: cursor.value,
+    }, active.signal);
+    sessions.value = result.sessions;
+    nextCursor.value = result.next_cursor;
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "Sessions could not be loaded.");
   } finally {
@@ -240,30 +86,11 @@ async function load(silent = false, targetPages = 1) {
   }
 }
 
-async function loadMore() {
-  if (!nextCursor.value || loading.value || loadingMore.value) return;
-  controller?.abort();
-  loadingMore.value = true;
-  const active = new AbortController();
-  controller = active;
-  try {
-    const result = await listSessions(currentFilters(nextCursor.value), active.signal);
-    const existing = new Set(sessions.value.map((session) => session.id));
-    sessions.value.push(...result.sessions.filter((session) => !existing.has(session.id)));
-    const seen = new Set(descendants.value.map((session) => session.id));
-    descendants.value.push(...result.descendants.filter((session) => !seen.has(session.id)));
-    nextCursor.value = result.next_cursor;
-    loadedPageCount.value++;
-  } catch (cause) {
-    if (!active.signal.aborted) error.value = errorMessage(cause, "More sessions could not be loaded.");
-  } finally {
-    if (controller === active) loadingMore.value = false;
-  }
-}
-
-function commitSearch() {
-  clearTimeout(searchTimer);
-  if (search.value.trim() !== queryValue("q")) setParams({ q: search.value });
+async function loadOptions() {
+  const [repos, harnesses, devices] = await Promise.allSettled([getStats("repo", { from: ALL_TIME }), getStats("harness", { from: ALL_TIME }), listDevices()]);
+  if (repos.status === "fulfilled") repoOptions.value = [repoOptions.value[0]!, ...repos.value.groups.filter((group) => group.key).map((group) => ({ value: group.key, label: group.key }))];
+  if (harnesses.status === "fulfilled") harnessOptions.value = [harnessOptions.value[0]!, ...harnesses.value.groups.filter((group) => group.key).map((group) => ({ value: group.key, label: harnessLabel(group.key) }))];
+  if (devices.status === "fulfilled") deviceOptions.value = [deviceOptions.value[0]!, ...devices.value.devices.map((device) => ({ value: device.id, label: device.name, description: `${device.platform} ${device.arch}` }))];
 }
 
 function applyDraft() {
@@ -272,60 +99,55 @@ function applyDraft() {
 }
 
 function clearFilters() {
-  for (const key of facetKeys) draft[key] = "";
   search.value = "";
   clearTimeout(searchTimer);
-  setParams(Object.fromEntries([...facetKeys, "q"].map((key) => [key, ""])));
+  setParams(Object.fromEntries([...panelKeys, "q", "repo"].map((key) => [key, ""])));
   filtersOpen.value = false;
+}
+
+function nextPage() {
+  if (nextCursor.value) void router.push({ name: "sessions", query: { ...route.query, cursor: nextCursor.value } });
 }
 
 watch(search, (value) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
-    if (value.trim() !== queryValue("q")) setParams({ q: value });
+    if (value.trim() !== param("q")) setParams({ q: value });
   }, SEARCH_DEBOUNCE_MS);
 });
 watch(filtersOpen, (open) => {
-  if (open) for (const key of facetKeys) draft[key] = queryValue(key);
+  if (open) for (const key of panelKeys) draft[key] = param(key);
 });
-
 watch(() => route.fullPath, () => {
-  expandedSubAgents.value = new Map();
-  if (queryValue("q") !== search.value.trim()) search.value = queryValue("q");
+  if (param("q") !== search.value.trim()) search.value = param("q");
   void load();
 }, { immediate: true });
-useAutoRefresh(() => load(true, loadedPageCount.value));
+onMounted(loadOptions);
+useAutoRefresh(() => load(true));
 onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
 </script>
 
 <template>
   <section>
-    <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-      <h1 class="text-2xl font-semibold tracking-tight">Sessions</h1>
-      <p v-if="!loading" class="text-xs text-zinc-600 dark:text-zinc-400">{{ sessions.length }} {{ sessions.length === 1 ? 'session' : 'sessions' }}<span v-if="descendants.length"> · {{ descendants.length }} sub-agents</span></p>
-    </div>
+    <h1 class="mb-4 text-2xl font-semibold tracking-tight">Sessions</h1>
 
     <div class="mb-4">
       <div class="flex flex-wrap items-center gap-2">
-        <Select :model-value="queryValue('repo')" label="Repository" :options="repoOptions" class="w-full sm:w-56" @update:model-value="setParams({ repo: $event })" />
-        <form class="relative min-w-0 flex-1 sm:w-72 sm:flex-none" role="search" @submit.prevent="commitSearch">
+        <Select :model-value="param('repo')" label="Repository" :options="repoOptions" class="w-full sm:w-56" @update:model-value="setParams({ repo: $event })" />
+        <form class="relative min-w-0 flex-1 sm:w-72 sm:flex-none" role="search" @submit.prevent="setParams({ q: search })">
           <label class="sr-only" for="session-search">Search sessions</label>
           <Search class="pointer-events-none absolute left-2.5 top-2.25 size-4 text-zinc-400" aria-hidden="true" />
           <input id="session-search" v-model="search" type="search" placeholder="Search sessions" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-transparent pl-8.5 pr-3 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus-visible:outline-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-100" />
         </form>
         <DropdownPanel v-model:open="filtersOpen" title="Filter sessions">
-          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="secondaryFacets.length" class="font-mono text-[11px]">{{ secondaryFacets.length }}</span></Button></template>
+          <template #trigger><Button variant="outline"><Filter class="size-3.5" />Filters<span v-if="activeFilters.length" class="font-mono text-[11px]">{{ activeFilters.length }}</span></Button></template>
           <form id="session-filters" class="grid gap-3 sm:grid-cols-2" @submit.prevent="applyDraft">
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.app" label="App" :options="appOptions" placeholder="All apps" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Model</span><Select v-model="draft.model" label="Model" :options="modelOptions" placeholder="All models" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Outcome</span><Select v-model="draft.outcome" label="Outcome" :options="outcomeOptions" placeholder="All outcomes" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">App</span><Select v-model="draft.harness" label="App" :options="harnessOptions" class="w-full font-normal" /></div>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Device</span><Select v-model="draft.device" label="Device" :options="deviceOptions" class="w-full font-normal" /></div>
             <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">State</span><Select v-model="draft.state" label="State" :options="stateOptions" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Capture</span><Select v-model="draft.capture" label="Capture" :options="captureOptions" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Provider</span><Select v-model="draft.provider" label="Provider" :options="providerOptions" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Errors</span><Select v-model="draft.errors" label="Errors" :options="errorsOptions" class="w-full font-normal" /></div>
-            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Commits</span><Select v-model="draft.commits" label="Commits" :options="commitsOptions" class="w-full font-normal" /></div>
-            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From (UTC)<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
-            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To (UTC)<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" /></label>
+            <div class="text-xs font-medium text-zinc-600 dark:text-zinc-400"><span class="mb-1 block">Git</span><Select v-model="draft.git_status" label="Git status" :options="gitOptions" class="w-full font-normal" /></div>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">From (UTC)<input v-model="draft.from" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:[color-scheme:dark]" /></label>
+            <label class="text-xs font-medium text-zinc-600 dark:text-zinc-400">To (UTC)<input v-model="draft.to" type="date" class="mt-1 block h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] font-normal text-zinc-900 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:[color-scheme:dark]" /></label>
           </form>
           <template #footer>
             <Button variant="ghost" @click="clearFilters">Clear all</Button>
@@ -334,8 +156,8 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
           </template>
         </DropdownPanel>
       </div>
-      <ul v-if="secondaryFacets.length" class="mt-2.5 flex flex-wrap items-center gap-2">
-        <li v-for="facet in secondaryFacets" :key="facet.key">
+      <ul v-if="activeFilters.length" class="mt-2.5 flex flex-wrap items-center gap-2">
+        <li v-for="facet in activeFilters" :key="facet.key">
           <button type="button" class="inline-flex items-center gap-1.5 rounded-[5px] border border-zinc-300 px-2 py-1 text-[11px] text-zinc-700 transition-colors duration-150 ease-out hover:border-zinc-400 hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800" @click="setParams({ [facet.key]: '' })">
             <span class="text-zinc-500">{{ facet.label }}</span><span class="font-mono">{{ facet.value }}</span><X class="size-3" aria-hidden="true" />
             <span class="sr-only">Remove {{ facet.label }} filter</span>
@@ -345,75 +167,65 @@ onBeforeUnmount(() => { controller?.abort(); clearTimeout(searchTimer); });
       </ul>
     </div>
 
-    <div v-if="selectedCount" class="mb-3 border-y border-zinc-200 bg-stone-50 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900">
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <p class="min-w-28 text-sm font-medium text-zinc-900 dark:text-zinc-100" aria-live="polite">{{ selectedCount }} selected</p>
-        <Select v-model="bulkOutcome" label="Outcome for selected sessions" :options="outcomeOptions" class="sm:w-36" />
-        <label class="min-w-0 flex-1"><span class="sr-only">Reason for outcome</span><input v-model="bulkReason" type="text" maxlength="2000" placeholder="Reason (optional)" class="h-8.5 w-full rounded-[5px] border border-zinc-300 bg-white px-2.5 text-[13px] text-zinc-900 placeholder:text-zinc-500 focus:border-teal-700 focus:outline-none focus:ring-1 focus:ring-teal-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100" /></label>
-        <Button :disabled="bulkApplying" @click="applyBulkOutcome">{{ bulkApplying ? "Applying..." : "Set outcome" }}</Button>
-        <Button variant="ghost" :disabled="bulkApplying" @click="selectedSessionIds = new Set()">Clear</Button>
-      </div>
-      <p v-if="bulkError" class="mt-2 text-xs text-red-700 dark:text-red-400" role="alert">{{ bulkError }}</p>
-    </div>
-
-    <div class="overflow-hidden rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div class="hidden grid-cols-[28px_minmax(0,1fr)_150px_130px_150px_104px_28px] gap-4 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5 text-xs font-medium text-zinc-500 lg:grid dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"><label class="flex items-center"><input type="checkbox" :checked="allLoadedSelected" class="size-4 rounded border-zinc-300 accent-teal-700" @change="toggleAllLoaded" /><span class="sr-only">Select all loaded root sessions</span></label><span>Session</span><span>App / model</span><span>Outcome</span><span>Capture</span><span class="text-right">Tokens</span><span /></div>
-      <div v-if="loading" aria-busy="true" aria-label="Loading sessions"><div v-for="index in 5" :key="index" class="grid gap-3 border-b border-zinc-200 px-4 py-5 last:border-b-0 lg:grid-cols-[28px_minmax(0,1fr)_150px_130px_150px_104px_28px] dark:border-zinc-800"><div class="h-4 w-4 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-3/5 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-24 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /><div class="h-4 w-20 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></div></div>
-      <div v-else-if="error && !sessions.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><button class="mt-4 inline-flex h-8.5 items-center gap-2 rounded-[5px] border border-zinc-300 px-3 text-[13px] font-medium hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:border-zinc-700 dark:hover:bg-zinc-800" @click="load()"><RotateCw class="size-3.5" />Retry</button></div>
-      <template v-else>
-        <div v-for="block in blocks" :key="block.root.id" class="border-b border-zinc-200 last:border-b-0 dark:border-zinc-800">
-          <div class="group relative grid gap-3 py-4 pl-12 pr-4 transition-colors hover:bg-stone-50 lg:grid-cols-[28px_minmax(0,1fr)_150px_130px_150px_104px_28px] lg:items-center lg:px-4 dark:hover:bg-stone-900/40">
-            <RouterLink :to="`/sessions/${block.root.id}`" class="absolute inset-0 z-0 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600" :aria-label="`Open ${displayTitle(block.root)}`"><span class="sr-only">Open {{ displayTitle(block.root) }}</span></RouterLink>
-            <label class="absolute left-4 top-4 z-20 flex items-center lg:static"><input type="checkbox" :checked="selectedSessionIds.has(block.root.id)" class="size-4 rounded border-zinc-300 accent-teal-700" @click.stop @change="toggleSession(block.root.id)" /><span class="sr-only">Select {{ displayTitle(block.root) }}</span></label>
-            <div class="pointer-events-none relative z-10 min-w-0">
+    <div class="overflow-x-auto rounded-[7px] border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <table class="w-full min-w-[1080px] border-collapse text-left text-xs">
+        <caption class="sr-only">Root sessions, newest activity first</caption>
+        <thead class="border-b border-zinc-200 bg-zinc-50 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+          <tr>
+            <th scope="col" class="px-4 py-2.5 font-medium">Session</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">Repository</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">App</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">Device</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">Models</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">Git</th>
+            <th scope="col" class="px-3 py-2.5 font-medium">Capture</th>
+            <th scope="col" class="px-3 py-2.5 text-right font-medium">Requests</th>
+            <th scope="col" class="px-4 py-2.5 text-right font-medium">Activity</th>
+          </tr>
+        </thead>
+        <tbody v-if="loading" aria-busy="true">
+          <tr v-for="index in 5" :key="index" class="border-b border-zinc-200 last:border-b-0 dark:border-zinc-800"><td colspan="9" class="px-4 py-4"><div class="h-4 w-3/5 animate-pulse bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" /></td></tr>
+        </tbody>
+        <tbody v-else-if="error && !sessions.length">
+          <tr><td colspan="9" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">Sessions unavailable</p><p class="mx-auto mt-1 max-w-md text-sm text-zinc-500">{{ error }}</p><Button class="mt-4" variant="outline" @click="load()"><RotateCw class="size-3.5" />Retry</Button></td></tr>
+        </tbody>
+        <tbody v-else-if="!sessions.length">
+          <tr><td colspan="9" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">{{ filtered ? "No matching sessions" : "No sessions captured yet" }}</p><p class="mt-1 text-sm text-zinc-500">{{ filtered ? "Clear a filter or try a broader search." : "Captured model traffic will appear here as work sessions." }}</p></td></tr>
+        </tbody>
+        <tbody v-else>
+          <tr v-for="session in sessions" :key="session.id" class="border-b border-zinc-200 align-top last:border-b-0 hover:bg-stone-50 dark:border-zinc-800 dark:hover:bg-stone-900/40">
+            <td class="max-w-[22rem] px-4 py-3">
+              <RouterLink :to="`/sessions/${session.id}`" class="block truncate text-[13px] font-medium text-zinc-950 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-100">{{ session.display_title }}</RouterLink>
+              <p class="mt-1 flex flex-wrap gap-x-2 text-zinc-500 dark:text-zinc-400">
+                <span v-if="session.state === 'active'" class="font-medium text-emerald-800 dark:text-emerald-300">In progress</span>
+                <span v-if="session.child_session_count">{{ session.child_session_count }} {{ session.child_session_count === 1 ? "sub-agent" : "sub-agents" }}</span>
+              </p>
+            </td>
+            <td class="max-w-[14rem] px-3 py-3">
+              <p class="truncate font-medium text-zinc-700 dark:text-zinc-300">{{ session.repo || "No repository" }}</p>
+              <p v-if="session.source_ref" class="mt-1 flex min-w-0 items-center gap-1 text-zinc-500 dark:text-zinc-400"><GitBranch class="size-3 shrink-0" aria-hidden="true" /><span class="truncate">{{ session.source_ref }}</span></p>
+            </td>
+            <td class="px-3 py-3"><IdentityBadge :label="harnessLabel(session.harness)" /></td>
+            <td class="max-w-[12rem] px-3 py-3"><DeviceIdentity v-if="session.device" :device="session.device" compact /><span v-else class="text-zinc-500">Unknown</span></td>
+            <td class="max-w-[14rem] px-3 py-3">
               <div class="flex min-w-0 items-center gap-2">
-                <button v-if="block.rows.length" type="button" class="pointer-events-auto inline-flex size-6 shrink-0 items-center justify-center rounded-[3px] text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100" :aria-label="`${subAgentsExpanded(block.root.id) ? 'Collapse' : 'Expand'} ${block.rows.length} sub-agents for ${displayTitle(block.root)}`" :aria-expanded="subAgentsExpanded(block.root.id)" :aria-controls="`sub-agents-${block.root.id}`" @click.prevent.stop="toggleSubAgents(block.root.id)">
-                  <ChevronRight class="size-4 transition-transform duration-150 ease-out motion-reduce:transition-none" :class="{ 'rotate-90': subAgentsExpanded(block.root.id) }" aria-hidden="true" />
-                </button>
-                <h2 class="min-w-0 truncate text-sm font-medium text-zinc-950 group-hover:underline dark:text-zinc-100">{{ displayTitle(block.root) }}</h2>
-                <SessionLivenessBadge class="shrink-0" :liveness="block.root.liveness" />
+                <IdentityBadge :label="session.models[0]?.name || session.model_primary || 'Unknown model'" />
+                <span v-if="session.models.length > 1" class="shrink-0 font-medium text-zinc-500 dark:text-zinc-400" :title="session.models.slice(1).map((model) => model.name).join(', ')">+{{ session.models.length - 1 }}</span>
               </div>
-              <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-                <span class="font-medium text-zinc-700 dark:text-zinc-300">{{ block.root.repo || "No repository" }}</span>
-                <DeviceIdentity v-if="block.root.device" :device="block.root.device" compact />
-                <span v-if="block.root.source_ref" class="inline-flex items-center gap-1"><GitBranch class="size-3" />{{ block.root.source_ref }}</span>
-                <span>Active {{ duration(block.root.started_at, block.root.activity_at) }}</span>
-                <span>{{ relativeDate(block.root.activity_at) }}</span>
-                <span v-if="block.rows.length">{{ block.rows.length }} {{ block.rows.length === 1 ? "sub-agent" : "sub-agents" }}</span>
-              </div>
-            </div>
-            <SessionModelStack class="pointer-events-none relative z-10" :app="block.root.harness" :primary="block.root.model_primary" :models="block.root.models" />
-            <div class="pointer-events-none relative z-10"><OutcomeBadge :outcome="block.root.outcome" /></div>
-            <div class="pointer-events-none relative z-10 text-xs text-zinc-700 dark:text-zinc-300"><span class="mr-1 text-zinc-500 lg:hidden">Capture</span><strong class="font-medium capitalize">{{ block.root.capture.status }}</strong> · {{ block.root.capture.saved_exchanges }} {{ block.root.capture.saved_exchanges === 1 ? "exchange" : "exchanges" }}<span v-if="block.root.capture.failed_exchanges"> · {{ block.root.capture.failed_exchanges }} failed</span></div>
-            <div class="pointer-events-none relative z-10 text-left font-mono text-xs text-zinc-700 lg:text-right dark:text-zinc-300"><div><span class="mr-1 text-zinc-500 lg:hidden">Tokens</span>{{ compactNumber(block.root.tokens_in + block.root.tokens_out + (block.root.cache_read_tokens ?? 0) + (block.root.cache_write_tokens ?? 0)) }}</div><div v-if="(block.root.cache_read_tokens ?? 0) > 0 || (block.root.cache_write_tokens ?? 0) > 0" class="mt-0.5 text-[10px] text-zinc-500">{{ cacheHitRate(block.root) }}% cache<span v-if="(block.root.cache_write_tokens ?? 0) > 0"> · {{ compactNumber(block.root.cache_write_tokens ?? 0) }} write</span></div></div><ArrowRight class="pointer-events-none relative z-10 hidden size-4 text-zinc-400 transition-transform group-hover:translate-x-0.5 motion-reduce:transform-none motion-reduce:transition-none lg:block" aria-hidden="true" />
-          </div>
-          <div v-if="block.rows.length" v-show="subAgentsExpanded(block.root.id)" :id="`sub-agents-${block.root.id}`" class="border-t border-zinc-200 dark:border-zinc-800">
-            <RouterLink v-for="row in block.rows" :key="row.session.id" :to="`/sessions/${row.session.id}`" class="group/row flex min-w-0 pl-12 pr-4 hover:bg-stone-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-teal-600 lg:pl-15 dark:hover:bg-zinc-950/30">
-              <span class="flex shrink-0" aria-hidden="true">
-                <span v-for="(continues, index) in row.continuations" :key="index" class="relative w-4 sm:w-5">
-                  <span v-if="continues" class="absolute inset-y-0 left-1/2 border-l border-zinc-300 dark:border-zinc-700" />
-                </span>
-                <span class="relative w-4 sm:w-5">
-                  <span class="absolute left-1/2 top-0 border-l border-zinc-300 dark:border-zinc-700" :class="row.last ? 'h-5' : 'bottom-0'" />
-                  <span class="absolute left-1/2 right-0 top-5 border-t border-zinc-300 dark:border-zinc-700" />
-                </span>
-              </span>
-              <div class="grid min-w-0 flex-1 gap-x-4 gap-y-1 py-2.5 pl-2 lg:grid-cols-[minmax(0,1fr)_260px_180px_20px] lg:items-center">
-                <span class="min-w-0 truncate text-[13px] font-medium text-zinc-800 group-hover/row:underline dark:text-zinc-200">{{ displayTitle(row.session) }}</span>
-                <p class="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400"><span class="font-medium text-zinc-700 dark:text-zinc-300">{{ row.session.harness || "Unknown app" }}</span><span v-if="row.session.model_primary"> · {{ row.session.model_primary }}</span></p>
-                <p class="text-xs text-zinc-500 dark:text-zinc-400"><span class="capitalize text-zinc-700 dark:text-zinc-300">{{ row.session.outcome }}</span> · {{ relativeDate(row.session.activity_at) }}</p>
-                <ArrowRight class="hidden size-4 text-zinc-400 transition-transform group-hover/row:translate-x-0.5 motion-reduce:transform-none motion-reduce:transition-none lg:block" aria-hidden="true" />
-              </div>
-            </RouterLink>
-          </div>
-        </div>
-        <div v-if="!sessions.length" class="px-4 py-16 text-center"><p class="text-sm font-medium text-zinc-800 dark:text-zinc-200">{{ activeFilterCount ? "No matching sessions" : "No sessions captured yet" }}</p><p class="mt-1 text-sm text-zinc-500">{{ activeFilterCount ? "Clear a filter or try a broader search." : "Captured model traffic will appear here as work sessions." }}</p></div>
-      </template>
+            </td>
+            <td class="px-3 py-3"><GitStatus :status="session.git_status" :count="session.commit_count" /></td>
+            <td class="px-3 py-3"><CaptureStatus :capture="session.capture" /></td>
+            <td class="px-3 py-3 text-right font-mono text-zinc-700 dark:text-zinc-300">{{ session.request_count }}</td>
+            <td class="whitespace-nowrap px-4 py-3 text-right text-zinc-600 dark:text-zinc-400"><time :datetime="session.activity_at" :title="session.activity_at">{{ relativeDate(session.activity_at) }}</time></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
     <div class="mt-4 flex flex-wrap items-center gap-3">
-      <p v-if="error" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ error }}</p>
-      <Button v-if="nextCursor" variant="outline" :disabled="loading || loadingMore" @click="loadMore">{{ loadingMore ? "Loading…" : "Load more sessions" }}</Button>
-      <div class="ml-auto flex items-center gap-2"><span class="text-xs text-zinc-600 dark:text-zinc-400">Rows</span><Select :model-value="limit" label="Root sessions per page" :options="pageSizeOptions" class="w-24" @update:model-value="setParams({ limit: $event })" /></div>
+      <p v-if="error && sessions.length" class="text-xs text-red-700 dark:text-red-400" role="alert">{{ error }}</p>
+      <Button v-if="cursor" variant="ghost" @click="setParams({})">First page</Button>
+      <Button v-if="nextCursor" variant="outline" :disabled="loading" @click="nextPage">Next page</Button>
+      <div class="ml-auto flex items-center gap-2"><span class="text-xs text-zinc-600 dark:text-zinc-400">Rows</span><Select :model-value="limit" label="Sessions per page" :options="pageSizeOptions" class="w-24" @update:model-value="setParams({ limit: $event })" /></div>
     </div>
   </section>
 </template>

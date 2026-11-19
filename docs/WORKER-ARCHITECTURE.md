@@ -1,221 +1,157 @@
 # Worker Architecture
 
-Status: implemented. This document records the authoritative Worker architecture.
-
 ## Decision
 
-Mimir remains one Cloudflare Worker deployment. It is a private memory-plane service, not only an OpenRouter proxy. The deployment combines an OpenRouter-compatible capture gateway, harness ingestion API, session control plane, and Access-protected dashboard over shared D1, R2, Durable Object, and Workers Assets bindings.
+Mimir is one Cloudflare Worker deployment: an OpenRouter-compatible capture
+gateway, harness ingestion API, query API and MCP server, scheduled
+maintenance, and the Access-protected dashboard, over shared D1, R2, and
+Workers Assets bindings.
 
-One Worker is sufficient because these capabilities share authentication, session identity, storage, deployment, and consistency boundaries. Splitting them into separately deployed services would add network and operational failure modes without establishing a useful product boundary.
+One Worker is enough because these capabilities share authentication, session
+identity, storage, deployment, and consistency boundaries. Separate services
+would add network and operational failure modes without a useful product
+boundary.
 
-Codebase maturity will come from explicit composition, capability-owned modules, centralized invariants, and contract tests—not additional services or generic abstractions.
+## Entry points
 
-## Deployment entry points
+`worker/wrangler.jsonc` points Cloudflare at `worker/src/index.ts` and declares
+a cron trigger (`*/10 * * * *`).
 
-`worker/wrangler.jsonc` points Cloudflare at `worker/src/index.ts`.
+`worker/src/index.ts` is the deployment adapter. It exports one handler with:
 
-`worker/src/index.ts` is the deployment adapter. It should remain small and export:
+- `fetch`: the Hono application;
+- `scheduled`: `runMaintenance` from `maintenance.ts`.
 
-- the Hono application as the default Worker handler;
-- the `SessionObject` Durable Object class;
-- intentionally public helpers required by tests or embedded builds.
-
-`worker/src/app.ts` is the application composition root. It should show the complete HTTP architecture without containing route implementation.
-
-The intended shape is:
+`worker/src/app.ts` is the composition root. It installs error handling and
+authentication, registers each route group, and mounts the query router twice:
 
 ```ts
 const app = new Hono<AppEnv>();
 
-installErrorHandling(app);
-installAuthentication(app);
+app.onError(/* QueryError → { error } with its status; others → 500 */);
+app.notFound(/* { error: "not found" } */);
+app.use("*", authenticate);
 
 registerMachineRoutes(app);
 registerProxyRoutes(app);
 registerSessionRoutes(app);
-registerSearchRoutes(app);
 registerConfigRoutes(app);
 registerIntegrationRoutes(app);
-registerDashboardAuthRoutes(app);
-registerDashboardSessionRoutes(app);
-registerDashboardExchangeRoutes(app);
-registerDashboardDeviceRoutes(app);
-registerDashboardFacetRoutes(app);
+registerDashboardRoutes(app);
+registerMcpRoutes(app);
+
+const queries = queryRouter();
+app.route("/api", queries);
+app.route("/dashboard/api", queries);
 
 export default app;
 ```
 
-A reader should be able to understand the deployed service from `app.ts` in under a minute.
+A reader should understand the deployed service from `app.ts` in under a minute.
 
-## Worker capabilities
+## Capabilities
 
 ### Model gateway
 
-The `/v1/*` surface forwards supported OpenRouter-compatible requests, preserves upstream streaming, and schedules capture without delaying the model response.
-
-The proxy is one ingress path into Mimir. It is not the Worker’s complete identity.
+The `/v1/*` surface forwards supported OpenRouter-compatible requests,
+preserves upstream streaming, and captures with `waitUntil` without delaying
+the response.
 
 ### Harness ingestion
 
-Harness adapters report exact lifecycle events and bounded reconstructed exchanges when proxy transport is unavailable. Ingestion validates the payload, redacts sensitive material, writes raw exchanges to R2, and derives searchable metadata for D1.
+Harness integrations report lifecycle events, bounded reconstructed exchanges,
+and Git commits. Ingestion validates the payload, redacts sensitive material,
+writes raw exchanges and patches to R2, and writes metadata to D1. Events write
+D1 directly.
 
-### Session control plane
+### Query API and MCP
 
-The `/sessions/*` surface owns session lifecycle, titles, hierarchy, outcomes, capture status, live state, and reconciliation. `x-mimir-session` remains the authoritative session boundary.
+`queries/query-routes.ts` builds one Hono router for `/api` (machine token) and
+`/dashboard/api` (Cloudflare Access). Handlers call query functions in
+`queries/*` and never write, except explicit title, device-name, and
+revocation edits. `mcp/mcp-routes.ts` exposes the same query functions as MCP
+tools over stateless Streamable HTTP; it never calls the Worker over HTTP.
 
-The `SessionObject` Durable Object coordinates one live session. D1 and R2 remain canonical durable storage.
+### Maintenance
 
-### Machine API
-
-Machine-authenticated endpoints provide identity, association, configuration, search, integration health, and operational access for the CLI and harnesses.
-
-Machine authentication is an API audience, not a domain boundary. It should not cause unrelated capabilities to share one route module.
+`maintenance.ts` runs on the cron trigger: expire silent sessions, build
+pending summaries, and backfill the full-text index, each bounded and isolated
+from the others' failures. Read paths stay read-only because this work happens
+here.
 
 ### Dashboard
 
-The Worker serves the Vue dashboard and its Access-protected APIs from the same deployment. The dashboard is a client of the canonical Worker API and may expose richer human-facing projections without creating a second session model.
+The Worker serves the Vue dashboard as static assets and the Access handoff
+(`dashboard/dashboard-routes.ts`: `/dashboard/auth`, `/dashboard/api/identity`).
+Every dashboard data request goes through the shared query router.
 
 ## Source organization
 
-The Worker source is organized by product capability:
-
 ```text
 worker/src/
-├── index.ts                  Cloudflare deployment exports
+├── index.ts                  fetch + scheduled exports
 ├── app.ts                    middleware and route composition
-├── env.ts                    Worker bindings and Hono environment
-├── auth/
-│   └── auth-middleware.ts
-├── config/
-│   ├── config-routes.ts
-│   └── config-store.ts
-├── gateway/
-│   ├── openrouter-routes.ts
-│   └── upstream-proxy.ts
-├── exchanges/
-│   ├── capture-pipeline.ts
-│   ├── evidence.ts
-│   ├── redaction.ts
-│   ├── response-codec.ts
-│   ├── reported-exchange-routes.ts
-│   ├── reported-exchange-schema.ts
-│   └── *-dashboard-routes.ts
-├── sessions/
-│   ├── session-routes.ts
-│   ├── session-dashboard-routes.ts
-│   ├── session-object.ts
-│   ├── session-queries.ts
-│   ├── lifecycle.ts
-│   ├── outcomes.ts
-│   ├── capture-status.ts
-│   ├── events.ts
-│   ├── titles.ts
-│   └── summaries.ts
-├── machines/
-│   ├── machine-routes.ts
-│   └── device-dashboard-routes.ts
-├── integrations/
-│   └── integration-routes.ts
-├── search/
-│   └── search-routes.ts
-├── dashboard/
-│   ├── dashboard-shell-routes.ts
-│   └── cursors.ts
-└── shared/
-    └── ulid.ts
+├── env.ts                    bindings and Hono environment
+├── maintenance.ts            cron: expiry, summaries, search backfill
+├── auth/                     machine token, Hermes credential, and Access verification
+├── config/                   /config routes and the config store
+├── gateway/                  /v1 proxy routes and upstream streaming
+├── exchanges/                capture pipeline, redaction, evidence, response decoding,
+│                             reported exchanges, archive reads, transcript/turn building
+├── sessions/                 write routes, events, lifecycle, titles, summaries,
+│                             capture status and reconcile, Git artifacts, session tree
+├── queries/                  query router and sessions, turns, search, stats, days,
+│                             devices, commits query functions
+├── mcp/                      MCP endpoint and tool definitions
+├── search/                   FTS5 indexing and query building
+├── days/                     pure day snapshot builder
+├── machines/                 /whoami, /machine/associate, /machine/tailnet
+├── integrations/             Hermes authorization and harness-load reports
+├── dashboard/                Access handoff and identity
+└── shared/                   cursors, date ranges, query errors, ULIDs
 ```
 
 HTTP adapters live with the capability they expose. Pure helpers and focused
-tests remain beside their owner. New files should be introduced only for a
-coherent responsibility, not to satisfy a layer template.
+tests sit beside their owner; cross-capability contract suites live under
+`worker/test/`. Feature directories are internal ownership boundaries, not
+services.
 
 ## Module rules
 
 ### Route modules translate HTTP
 
-A route handler should normally:
+A route handler parses and validates input, enforces authorization, calls a
+domain or query function, and translates the result into an HTTP response. It
+does not implement session identity, title precedence, Git status, redaction,
+or capture eligibility on its own.
 
-1. parse and validate input;
-2. enforce the relevant authorization rule;
-3. call a domain operation;
-4. translate the result into an HTTP response.
+### Domain and query modules own invariants
 
-Route modules may contain small response projections. They should not independently implement session identity, title precedence, outcome precedence, redaction, or capture eligibility.
-
-### Domain modules own invariants
-
-Rules that must remain identical across the machine API and dashboard belong in shared domain functions. Examples include:
-
-- resolving a child session to its root;
-- loading session status and capture state;
-- updating an outcome without violating source precedence;
-- retrieving session exchanges and diff evidence;
-- validating and deriving exchange facets.
-
-Share behavior when two surfaces must agree. Do not introduce generic repositories, service containers, or one-class-per-file abstractions.
+Rules that must stay identical everywhere live in one function: resolving a
+session to its root, deriving capture and Git status, building receipts and
+turns, and applying title precedence. The dashboard, `/api`, and MCP all use
+the same query functions. Do not add generic repositories, service containers,
+or one-class-per-file abstractions.
 
 ### Storage remains explicit
 
-Direct D1 and R2 operations are acceptable when they are local and obvious. Repeated queries that encode a product invariant should move behind a named domain operation. A generic data-access layer would hide useful SQL without protecting correctness.
+Direct D1 and R2 operations are fine when local and obvious. Repeated queries
+that encode a product invariant move behind a named function.
 
 ### Dependencies point inward
 
-The intended dependency direction is:
-
 ```text
-index.ts -> app.ts -> routes -> domain operations -> storage bindings
-                         \-> response projection
+index.ts -> app.ts -> routes -> domain and query functions -> storage bindings
+index.ts -> maintenance.ts -> domain functions -> storage bindings
 ```
 
-Domain modules must not import route modules or dashboard code. Dashboard code must not become a second implementation of backend session behavior.
-
-## Implemented structure
-
-`app.ts` registers machine identity, gateway, session, search, configuration,
-integration, and dashboard adapters explicitly. Each adapter lives in its
-owning feature package rather than a global `routes/` tree.
-
-The broad capture and session modules are split by responsibility: capture
-orchestration, response decoding, redaction, evidence derivation, payload
-validation, session queries, lifecycle, outcomes, and capture status have
-separate owners. Tests live beside these modules; cross-capability contract
-suites remain under `worker/test/`.
-
-The deployment remains one Worker. Feature directories are internal ownership
-boundaries, not services.
-
-## Refactoring record
-
-### Structural commit
-
-- split `routes/machine.ts` by capability;
-- split `routes/dashboard.ts` by dashboard capability;
-- make `app.ts` explicitly register every route group;
-- split the integration suite along the same capability boundaries;
-- preserve every URL, payload, response, authorization rule, and storage operation.
-
-This commit must be behavior-neutral.
-
-### Deduplication commit
-
-- identify machine and dashboard operations that must agree;
-- move shared session resolution, status, exchange, and diff behavior into existing domain modules;
-- remove duplicate SQL only where it represents the same product invariant;
-- keep HTTP-specific projections in route modules.
-
-### Contract-hardening commit
-
-- define canonical normalized tool activity for harness-reported exchanges;
-- require a conformance fixture for each tool-bearing harness;
-- verify file and error facets through the real ingestion path;
-- make failed Git outcome inference non-destructive;
-- require landed Git outcomes to carry retrievable commit and patch evidence.
-
-Structural movement and behavioral hardening should remain separate commits so regressions are reviewable and bisectable.
+Domain modules never import route modules or dashboard code. Dashboard code is
+never a second implementation of backend behavior.
 
 ## Harness conformance requirements
 
-Every harness that reports tool-bearing exchanges must provide a representative fixture covering:
+Every harness that reports tool-bearing exchanges provides a representative
+fixture covering:
 
 - exact session identity;
 - repository and Git ref metadata;
@@ -225,29 +161,24 @@ Every harness that reports tool-bearing exchanges must provide a representative 
 - a failed tool call;
 - title and lifecycle events.
 
-The Worker integration test must prove that the fixture produces one session, correct searchable files and errors, and usable Git diff evidence. Adding a harness without this contract should fail CI.
+The Worker integration test proves that the fixture produces one session with
+correct searchable files and errors.
 
 ## Non-goals
-
-This architecture does not introduce:
 
 - multiple Worker deployments;
 - internal HTTP calls between Mimir capabilities;
 - a generic repository or dependency-injection framework;
 - a second account or session system;
 - dashboard-owned backend behavior;
-- new D1, R2, or Durable Object boundaries solely for source organization.
+- new storage boundaries solely for source organization.
 
 ## Verification standard
 
-A structural refactor is complete only when:
+A Worker change is complete when:
 
-- the existing Worker and dashboard typechecks pass;
-- the complete Worker test suite passes;
+- Worker and dashboard typechecks pass (`npm --prefix worker run typecheck`);
+- the Worker test suite passes (`npm --prefix worker test`);
 - plugin and harness tests pass;
-- Wrangler dry-run succeeds;
-- existing API paths and response contracts remain covered;
-- production and demo asset verification remains clean;
-- no migration or deployment configuration changes appear unless explicitly required.
-
-The resulting codebase should remain a modular monolith: one deployable Worker with obvious internal boundaries and one authoritative composition root.
+- `cd worker && npx wrangler deploy --dry-run` succeeds;
+- API paths and response contracts in [`Spec.md`](Spec.md) remain covered.

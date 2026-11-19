@@ -1,4 +1,4 @@
-import type { DayCommit, DaySession, DaySnapshot, Outcome } from "./api";
+import type { DayCommit, DaySession, DaySnapshot, GitStatus } from "./api";
 
 /** Workstreams that get their own slice before the rest fold into "Other". */
 export const TOP_WORKSTREAMS = 5;
@@ -17,9 +17,7 @@ export type DayItem = {
   requests: number;
   subAgents: number;
   commits: number;
-  outcomes: Record<Outcome, number>;
-  /** Finished working sessions still waiting for an outcome. */
-  unresolvedIds: string[];
+  git: Record<GitStatus, number>;
   active: boolean;
   captureProblems: number;
   firstAt: string | null;
@@ -40,8 +38,8 @@ function itemFrom(base: Pick<DayItem, "key" | "kind" | "label" | "open">, sessio
   // equals the total shown when zooming into its sessions.
   const blocks = sessions.reduce((sum, session) => sum + session.activity.length, 0);
   const lead = [...sessions].sort((a, b) => b.activity.length - a.activity.length || b.requests - a.requests)[0];
-  const outcomes: Record<Outcome, number> = { landed: 0, discarded: 0, abandoned: 0, unresolved: 0 };
-  for (const session of sessions) outcomes[session.outcome]++;
+  const git: Record<GitStatus, number> = { none: 0, committed: 0, pushed: 0 };
+  for (const session of sessions) git[session.git_status]++;
   const repos = new Set(sessions.map((session) => session.repo));
   const refs = new Set(sessions.map((session) => session.source_ref));
   // A workstream shows its busiest session's app and model; the Other and Quick
@@ -60,8 +58,7 @@ function itemFrom(base: Pick<DayItem, "key" | "kind" | "label" | "open">, sessio
     requests: sessions.reduce((sum, session) => sum + session.requests, 0),
     subAgents: sessions.reduce((sum, session) => sum + session.sub_agents, 0),
     commits,
-    outcomes,
-    unresolvedIds: sessions.filter((session) => !session.quiet && session.state === "inactive" && session.outcome === "unresolved").map((session) => session.id),
+    git,
     active: sessions.some((session) => session.state === "active"),
     captureProblems: sessions.filter((session) => session.capture_status === "failed" || session.capture_status === "partial").length,
     firstAt: sessions.reduce<string | null>((min, session) => (!min || session.first_at < min ? session.first_at : min), null),
@@ -109,7 +106,7 @@ export function dayLevel(day: DaySnapshot, focus: string | null): DayLevel {
 export type SliceTone = { fill: string; swatch: string };
 
 // Each app owns one stock Tailwind hue so the same agent reads the same color
-// every day. Teal (focus) and emerald/red/amber (outcomes) are never used.
+// every day. Teal (focus) and emerald/red/amber (status) are never used.
 // Slices sharing an app step through the hue's shades so neighbors stay apart.
 const tones = (shades: [string, string][]): SliceTone[] => shades.map(([fill, swatch]) => ({ fill, swatch }));
 const APP_HUES: Record<string, SliceTone[]> = {
@@ -162,4 +159,9 @@ export function share(minutes: number, total: number) {
   if (!total || !minutes) return "0%";
   const percent = Math.round((minutes / total) * 100);
   return percent === 0 ? "<1%" : `${percent}%`;
+}
+
+/** "2 pushed · 1 committed"; sessions without commits are omitted. */
+export function gitSummary(git: DayItem["git"]) {
+  return [git.pushed ? `${git.pushed} pushed` : "", git.committed ? `${git.committed} committed` : ""].filter(Boolean).join(" · ");
 }

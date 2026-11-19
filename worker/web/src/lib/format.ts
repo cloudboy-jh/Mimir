@@ -24,13 +24,13 @@ export function duration(start: string, end: string | null) {
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
-export function outputSpeed(tokens: number, latency: number) {
-  return tokens && latency ? `${Math.round(tokens / latency * 1000)} tok/s` : "-";
-}
-
 export function harnessLabel(value: string | null | undefined) {
   if (value === "oh-my-pi") return "Oh My Pi";
   if (value === "opencode") return "OpenCode";
   if (value === "pi") return "Pi";
+  if (value === "hermes") return "Hermes";
+  if (value === "claude-code") return "Claude Code";
+  if (value === "codex") return "Codex";
+  if (value === "cursor") return "Cursor";
   return value || "Unknown app";
 }

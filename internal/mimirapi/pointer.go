@@ -34,28 +34,92 @@ func TokenPath() (string, error) {
 	return filepath.Join(filepath.Dir(path), "token"), nil
 }
 
-func LoadPointer() (Pointer, error) {
+// ConfigValues reads the key=value pairs from $MIMIR_HOME/config. Values may
+// be quoted; a missing file yields an empty map.
+func ConfigValues() (map[string]string, error) {
 	path, err := ConfigPath()
 	if err != nil {
-		return Pointer{}, err
+		return nil, err
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Pointer{}, fmt.Errorf("Mimir is not connected; run mimir setup")
-		}
-		return Pointer{}, err
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
 	}
-	var pointer Pointer
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]string{}
 	for _, line := range strings.Split(string(data), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		value = strings.Trim(strings.TrimSpace(value), "\"")
-		if strings.TrimSpace(key) == "url" {
-			pointer.URL = strings.TrimRight(value, "/")
-		}
+		values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), "\"")
+	}
+	return values, nil
+}
+
+func renderConfig(values map[string]string) []byte {
+	var body strings.Builder
+	if url := values["url"]; url != "" {
+		fmt.Fprintf(&body, "url = %q\n", strings.TrimRight(url, "/"))
+	}
+	if executable := values["executable"]; executable != "" {
+		fmt.Fprintf(&body, "executable=%s\n", executable)
+	}
+	return []byte(body.String())
+}
+
+// SaveExecutable records the absolute path of the running Mimir binary as
+// `executable=` in $MIMIR_HOME/config so plugins can launch it without PATH.
+func SaveExecutable(executable string) error {
+	executable, err := filepath.Abs(strings.TrimSpace(executable))
+	if err != nil {
+		return err
+	}
+	if strings.ContainsAny(executable, "\r\n") {
+		return fmt.Errorf("invalid executable path")
+	}
+	values, err := ConfigValues()
+	if err != nil {
+		return err
+	}
+	if values["executable"] == executable {
+		return nil
+	}
+	values["executable"] = executable
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
+	home := filepath.Dir(path)
+	if err := securePointerHome(home); err != nil {
+		return err
+	}
+	targets := []pointerWrite{{path: path, data: renderConfig(values)}}
+	staged, err := stagePointerWrite(home, targets[0].data)
+	if err != nil {
+		return err
+	}
+	targets[0].staged = staged
+	defer cleanupPointerWrites(targets)
+	if err := replacePointerWrite(home, &targets[0]); err != nil {
+		return rollbackPointerWrites(targets, 0, err)
+	}
+	if targets[0].backup != "" {
+		return os.Remove(targets[0].backup)
+	}
+	return nil
+}
+
+func LoadPointer() (Pointer, error) {
+	values, err := ConfigValues()
+	if err != nil {
+		return Pointer{}, err
+	}
+	pointer := Pointer{URL: strings.TrimRight(values["url"], "/")}
+	if pointer.URL == "" {
+		return Pointer{}, fmt.Errorf("Mimir is not connected; run mimir setup")
 	}
 	tokenFile, err := TokenPath()
 	if err != nil {
@@ -84,12 +148,17 @@ func SavePointer(pointer Pointer) error {
 	if err := securePointerHome(home); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("url = %q\n", strings.TrimRight(pointer.URL, "/"))
+	values, err := ConfigValues()
+	if err != nil {
+		return err
+	}
+	values["url"] = pointer.URL
+	body := renderConfig(values)
 	tokenFile, err := TokenPath()
 	if err != nil {
 		return err
 	}
-	targets := []pointerWrite{{path: path, data: []byte(body)}, {path: tokenFile, data: []byte(pointer.Token + "\n")}}
+	targets := []pointerWrite{{path: path, data: body}, {path: tokenFile, data: []byte(pointer.Token + "\n")}}
 	for _, target := range targets {
 		if err := validatePointerTarget(home, target.path); err != nil {
 			return err

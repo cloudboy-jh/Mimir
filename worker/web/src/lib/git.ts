@@ -1,5 +1,3 @@
-import { outcomeCommitEvidence, type GitArtifact, type OutcomeCommitEvidence, type OutcomeEvent, type OutcomeEvidence } from "@/lib/api";
-
 // normalizeRepositoryUrl turns any recorded remote form (SCP, ssh, git, http)
 // into a browsable https URL, dropping credentials, ports, and the .git suffix.
 // It never contacts a Git host; it only reshapes a value Mimir already stored.
@@ -23,95 +21,12 @@ export function normalizeRepositoryUrl(raw: string | null | undefined): string |
   return `https://${url.hostname}${path}`;
 }
 
-function commitSegment(hostname: string): string {
-  if (/(^|\.)gitlab\./i.test(hostname)) return "/-/commit/";
-  if (/(^|\.)bitbucket\./i.test(hostname)) return "/commits/";
-  return "/commit/";
-}
-
-export function repositoryUrl(evidence: OutcomeEvidence | null): string | null {
-  return normalizeRepositoryUrl(evidence?.repository_url);
-}
-
-export function externalEvidenceUrl(raw: string | null | undefined): string | null {
-  if (!raw?.trim()) return null;
-  try {
-    const url = new URL(raw.trim());
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-    url.username = ""; url.password = "";
-    return url.href;
-  } catch { return null; }
-}
-
-// commitUrl prefers an explicitly recorded commit URL and otherwise derives one
-// from the repository remote. Without a remote there is no reliable link, and
-// the caller must show the bare SHA instead of guessing a host.
-export function commitUrl(evidence: OutcomeEvidence | null): string | null {
-  if (!evidence) return null;
-  const explicit = externalEvidenceUrl(evidence.commit_url);
-  if (explicit) return explicit;
-  const repository = repositoryUrl(evidence);
-  if (!repository || !evidence.commit) return null;
-  return `${repository}${commitSegment(new URL(repository).hostname)}${evidence.commit}`;
-}
-
-export function shortCommit(sha: string | undefined): string {
-  return sha ? sha.slice(0, 7) : "";
-}
-
-export function gitArtifactCommitUrl(artifact: GitArtifact): string | null {
-  return commitUrl({ commit: artifact.commit_sha, repository_url: artifact.repository_url ?? undefined });
-}
-
-export function gitArtifactProvenance(provenance: string) {
-  const normalized = provenance.trim().toLowerCase();
-  if (normalized === "git" || normalized.includes("local") || normalized.includes("import")) {
-    return { label: "Local checkout, unverified", unverified: true };
-  }
-  return { label: provenance || "Unknown source", unverified: false };
-}
-
-export function outcomeEvidenceArtifact(evidence: OutcomeEvidence, artifacts: GitArtifact[]): GitArtifact | null {
-  const sha = evidence.commit?.trim().toLowerCase();
-  if (!sha || sha.length < 7 || !/^[0-9a-f]+$/.test(sha)) return null;
-  const repo = normalizeRepositoryUrl(evidence.repository_url);
-  const candidates = artifacts.filter((artifact) => {
-    const artifactRepo = normalizeRepositoryUrl(artifact.repository_url);
-    return artifact.commit_sha.startsWith(sha) && !(repo && artifactRepo && repo !== artifactRepo);
-  });
-  return candidates.length === 1 ? candidates[0]! : null;
-}
-
-export function outcomeUrlMatchesArtifact(url: string | undefined, artifacts: GitArtifact[]): boolean {
-  const normalized = url?.trim().replace(/\/+$/, "");
-  if (!normalized) return false;
-  return artifacts.some((artifact) => gitArtifactCommitUrl(artifact)?.replace(/\/+$/, "") === normalized);
-}
-
-export type SessionCommitClaim = OutcomeCommitEvidence & { artifact: GitArtifact | null };
-
-export type SessionChangeEvidence = {
-  history: SessionCommitClaim[];
-  unmatched: SessionCommitClaim[];
-  distinctUrl: string | null;
-  invalidUrl: string | null;
-  legacy: boolean;
-  note: string | null;
-  hasOutcomeEvidence: boolean;
-  visible: boolean;
-};
-
-// Outcome commit claims matched to captured commits, plus recorded outcome
-// evidence that no captured commit already shows. The session sidebar renders
-// the Changes view only when a captured commit or such evidence exists.
-export function sessionChangeEvidence(artifacts: GitArtifact[], events: OutcomeEvent[], evidence: OutcomeEvidence | null): SessionChangeEvidence {
-  const history = outcomeCommitEvidence(events).map((entry) => ({ ...entry, artifact: outcomeEvidenceArtifact(entry.evidence, artifacts) }));
-  const unmatched = history.filter((entry) => !entry.artifact);
-  const outcomeUrl = evidence?.url ?? (!evidence?.commit ? evidence?.commit_url : undefined);
-  const distinctUrl = outcomeUrlMatchesArtifact(outcomeUrl, artifacts) ? null : externalEvidenceUrl(outcomeUrl);
-  const invalidUrl = outcomeUrl && !externalEvidenceUrl(outcomeUrl) ? outcomeUrl : null;
-  const legacy = Boolean(evidence?.patch || evidence?.patch_r2_key);
-  const note = evidence?.note || null;
-  const hasOutcomeEvidence = Boolean(unmatched.length || distinctUrl || invalidUrl || note || legacy);
-  return { history, unmatched, distinctUrl, invalidUrl, legacy, note, hasOutcomeEvidence, visible: artifacts.length > 0 || hasOutcomeEvidence };
+// commitUrl derives a browsable commit link from the recorded remote. Without
+// a remote there is no reliable link, and the caller shows the bare SHA.
+export function commitUrl(repositoryUrl: string | null | undefined, sha: string): string | null {
+  const repository = normalizeRepositoryUrl(repositoryUrl);
+  if (!repository) return null;
+  const host = new URL(repository).hostname;
+  const segment = /(^|\.)gitlab\./i.test(host) ? "/-/commit/" : /(^|\.)bitbucket\./i.test(host) ? "/commits/" : "/commit/";
+  return `${repository}${segment}${sha}`;
 }

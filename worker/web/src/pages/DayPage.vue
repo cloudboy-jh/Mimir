@@ -1,24 +1,21 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ArrowLeft, ChevronLeft, ChevronRight, CircleDashed, GitCommitHorizontal, RotateCw } from "lucide-vue-next";
+import { ArrowLeft, ChevronLeft, ChevronRight, GitCommitHorizontal, RotateCw } from "lucide-vue-next";
 import Button from "@/components/ui/Button.vue";
-import Select from "@/components/ui/Select.vue";
 import BrandIcon from "@/components/BrandIcon.vue";
-import OutcomeBadge from "@/components/OutcomeBadge.vue";
+import GitStatus from "@/components/GitStatus.vue";
 import DayDonut from "@/components/day/DayDonut.vue";
-import { dashboardNow, errorMessage, getDay, setSessionsOutcome, type DaySnapshot, type Outcome } from "@/lib/api";
+import { errorMessage, getDay, type DaySnapshot } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/auto-refresh";
-import { agentTime, dayLevel, share, sliceTones, type DayItem } from "@/lib/day";
+import { agentTime, dayLevel, gitSummary, share, sliceTones, type DayItem } from "@/lib/day";
 import { compactNumber, harnessLabel } from "@/lib/format";
-import { outcomeOptions } from "@/lib/options";
-import { outcomeMeta, outcomeOrder } from "@/lib/outcomes";
 
 const route = useRoute();
 const router = useRouter();
 const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const localDate = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
-const today = ref(localDate.format(dashboardNow()));
+const today = ref(localDate.format(new Date()));
 const date = computed(() => (typeof route.params.date === "string" && route.params.date) || today.value);
 const focus = computed(() => (typeof route.query.focus === "string" ? route.query.focus : null));
 
@@ -26,10 +23,6 @@ const snapshot = ref<DaySnapshot | null>(null);
 const loading = ref(true);
 const error = ref("");
 const hovered = ref<string | null>(null);
-const outcomeRow = ref<string | null>(null);
-const bulkOutcome = ref<Outcome>("landed");
-const bulkApplying = ref(false);
-const bulkError = ref("");
 let controller: AbortController | null = null;
 
 async function load(silent = false) {
@@ -39,7 +32,7 @@ async function load(silent = false) {
   if (!silent) loading.value = true;
   error.value = "";
   try {
-    today.value = localDate.format(dashboardNow());
+    today.value = localDate.format(new Date());
     snapshot.value = await getDay(date.value, timeZone, active.signal);
   } catch (cause) {
     if (!active.signal.aborted) error.value = errorMessage(cause, "This day could not be loaded.");
@@ -52,10 +45,7 @@ watch(date, () => {
   snapshot.value = null;
   void load();
 }, { immediate: true });
-watch(focus, () => {
-  hovered.value = null;
-  outcomeRow.value = null;
-});
+watch(focus, () => { hovered.value = null; });
 useAutoRefresh(() => (date.value === today.value ? load(true) : undefined));
 onBeforeUnmount(() => controller?.abort());
 
@@ -92,14 +82,23 @@ const totalsLine = computed(() => {
   ].filter(Boolean).join(" · ");
 });
 
+// Sessions that need a look: still running, or with exchanges that failed to save.
+const attention = computed(() => {
+  const day = snapshot.value;
+  if (!day) return [];
+  const sessions = new Map(day.sessions.map((session) => [session.id, session]));
+  const rows = [
+    ...day.attention.active.map((id) => ({ id, reason: "In progress" })),
+    ...day.attention.capture.map((id) => ({ id, reason: `Capture ${sessions.get(id)?.capture_status ?? "problem"}` })),
+  ];
+  return rows.map((row) => ({ ...row, title: sessions.get(row.id)?.display_title ?? row.id }));
+});
+
 const clock = new Intl.DateTimeFormat("en", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 function span(item: DayItem) {
   if (!item.firstAt || !item.lastAt) return "";
   const from = clock.format(new Date(item.firstAt)), to = clock.format(new Date(item.lastAt));
   return from === to ? from : `${from}–${to}`;
-}
-function decided(item: DayItem) {
-  return outcomeOrder.filter((outcome) => outcome !== "unresolved" && item.outcomes[outcome]).map((outcome) => `${item.outcomes[outcome]} ${outcomeMeta[outcome].label.toLowerCase()}`).join(" · ");
 }
 
 function open(item: DayItem) {
@@ -108,21 +107,6 @@ function open(item: DayItem) {
 }
 function go(target: string | null) {
   if (target) void router.push(target === today.value ? "/days" : `/days/${target}`);
-}
-
-const settableOutcomes = outcomeOptions.filter((option) => option.value && option.value !== "unresolved");
-async function applyOutcome(ids: string[]) {
-  bulkApplying.value = true;
-  bulkError.value = "";
-  try {
-    await setSessionsOutcome(ids, bulkOutcome.value, "");
-    outcomeRow.value = null;
-    await load(true);
-  } catch (cause) {
-    bulkError.value = errorMessage(cause, "Outcomes could not be saved.");
-  } finally {
-    bulkApplying.value = false;
-  }
 }
 </script>
 
@@ -176,7 +160,7 @@ async function applyOutcome(ids: string[]) {
                   <BrandIcon v-if="item.app" :label="harnessLabel(item.app)" />
                   <span class="truncate text-sm font-medium text-zinc-950 group-hover:underline dark:text-zinc-100">{{ item.label }}</span>
                   <span v-if="item.active" class="shrink-0 rounded-[4px] border border-emerald-200 bg-emerald-50 px-1.5 text-[11px] font-medium text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">In progress</span>
-                  <OutcomeBadge v-if="item.kind === 'session' && item.outcomes.unresolved === 0" :outcome="outcomeOrder.find((outcome) => item.outcomes[outcome])!" class="shrink-0" />
+                  <GitStatus v-if="item.kind === 'session' && (item.git.pushed || item.git.committed)" :status="item.git.pushed ? 'pushed' : 'committed'" class="shrink-0 text-xs" />
                 </span>
                 <span class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                   <span v-if="item.repo" class="font-medium text-zinc-700 dark:text-zinc-300">{{ item.repo }}<span v-if="item.sourceRef" class="font-normal text-zinc-500 dark:text-zinc-400"> · {{ item.sourceRef }}</span></span>
@@ -185,7 +169,7 @@ async function applyOutcome(ids: string[]) {
                   <span v-if="item.sessionIds.length > 1">{{ plural(item.sessionIds.length, "session") }}</span>
                   <span>{{ plural(item.requests, "request") }}</span>
                   <span v-if="item.commits" class="inline-flex items-center gap-1"><GitCommitHorizontal class="size-3.5" aria-hidden="true" />{{ item.commits }}</span>
-                  <span v-if="item.kind !== 'session' && decided(item)">{{ decided(item) }}</span>
+                  <span v-if="item.kind !== 'session' && gitSummary(item.git)">{{ gitSummary(item.git) }}</span>
                   <span v-if="item.captureProblems" class="text-red-700 dark:text-red-400">{{ plural(item.captureProblems, "capture problem") }}</span>
                 </span>
               </span>
@@ -194,24 +178,24 @@ async function applyOutcome(ids: string[]) {
                 <ChevronRight class="size-4 text-zinc-400 transition-transform duration-150 group-hover:translate-x-0.5 motion-reduce:transform-none motion-reduce:transition-none" aria-hidden="true" />
               </span>
             </button>
-            <div v-if="item.unresolvedIds.length" class="flex flex-wrap items-center gap-2 pb-3 pl-[34px] pr-2 text-xs">
-              <span class="inline-flex items-center gap-1 text-zinc-600 dark:text-zinc-400"><CircleDashed class="size-3.5" aria-hidden="true" />{{ item.unresolvedIds.length === item.sessionIds.length && item.sessionIds.length === 1 ? "Unresolved" : `${item.unresolvedIds.length} unresolved` }}</span>
-              <button v-if="outcomeRow !== item.key" type="button" class="font-medium text-teal-700 hover:underline focus-visible:rounded-[3px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400" @click="outcomeRow = item.key">Set outcome</button>
-              <template v-else>
-                <Select v-model="bulkOutcome" :label="`Outcome for ${item.label}`" :options="settableOutcomes" class="w-36" />
-                <Button :disabled="bulkApplying" @click="applyOutcome(item.unresolvedIds)">{{ bulkApplying ? "Saving…" : item.unresolvedIds.length > 1 ? `Set ${item.unresolvedIds.length}` : "Set" }}</Button>
-                <Button variant="ghost" :disabled="bulkApplying" @click="outcomeRow = null">Cancel</Button>
-              </template>
-              <p v-if="bulkError && outcomeRow === item.key" class="w-full text-red-700 dark:text-red-400" role="alert">{{ bulkError }}</p>
-            </div>
           </li>
         </ol>
+
+        <section v-if="!level.focus && attention.length" aria-labelledby="day-attention-heading" class="mt-6">
+          <h3 id="day-attention-heading" class="mb-2 text-sm font-semibold">Needs attention</h3>
+          <ul class="space-y-1.5">
+            <li v-for="row in attention" :key="`${row.reason}-${row.id}`" class="flex min-w-0 items-baseline gap-2 text-xs">
+              <span class="shrink-0" :class="row.reason === 'In progress' ? 'text-emerald-800 dark:text-emerald-300' : 'text-red-700 dark:text-red-400'">{{ row.reason }}</span>
+              <RouterLink :to="`/sessions/${row.id}`" class="min-w-0 truncate text-teal-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-teal-400">{{ row.title }}</RouterLink>
+            </li>
+          </ul>
+        </section>
 
         <section v-if="level.commits.length" class="mt-6">
           <h3 class="mb-2 text-sm font-semibold">Commits</h3>
           <ul class="space-y-1.5">
             <li v-for="commit in level.commits" :key="commit.commit_sha">
-              <RouterLink :to="`/sessions/${commit.session_ids[0]}/diff/${commit.commit_sha}`" class="group inline-flex max-w-full items-center gap-2 text-xs text-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-300">
+              <RouterLink :to="{ path: `/sessions/${commit.session_ids[0]}`, query: { commit: commit.commit_sha } }" class="group inline-flex max-w-full items-center gap-2 text-xs text-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-600 dark:text-zinc-300">
                 <GitCommitHorizontal class="size-3.5 shrink-0 text-zinc-500" aria-hidden="true" />
                 <span class="font-mono text-teal-700 group-hover:underline dark:text-teal-400">{{ commit.commit_sha.slice(0, 8) }}</span>
                 <span class="min-w-0 truncate">{{ commit.subject || "No subject" }}</span>

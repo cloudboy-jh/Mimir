@@ -26,6 +26,7 @@ type GitArtifact struct {
 	Patch           string  `json:"patch"`
 	RepositoryURL   string  `json:"repository_url,omitempty"`
 	Ref             string  `json:"ref,omitempty"`
+	Pushed          bool    `json:"pushed"`
 }
 
 type ArtifactCollector interface {

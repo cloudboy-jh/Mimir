@@ -51,14 +51,6 @@ export function extractGeneratedTitle(response: unknown): string | null {
   return normalizeSessionTitle(blocks);
 }
 
-export function sessionTitleColumns(alias: string): string {
-  return `${alias}.title, ${alias}.title_source, ${alias}.title_updated_at, COALESCE(${alias}.title, substr(${alias}.intent, 1, 100), ${alias}.id) AS display_title`;
-}
-
-export function sessionTitleSearchClause(alias: string): string {
-  return `(instr(lower(COALESCE(${alias}.title, '')), lower(?)) > 0 OR instr(lower(COALESCE(${alias}.intent, '')), lower(?)) > 0)`;
-}
-
 export function titleUpdateStatement(
   db: D1Database,
   sessionId: string,

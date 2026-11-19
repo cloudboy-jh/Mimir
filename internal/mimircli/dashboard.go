@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
-
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 var openBrowser = func(ctx context.Context, target string) error {
@@ -34,16 +31,11 @@ func dashboard(ctx context.Context, ioctx IO) error {
 	if err != nil {
 		return err
 	}
-	target := pointer.URL + "/login?returnTo=%2Fdashboard%2Fsessions"
+	target := pointer.URL + "/dashboard/"
 	if err := openBrowser(ctx, target); err != nil {
-		render := cliui.New(ioctx.Out)
-		_, writeErr := fmt.Fprintln(ioctx.Out, render.Callout(bentotui.ToneWarn, "Could not open the dashboard", target))
-		if writeErr != nil {
-			return writeErr
-		}
-		return nil
+		_, err = fmt.Fprintln(ioctx.Out, "Open "+target)
+		return err
 	}
-	render := cliui.New(ioctx.Out)
-	_, err = fmt.Fprintln(ioctx.Out, render.Callout(bentotui.ToneSuccess, "Dashboard opened", target))
+	_, err = fmt.Fprintln(ioctx.Out, "Dashboard: "+target)
 	return err
 }

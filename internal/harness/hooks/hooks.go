@@ -27,6 +27,7 @@ import (
 	mimirassets "github.com/cloudboy-jh/mimir"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 	"github.com/cloudboy-jh/mimir/internal/sessionimport"
+	"github.com/cloudboy-jh/mimir/internal/tailnet"
 )
 
 const (
@@ -39,6 +40,7 @@ const (
 	stateMaxAge        = 7 * 24 * time.Hour
 	outboxMaxAge       = 30 * 24 * time.Hour
 	maxTranscriptBytes = 4 * 1024 * 1024
+	refreshTimeout     = 5 * time.Second
 )
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -69,15 +71,25 @@ type protectedFile struct {
 type normalizedInput struct {
 	deliveries []Delivery
 	clearState string
+	// refresh re-checks the session's unpushed commits after delivery.
+	refresh *GitInput
+	// started reports the tailnet (throttled) after a session start.
+	started bool
+}
+
+// Collector collects one exact commit's bounded redacted patch.
+type Collector interface {
+	CollectCommit(context.Context, string, string) (sessionimport.GitArtifact, error)
 }
 
 type Service struct {
 	Home      string
 	Now       func() time.Time
 	Deliver   func(context.Context, Delivery) error
-	Collector interface {
-		CollectCommit(context.Context, string, string) (sessionimport.GitArtifact, error)
-	}
+	API       *mimirapi.Client
+	Collector Collector
+	// Git runs git in a directory and returns trimmed stdout; tests replace it.
+	Git func(ctx context.Context, dir string, args ...string) (string, error)
 	key []byte
 }
 
@@ -90,15 +102,12 @@ func New() (Service, error) {
 	if err != nil {
 		return Service{}, err
 	}
-	if err := verifyManagedExecutable(home); err != nil {
-		return Service{}, err
-	}
 	pointer, err := mimirapi.LoadPointer()
 	if err != nil {
 		return Service{Home: home, key: key}, nil
 	}
 	client := mimirapi.New(pointer)
-	return Service{Home: home, key: key, Deliver: hookDeliver(client)}, nil
+	return Service{Home: home, key: key, API: &client, Deliver: hookDeliver(client)}, nil
 }
 
 func hookDeliver(client mimirapi.Client) func(context.Context, Delivery) error {
@@ -203,6 +212,16 @@ func (s Service) Ingest(ctx context.Context, harness string, input io.Reader) er
 		}
 	}
 	_ = s.Flush(ctx)
+	if s.API != nil {
+		bounded, cancel := context.WithTimeout(ctx, refreshTimeout)
+		defer cancel()
+		if normalized.refresh != nil {
+			s.CaptureGit(bounded, *normalized.refresh)
+		}
+		if normalized.started {
+			tailnet.ReportThrottled(bounded, s.API, s.Home, s.Now())
+		}
+	}
 	return nil
 }
 
@@ -307,7 +326,7 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 				return normalizedInput{}, err
 			}
 		}
-		return normalizedInput{deliveries: []Delivery{s.loadDelivery(harness), eventDelivery(harness, session, repo, "heartbeat", now, "", title)}}, nil
+		return normalizedInput{deliveries: []Delivery{s.loadDelivery(harness), eventDelivery(harness, session, repo, "heartbeat", now, "", title)}, started: true}, nil
 	case prompt:
 		text := boundedString(stringValue(body["prompt"]), 512*1024)
 		if text == "" {
@@ -334,8 +353,11 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 		}
 		response = boundedString(response, 512*1024)
 		state, err := s.readState(session)
+		if cwd == "" {
+			cwd = state.CWD
+		}
 		if err != nil || state.Prompt == "" || response == "" {
-			return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "heartbeat", now, "", title)}}, nil
+			return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "heartbeat", now, "", title)}, refresh: refreshInput(harness, session, cwd)}, nil
 		}
 		if model == "" {
 			model = state.Model
@@ -358,8 +380,10 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 			usage = codexTranscriptUsage(stringValue(body["transcript_path"]), exchangeKey)
 		}
 		delivery := exchangeDelivery(harness, session, repo, exchangeKey, now, model, state.Prompt, response, title, usage)
-		return normalizedInput{deliveries: []Delivery{delivery}, clearState: s.statePath(session)}, nil
-	case "PreCompact", "PostCompact", "preCompact", "stop":
+		return normalizedInput{deliveries: []Delivery{delivery}, clearState: s.statePath(session), refresh: refreshInput(harness, session, cwd)}, nil
+	case "stop":
+		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "heartbeat", now, "", title)}, refresh: refreshInput(harness, session, cwd)}, nil
+	case "PreCompact", "PostCompact", "preCompact":
 		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "heartbeat", now, "", title)}}, nil
 	case "StopFailure":
 		reason := firstString(body, "error", "message", "reason")
@@ -372,10 +396,19 @@ func (s Service) normalize(ctx context.Context, harness string, body map[string]
 		if reason == "" {
 			reason = "explicit"
 		}
-		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "end", now, boundedString(reason, 2000), title)}, clearState: s.statePath(session)}, nil
+		return normalizedInput{deliveries: []Delivery{eventDelivery(harness, session, repo, "end", now, boundedString(reason, 2000), title)}, clearState: s.statePath(session), refresh: refreshInput(harness, session, cwd)}, nil
 	default:
 		return normalizedInput{}, fmt.Errorf("unsupported %s hook event %q", harness, event)
 	}
+}
+
+// refreshInput re-checks unpushed commits at turn or session end; it needs
+// the checkout directory to ask Git which commits reached a remote.
+func refreshInput(harness, session, cwd string) *GitInput {
+	if cwd == "" || !filepath.IsAbs(cwd) {
+		return nil
+	}
+	return &GitInput{SessionID: session, CWD: cwd, Harness: harness, Refresh: true}
 }
 
 func eventNames(harness string) (string, string, string, string) {
@@ -523,14 +556,14 @@ func (s Service) loadDelivery(harness string) Delivery {
 	}
 	sum := sha256.Sum256(data)
 	body := map[string]any{"version": 1, "harness": harness, "source_sha256": hex.EncodeToString(sum[:])}
-	var receipt struct {
+	var manifest struct {
 		BundleVersion  string                           `json:"bundle_version"`
 		InstallationID string                           `json:"installation_id"`
 		CLI            struct{ Version, Commit string } `json:"cli"`
 	}
-	if data, err := os.ReadFile(filepath.Join(s.Home, "install-receipt.json")); err == nil && json.Unmarshal(data, &receipt) == nil {
-		body["bundle_version"], body["installation_id"] = receipt.BundleVersion, receipt.InstallationID
-		body["cli_version"], body["cli_commit"] = receipt.CLI.Version, receipt.CLI.Commit
+	if data, err := os.ReadFile(filepath.Join(s.Home, "managed.json")); err == nil && json.Unmarshal(data, &manifest) == nil {
+		body["bundle_version"], body["installation_id"] = manifest.BundleVersion, manifest.InstallationID
+		body["cli_version"], body["cli_commit"] = manifest.CLI.Version, manifest.CLI.Commit
 		for key, value := range body {
 			if value == "" {
 				delete(body, key)
@@ -555,42 +588,6 @@ func installedHookPath(harness string) string {
 	default:
 		return filepath.Join(home, ".cursor", "hooks.json")
 	}
-}
-
-func verifyManagedExecutable(home string) error {
-	var receipt struct {
-		CLI struct {
-			Path string `json:"path"`
-			Hash string `json:"sha256"`
-		} `json:"cli"`
-	}
-	data, err := os.ReadFile(filepath.Join(home, "install-receipt.json"))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil || json.Unmarshal(data, &receipt) != nil || receipt.CLI.Path == "" || receipt.CLI.Hash == "" {
-		return nil
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	samePath := filepath.Clean(executable) == filepath.Clean(receipt.CLI.Path)
-	if runtime.GOOS == "windows" {
-		samePath = strings.EqualFold(filepath.Clean(executable), filepath.Clean(receipt.CLI.Path))
-	}
-	if !samePath {
-		return errors.New("refusing hook input because the running Mimir binary is not receipt-owned")
-	}
-	binary, err := os.ReadFile(executable)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(binary)
-	if hex.EncodeToString(sum[:]) != receipt.CLI.Hash {
-		return errors.New("refusing hook input because the running Mimir binary differs from its receipt")
-	}
-	return nil
 }
 
 func (s Service) queue(delivery Delivery) error {

@@ -2,7 +2,8 @@
 
 Reports Hermes-observed direct-provider API exchanges, heartbeats, and session
 ends to Mimir. The Worker redacts exchanges before persistence. The managed
-OpenRouter proxy remains the canonical exchange source.
+OpenRouter proxy remains the canonical exchange source. Commits are captured by
+`mimir _hook git`, and the mimir_* tools forward to the Worker's MCP endpoint.
 
 Each request is classified from Hermes' pre_api_request transport metadata.
 Requests routed through the Mimir OpenRouter redirect emit only an exact-ID
@@ -27,7 +28,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import tempfile
 import threading
@@ -45,8 +45,10 @@ USER_AGENT = "mimir-hermes/1.0"
 MAX_PENDING_REQUESTS = 128
 MAX_PENDING_EXCHANGES = 256
 MAX_EXCHANGE_BYTES = 1024 * 1024
-MAX_PATCH_BYTES = 4 * 1024 * 1024
-COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+SHELL_TOOLS = ("bash", "exec", "terminal", "shell", "execute", "run")
+COMMIT_CONFIRMATION = re.compile(r"\[[^\]\r\n]+\s[0-9a-f]{7,40}\](?=\s|$)")
+GIT_HOOK_TIMEOUT_SECONDS = 60
+MCP_TIMEOUT_SECONDS = 30
 
 _UTC = timezone.utc
 
@@ -56,8 +58,24 @@ def _now() -> str:
 
 
 def parse_mimir_config(text: str) -> dict:
-    match = re.search(r'^\s*url\s*=\s*"?([^"\n]+?)"?\s*$', text, re.MULTILINE)
-    return {"url": match.group(1).rstrip("/")} if match else {}
+    values = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"')
+        if separator and value and key in ("url", "executable"):
+            values[key] = value.rstrip("/") if key == "url" else value
+    return values
+
+
+def mimir_home(env, home):
+    return (env.get("MIMIR_HOME") or "").strip() or (os.path.join(home, ".mimir") if home else None)
+
+
+def _home():
+    try:
+        return os.path.expanduser("~")
+    except Exception:
+        return None
 
 
 def resolve_connection(env, read_file, home):
@@ -66,7 +84,7 @@ def resolve_connection(env, read_file, home):
     env_token = (env.get("MIMIR_TOKEN") or "").strip()
     if env_url and env_token:
         return {"url": env_url.rstrip("/"), "token": env_token}
-    directory = (env.get("MIMIR_HOME") or "").strip() or (os.path.join(home, ".mimir") if home else None)
+    directory = mimir_home(env, home)
     if not directory:
         return None
     config = read_file(os.path.join(directory, "config"))
@@ -84,32 +102,175 @@ def _read_file(path):
 
 
 def load_connection():
-    home = None
+    return resolve_connection(os.environ, _read_file, _home())
+
+
+def mimir_executable(env, read_file, home):
+    """Resolve the CLI: MIMIR_BIN, then `executable=` in the Mimir config, then PATH."""
+    explicit = (env.get("MIMIR_BIN") or "").strip()
+    if explicit:
+        return explicit
+    directory = mimir_home(env, home)
+    config = read_file(os.path.join(directory, "config")) if directory else None
+    return (parse_mimir_config(config).get("executable") if config else None) or "mimir"
+
+
+def run_git_hook(payload):
+    """Hand commit capture to `mimir _hook git`; never block or fail the host."""
     try:
-        home = os.path.expanduser("~")
-    except Exception:
+        process = subprocess.Popen(
+            [mimir_executable(os.environ, _read_file, _home()), "_hook", "git"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, ValueError):
+        return
+    try:
+        process.stdin.write(json.dumps(payload).encode("utf-8"))
+        process.stdin.close()
+    except OSError:
         pass
-    return resolve_connection(os.environ, _read_file, home)
+
+    def reap():
+        try:
+            process.wait(timeout=GIT_HOOK_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    threading.Thread(target=reap, daemon=True).start()
 
 
-def build_harness_load(source, receipt_text=None):
+def commit_confirmations(result):
+    """Return only the `[branch sha] subject` lines of a tool result, or None."""
+    lines = [line for line in (_tool_text(result) or "").splitlines() if COMMIT_CONFIRMATION.search(line)]
+    return "\n".join(lines) or None
+
+
+_TIME = "RFC3339 time, YYYY-MM-DD (UTC day), or relative age such as 24h or 7d"
+_CURSOR = {"type": "string", "description": "next_cursor from a previous page"}
+
+# MCP tool name -> (description, JSON-schema properties, required arguments).
+MIMIR_TOOLS = {
+    "search": ("Full-text search past agent conversations and return the best-matching sessions with snippets.", {
+        "query": {"type": "string", "description": "Text to search for"},
+        "repo": {"type": "string", "description": "Repository name filter"},
+        "from": {"type": "string", "description": f"Earliest activity: {_TIME}"},
+        "to": {"type": "string", "description": f"Latest activity: {_TIME}"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum sessions (default 10)"},
+    }, ["query"]),
+    "sessions": ("List recorded agent sessions, newest activity first, filtered by text, repo, harness, device, state, git status or time.", {
+        "q": {"type": "string", "description": "Title, intent, repo or conversation text"},
+        "repo": {"type": "string", "description": "Repository name filter"},
+        "harness": {"type": "string", "description": "Harness filter, such as hermes or claude-code"},
+        "device": {"type": "string", "description": "Device ID or name filter"},
+        "state": {"type": "string", "enum": ["active", "inactive"]},
+        "git_status": {"type": "string", "enum": ["none", "committed", "pushed"]},
+        "from": {"type": "string", "description": f"Earliest activity: {_TIME}"},
+        "to": {"type": "string", "description": f"Latest activity: {_TIME}"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum sessions (default 20)"},
+        "cursor": _CURSOR,
+    }, []),
+    "session": ("Get one session with its summary, receipt, touched files, errors, commits and supporting sessions.", {
+        "id": {"type": "string", "description": "Session ID"},
+    }, ["id"]),
+    "turns": ("Read a session's conversation turns (user, assistant, reasoning and tool calls) page by page.", {
+        "id": {"type": "string", "description": "Session ID"},
+        "cursor": _CURSOR,
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum turns (default 8)"},
+        "order": {"type": "string", "enum": ["asc", "desc"]},
+    }, ["id"]),
+    "stats": ("Aggregate sessions, requests, tokens and commits by repo, harness, device, model or day for charts and summaries.", {
+        "group_by": {"type": "string", "enum": ["repo", "harness", "device", "model", "day"]},
+        "from": {"type": "string", "description": f"Range start (default 7 days ago): {_TIME}"},
+        "to": {"type": "string", "description": f"Range end: {_TIME}"},
+        "tz": {"type": "string", "description": "IANA time zone for day grouping"},
+    }, ["group_by"]),
+    "day": ("Get one calendar day's sessions grouped into workstreams with git and capture status.", {
+        "date": {"type": "string", "description": "YYYY-MM-DD (default today)"},
+        "tz": {"type": "string", "description": "IANA time zone (default UTC)"},
+    }, []),
+    "devices": ("List the user's devices with session counts, harnesses and tailnet status.", {}, []),
+    "commits": ("List commits captured from agent sessions, filtered by repo, ref, text, session or time.", {
+        "repo": {"type": "string", "description": "Repository filter"},
+        "ref": {"type": "string", "description": "Branch or ref filter"},
+        "q": {"type": "string", "description": "Commit subject text"},
+        "session": {"type": "string", "description": "Session ID filter"},
+        "from": {"type": "string", "description": f"Earliest commit: {_TIME}"},
+        "to": {"type": "string", "description": f"Latest commit: {_TIME}"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum commits (default 20)"},
+        "cursor": _CURSOR,
+    }, []),
+    "commit_patch": ("Fetch the redacted patch of a commit captured in a session.", {
+        "session_id": {"type": "string", "description": "Session ID that captured the commit"},
+        "sha": {"type": "string", "description": "Commit SHA"},
+        "max_bytes": {"type": "integer", "minimum": 1, "description": "Patch byte limit (default 65536)"},
+    }, ["session_id", "sha"]),
+}
+
+
+def tool_schema(name):
+    description, properties, required = MIMIR_TOOLS[name]
+    return {"name": f"mimir_{name}", "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": required}}
+
+
+def call_mimir_tool(connection, name, arguments):
+    """Forward one tool call to the Worker MCP endpoint; return its JSON result text or a JSON error."""
+    arguments = {key: value for key, value in (arguments or {}).items() if value is not None}
+    request = urllib.request.Request(
+        f"{connection['url']}/mcp",
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": name, "arguments": arguments}}).encode("utf-8"),
+        headers={"authorization": f"Bearer {connection['token']}", "content-type": "application/json",
+                 "accept": "application/json, text/event-stream", "user-agent": USER_AGENT},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=MCP_TIMEOUT_SECONDS) as response:
+            message = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read(2000).decode("utf-8", errors="replace")
+        return json.dumps({"error": f"Mimir {name} failed ({error.code}): {detail}"})
+    except (OSError, ValueError) as error:
+        return json.dumps({"error": f"Mimir {name} failed: {error}"})
+    if not isinstance(message, dict):
+        return json.dumps({"error": f"Mimir {name} failed: malformed response"})
+    if isinstance(message.get("error"), dict):
+        return json.dumps({"error": f"Mimir {name} failed: {message['error'].get('message')}"})
+    result = message.get("result") if isinstance(message.get("result"), dict) else {}
+    content = result.get("content") if isinstance(result.get("content"), list) else []
+    text = "\n".join(part["text"] for part in content
+                     if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str))
+    if result.get("isError"):
+        return json.dumps({"error": f"Mimir {name} failed: {text}"})
+    return text
+
+
+def _tool_handler(connection, name):
+    def handler(args, **_kwargs):
+        return call_mimir_tool(connection, name, args if isinstance(args, dict) else {})
+    return handler
+
+
+def build_harness_load(source, manifest_text=None):
     load = {
         "version": 1,
         "harness": "hermes",
         "source_sha256": hashlib.sha256(source).hexdigest(),
     }
-    if not receipt_text:
+    if not manifest_text:
         return load
     try:
-        receipt = json.loads(receipt_text)
-        if not isinstance(receipt, dict):
+        manifest = json.loads(manifest_text)
+        if not isinstance(manifest, dict):
             return load
-        cli = receipt.get("cli") if isinstance(receipt.get("cli"), dict) else {}
+        cli = manifest.get("cli") if isinstance(manifest.get("cli"), dict) else {}
         fields = {
-            "bundle_version": receipt.get("bundle_version"),
+            "bundle_version": manifest.get("bundle_version"),
             "cli_version": cli.get("version"),
             "cli_commit": cli.get("commit"),
-            "installation_id": receipt.get("installation_id"),
+            "installation_id": manifest.get("installation_id"),
         }
         load.update({key: value for key, value in fields.items() if isinstance(value, str) and value})
     except (TypeError, ValueError):
@@ -123,9 +284,9 @@ def load_harness_load(env, read_file, home, source_path=__file__):
             source = handle.read()
     except OSError:
         return None
-    directory = (env.get("MIMIR_HOME") or "").strip() or (os.path.join(home, ".mimir") if home else None)
-    receipt = read_file(os.path.join(directory, "install-receipt.json")) if directory else None
-    return build_harness_load(source, receipt)
+    directory = mimir_home(env, home)
+    manifest = read_file(os.path.join(directory, "managed.json")) if directory else None
+    return build_harness_load(source, manifest)
 
 
 def post_harness_load(connection, load):
@@ -173,98 +334,6 @@ def repo_name(directory):
         current = parent
 
 
-def _git(cwd, args, limit=65536):
-    """Read at most limit bytes, with a deadline even for a stalled git process."""
-    try:
-        process = subprocess.Popen(["git", "-C", cwd, *args], stdout=subprocess.PIPE,
-                                   stderr=subprocess.DEVNULL)
-        timer = threading.Timer(5, process.kill)
-        timer.daemon = True
-        timer.start()
-        try:
-            output = process.stdout.read(limit + 1)
-            if len(output) > limit:
-                process.kill()
-            process.wait(timeout=5)
-            if process.returncode != 0 or len(output) > limit:
-                return None
-            return output.decode("utf-8", errors="replace")
-        finally:
-            timer.cancel()
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-            process.stdout.close()
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return None
-
-
-def _head(cwd):
-    value = _git(cwd, ["rev-parse", "--verify", "HEAD"])
-    value = value.strip() if value else None
-    return value if value and COMMIT_SHA.fullmatch(value) else None
-
-
-def _normalize_remote_url(raw):
-    value = raw.strip() if raw else ""
-    if not value:
-        return None
-    scp = re.fullmatch(r"[A-Za-z0-9._-]+@([^:/]+):(?!/)(.+)", value)
-    candidate = f"https://{scp[1]}/{scp[2]}" if scp else re.sub(
-        r"^ssh://(?:[^@/]+@)?", "https://", value, flags=re.I)
-    candidate = re.sub(r"^(?:git|http)://", "https://", candidate, flags=re.I)
-    try:
-        url = urllib.parse.urlsplit(candidate)
-        path = re.sub(r"\.git$", "", url.path.rstrip("/"), flags=re.I)
-        if url.scheme != "https" or not url.hostname or "." not in url.hostname or not path or path == "/":
-            return None
-        return f"https://{url.hostname}{path}"
-    except ValueError:
-        return None
-
-
-def _artifact_metadata(cwd):
-    repository = _normalize_remote_url(_git(cwd, ["remote", "get-url", "origin"]))
-    branch = (_git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]) or "").strip()
-    ref = branch if branch and len(branch) <= 512 and not re.search(r"[\s\x00-\x1f\x7f]", branch) else None
-    return {"repository_url": repository, "ref": ref}
-
-
-def _commit_cwd(tool_name, args):
-    if tool_name not in ("bash", "exec", "terminal", "shell", "execute", "run") or not isinstance(args, dict):
-        return None
-    command = args.get("command")
-    if not isinstance(command, str) or len(command) > 50000:
-        return None
-    cwd = args.get("workdir") or args.get("cwd") or os.getcwd()
-    if not isinstance(cwd, str) or not os.path.isdir(cwd):
-        return None
-    # Only recognize a literal git invocation, not a quoted mention of git commit.
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError:
-        return None
-    for index, token in enumerate(tokens):
-        if token not in ("git", "git.exe") or (index and tokens[index - 1] not in ("&&", ";", "||", "|")):
-            continue
-        pos = index + 1
-        checkout = cwd
-        if pos < len(tokens) and tokens[pos] == "-C" and pos + 1 < len(tokens):
-            checkout = os.path.abspath(os.path.join(cwd, tokens[pos + 1]))
-            pos += 2
-        if pos < len(tokens) and tokens[pos] == "commit" and os.path.isdir(checkout):
-            return checkout
-    return None
-
-
-def _redact_patch(text):
-    text = re.sub(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
-                  "[REDACTED PRIVATE KEY]", text)
-    text = re.sub(r"\b(Bearer\s+)[^\s\"']+", r"\1[REDACTED]", text, flags=re.I)
-    return re.sub(r"\b((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[\"']?)[^\s\"']+",
-                  r"\1[REDACTED]", text, flags=re.I)
-
-
 def _tool_text(result):
     if isinstance(result, str):
         return result[:50001]
@@ -278,97 +347,6 @@ def _tool_text(result):
                  and item.get("type") == "text" and isinstance(item.get("text"), str)]
         return "\n".join(parts)[:50001] if parts else None
     return None
-
-
-def _commit_artifact(cwd, before, result, metadata=None):
-    result = _tool_text(result)
-    if result is None or len(result) > 50000:
-        return None
-    after = _head(cwd)
-    if not after or after == before:
-        return None
-    # Git's own commit summary supplies the hash; tool success alone is insufficient.
-    hints = re.findall(r"\[[^\]\r\n]+\s([0-9a-f]{7,40})\](?=\s|$)", result, re.M)
-    if not any(after.startswith(hint) for hint in hints):
-        return None
-    if before and _git(cwd, ["merge-base", "--is-ancestor", before, after]) is None:
-        return None
-    details = _git(cwd, ["show", "-s", "--format=%P%n%cI%n%s", after])
-    lines = details.rstrip("\r\n").splitlines() if details else []
-    if len(lines) < 3:
-        return None
-    parents, committed, *subject = lines
-    if not before and parents:
-        return None
-    try:
-        date = datetime.fromisoformat(committed.replace("Z", "+00:00")).astimezone(_UTC)
-    except ValueError:
-        return None
-    patch = _git(cwd, ["-c", "diff.external=", "show", "--format=", "--no-ext-diff",
-                       "--no-textconv", "--no-renames", "--no-color", after, "--"], MAX_PATCH_BYTES)
-    if not patch:
-        return None
-    patch = _redact_patch(patch)
-    if not patch or len(patch.encode("utf-8")) > MAX_PATCH_BYTES:
-        return None
-    current = _artifact_metadata(cwd)
-    metadata = metadata or {"repository_url": None, "ref": None}
-    return {"commit_sha": after, "parent_commit_sha": parents.split(" ")[0] or None,
-            "committed_at": date.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "subject": re.sub(r"[\x00-\x1f\x7f]", " ", _redact_patch(" ".join(subject)))[:500],
-            "repository_url": metadata["repository_url"] if metadata["repository_url"] == current["repository_url"] else None,
-            "ref": metadata["ref"] if metadata["ref"] == current["ref"] else None,
-            "provenance": "hermes", "patch": patch}
-
-
-def _post_artifact(connection, session_id, artifact):
-    body = json.dumps({"version": 1, "commits": [artifact]}, ensure_ascii=False).encode("utf-8")
-    if len(body) > 5 * 1024 * 1024:
-        return False
-    request = urllib.request.Request(
-        f"{connection['url']}/sessions/{urllib.parse.quote(session_id, safe='')}/git-artifacts",
-        data=body, method="POST",
-        headers={"authorization": f"Bearer {connection['token']}", "content-type": "application/json",
-                 "user-agent": USER_AGENT, "x-mimir-harness": "hermes", "x-mimir-session": session_id},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            receipt = json.load(response)
-        return any(item.get("commit_sha") == artifact["commit_sha"] and item.get("capture_status") == "saved"
-                   for item in receipt.get("artifacts", []))
-    except Exception:
-        return False
-
-
-class _CommitDelivery:
-    def __init__(self, connection):
-        self.connection = connection
-        self.lock = threading.Lock()
-        self.pending = set()
-        self.saved = set()
-
-    def send(self, session_id, artifact):
-        key = (session_id, artifact["commit_sha"])
-        with self.lock:
-            if key in self.pending or key in self.saved:
-                return
-            self.pending.add(key)
-        threading.Thread(target=self._attempt, args=(key, session_id, artifact), daemon=True).start()
-
-    def _attempt(self, key, session_id, artifact):
-        saved = False
-        try:
-            for attempt in range(4):
-                if _post_artifact(self.connection, session_id, artifact):
-                    saved = True
-                    break
-                if attempt < 3:
-                    threading.Event().wait(0.25 * (2 ** attempt))
-        finally:
-            with self.lock:
-                self.pending.discard(key)
-                if saved:
-                    self.saved.add(key)
 
 
 def build_simple_event(kind, session_id, repo, reason=None):
@@ -830,11 +808,7 @@ def register(ctx):
     connection = load_connection()
     if not connection:
         return
-    home = None
-    try:
-        home = os.path.expanduser("~")
-    except Exception:
-        pass
+    home = _home()
     load = load_harness_load(os.environ, _read_file, home)
     if load:
         threading.Thread(target=report_harness_load, args=(connection, load), daemon=True).start()
@@ -843,17 +817,18 @@ def register(ctx):
     except Exception:
         repo = None
     reporter = _Reporter(connection, repo)
-    directory = (os.environ.get("MIMIR_HOME") or
-                 (os.path.join(home, ".mimir") if home else None))
+    directory = mimir_home(os.environ, home)
     reporter._queue = _ExchangeQueue(
         connection, repo, os.path.join(directory, "hermes-exchanges")
         if directory else None,
     ) if directory else None
     if reporter._queue:
         reporter._queue.replay()
-    pending_commits = {}
-    commits_lock = threading.Lock()
-    commit_delivery = _CommitDelivery(connection)
+
+    def git_hook(session_id, cwd, **fields):
+        run_git_hook({"session_id": session_id, "cwd": cwd, "harness": "hermes",
+                      **({"repo": repo} if repo else {}), **fields})
+
     def heartbeat_loop():
         while True:
             threading.Event().wait(HEARTBEAT_SECONDS)
@@ -873,34 +848,14 @@ def register(ctx):
 
     def on_tool(session_id=None, turn_id=None, api_request_id=None, **kwargs):
         reporter.tool_call(session_id, turn_id, api_request_id, kwargs)
-        tool_id = kwargs.get("tool_call_id")
-        if not session_id or not tool_id:
+        if (not session_id or kwargs.get("tool_name") not in SHELL_TOOLS
+                or kwargs.get("status") not in ("ok", "succeeded", "success") or kwargs.get("is_error") is True):
             return
-        with commits_lock:
-            prior = pending_commits.pop((session_id, tool_id), None)
-        if (not prior or kwargs.get("status") not in ("ok", "succeeded", "success")
-                or kwargs.get("is_error") is True or kwargs.get("exit_code") not in (None, 0)):
-            return
-        result = kwargs.get("result")
-        artifact = _commit_artifact(prior[0], prior[1], result, prior[2])
-        if artifact:
-            commit_delivery.send(session_id, artifact)
-
-    def before_tool(session_id=None, tool_call_id=None, tool_name=None, args=None, **_kwargs):
-        if not isinstance(session_id, str) or not session_id or not isinstance(tool_call_id, str) or not tool_call_id:
-            return
-        try:
-            cwd = _commit_cwd(tool_name, args)
-            before = _head(cwd) if cwd else None
-            metadata = _artifact_metadata(cwd) if cwd else None
-        except (OSError, ValueError):
-            return
-        # An unborn branch has no HEAD but can still produce an initial commit.
-        if cwd and (before or (_git(cwd, ["rev-parse", "--is-inside-work-tree"]) or "").strip() == "true"):
-            with commits_lock:
-                if len(pending_commits) >= MAX_PENDING_REQUESTS:
-                    pending_commits.pop(next(iter(pending_commits)))
-                pending_commits[(session_id, tool_call_id)] = (cwd, before, metadata)
+        confirmations = commit_confirmations(kwargs.get("result"))
+        if confirmations:
+            args = kwargs.get("args") if isinstance(kwargs.get("args"), dict) else {}
+            cwd = args.get("workdir") or args.get("cwd")
+            git_hook(session_id, cwd if isinstance(cwd, str) and cwd else os.getcwd(), tool_output=confirmations)
 
     def on_turn(session_id=None, turn_id=None, **_kwargs):
         if session_id:
@@ -911,20 +866,19 @@ def register(ctx):
 
     def on_finalize(session_id=None, reason=None, **_kwargs):
         if session_id:
-            with commits_lock:
-                for key in list(pending_commits):
-                    if key[0] == session_id:
-                        del pending_commits[key]
             reporter.flush(session_id)
             reporter.finish(session_id, reason or "session finalized")
+            git_hook(session_id, os.getcwd(), refresh=True)
 
     ctx.register_hook("pre_api_request", on_transport)
     ctx.register_hook("post_api_request", on_response)
-    ctx.register_hook("pre_tool_call", before_tool)
     ctx.register_hook("post_tool_call", on_tool)
     ctx.register_hook("post_llm_call", on_turn)
     ctx.register_hook("on_session_start", on_start)
     ctx.register_hook("on_session_finalize", on_finalize)
+    for name in MIMIR_TOOLS:
+        ctx.register_tool(name=f"mimir_{name}", toolset="mimir", schema=tool_schema(name),
+                          handler=_tool_handler(connection, name))
 
 
 # Test surface.
@@ -940,4 +894,8 @@ __testing = {
     "load_harness_load": load_harness_load,
     "post_harness_load": post_harness_load,
     "report_harness_load": report_harness_load,
+    "mimir_executable": mimir_executable,
+    "commit_confirmations": commit_confirmations,
+    "tool_schema": tool_schema,
+    "call_mimir_tool": call_mimir_tool,
 }

@@ -141,7 +141,7 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 
 ### Chips
 - **Style:** Small bordered labels for status and filters, with compact 5px corners rather than fully rounded capsules.
-- **State:** Selected filters invert to carbon ink; outcome labels use exactly Landed, Discarded, Abandoned, or Unresolved and retain restrained semantic color plus an icon.
+- **State:** Selected filters invert to carbon ink; git status labels use exactly No commits, Committed, or Pushed with restrained semantic color plus an icon.
 
 ### Cards / Containers
 - **Corner Style:** Slightly eased panels (7px radius).
@@ -156,39 +156,36 @@ The system is flat and divided. Borders, spacing, and tonal changes establish st
 - **Error / Disabled:** Explicit text and icon state; never color alone.
 
 ### Navigation
-- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, Day, Sessions, Commits, Requests, Overview, and Settings follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band. Smaller screens use the shared navigation menu.
+- Primary navigation uses one compact header inside the same maximum width as page content. The wordmark anchors the left, Day, Sessions, and Devices follow it, and utilities sit at the right. One bottom rule separates navigation from content. The active route uses a small square teal signal, never an underline, pill, or second navigation band. Smaller screens use the shared navigation menu.
 
 ### Day Snapshot
 - One local calendar day in the browser's time zone. The headline names the day; one plain text line carries totals. Never a KPI card row.
 - One donut and its legend list are the whole view. A slice is agent time: each session's 15-minute blocks with requests, summed, so a workstream slice equals the total shown when zooming into it. The center states the level total.
-- Slices are colored by app, so the same agent reads the same hue every day: Oh My Pi violet, Pi indigo, Hermes sky, OpenCode pink, Claude Code orange, Codex blue, Cursor purple; other apps hash into fuchsia, lime, or yellow. Slices sharing an app step through the 500, 700, and 300 shades. Other is zinc and Quick an outlined stone slice. Teal stays reserved for the keyboard focus stroke, and the outcome colors (emerald, red, amber) never appear as slices. The model shows as an icon, not a color.
+- Slices are colored by app, so the same agent reads the same hue every day: Oh My Pi violet, Pi indigo, Hermes sky, OpenCode pink, Claude Code orange, Codex blue, Cursor purple; other apps hash into fuchsia, lime, or yellow. Slices sharing an app step through the 500, 700, and 300 shades. Other is zinc and Quick an outlined stone slice. Teal stays reserved for the keyboard focus stroke, and status colors never appear as slices. The model shows as an icon, not a color.
 - At most five workstreams get their own slice; two or more leftovers fold into Other. Slices of at least about 8% carry the app icon, and about 14% adds the model icon.
-- Hover or focus lifts the slice a few pixels, dims the rest, highlights the legend row, and shows one tooltip that glides between slices (150ms ease-out, no movement with reduced motion). The tooltip lists app, model, repository/branch, time and share, sessions, requests, commits, and outcomes.
-- Clicking a slice or row zooms in: a multi-session workstream, Other, or Quick redraws the donut with its members, with a "Whole day" link and a URL that the back button restores. Single sessions open the session page. A zoomed workstream lists its commits below the legend.
-- Legend rows carry In progress, capture problems, and an inline Set outcome control for unresolved finished sessions. There is no separate side column.
+- Hover or focus lifts the slice a few pixels, dims the rest, highlights the legend row, and shows one tooltip that glides between slices (150ms ease-out, no movement with reduced motion). The tooltip lists app, model, repository/branch, time and share, sessions, requests, commits, and git status counts.
+- Clicking a slice or row zooms in: a multi-session workstream, Other, or Quick redraws the donut with its members, with a "Whole day" link and a URL that the back button restores. Single sessions open the session page. A zoomed workstream lists its commits below the legend; a commit opens its patch on the session page.
+- Legend rows carry In progress and capture problems. There is no separate side column.
 
 ### Session Record
-- A session row leads with repository and intent, then work outcome, capture summary, recency, app/model evidence, and token totals. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows outcome color or wording. One click opens the complete session reconstruction. Request rows remain subordinate evidence within that flow.
-- Session detail may show outcome source, reason, and timestamp as audit metadata. Unresolved means no evidenced result has been recorded; it does not mean capture failed.
-- The detail header shows app, machine, and every exact-session model with saved request counts. Model names stay visible, not behind a new dropdown or disclosure. A facts row below it carries start time, duration, requests, tokens, saved exchanges, last save, and the session ID (IBM Plex Mono for the ID only); pending and failed capture counts appear there whenever nonzero. Preserve the short authored outcome reason once below the header; put deterministic reconstruction and source links in Summary evidence, offered only when it records actions, verification, a specific open item, or a non-default result.
-- Conversation is the default: coherent turns pair answers with code, reasoning, tools, and sources. Title/summary requests stay in Requests; compaction appears as a context boundary.
-- The page grows with evidence. The Details/Changes sidebar holds only evidence: the recorded outcome with editing/history, supporting sessions, referenced files, errors, captured commits, and separate outcome evidence. A section renders only with data, never as empty-state copy; a tab appears only when its panel has content, and a session with no sidebar evidence gets no sidebar column. An unresolved outcome with no reason or history collapses to a compact Set outcome control in the header. The sidebar stays in normal page flow, stacking below the reader on small screens. No sticky sidebar or independent viewport-height scroller.
+- A session row leads with title and repository/ref, then app, device, models, git status, capture summary, requests, and recency. Capture uses explicit Empty, Pending, Saved, Failed, or Partial text with counts; it never borrows git status color or wording. One click opens the session page.
+- The session header shows the editable title, repository/ref, app, device, every exact-session model with saved request counts, git status, and capture facts. Model names stay visible, not behind a dropdown. IBM Plex Mono is for the session ID only.
+- The deterministic summary (goal, actions, result, verification, open items) sits below the header when ready, then the conversation: server-built turns pairing answers with reasoning and tools, paged oldest or newest first. Compaction appears as a context boundary.
+- The sidebar holds only evidence: files, errors, captured commits, and supporting sessions. A section renders only with data, never as empty-state copy. A commit opens its exact patch in the diff viewer. The sidebar stays in normal page flow, stacking below the reader on small screens.
 
-### Captured Commits
-- Begin with repository/ref selection and a compact commit table. Open the exact session-owned patch with changed-file navigation, filename search, and unified/split views; expose alternate capture selection only when needed.
-- Keep full hashes, patch digests, provenance, and raw binary patches in secondary Details. Link to the recorded repository host for complete sources; do not present the captured patch reader as a full repository source browser or evidence of a push or merge.
+### Devices
+- One table: name (renamable), platform and architecture, tailnet name, IP and online state with when it was observed, last seen, sessions, and apps. Revoke requires an explicit confirmation step.
 
 ### Capture Receipt
-- The harness-facing receipt is one quiet line attached to the completed response, not agent prose: `Saved to Mimir · 14 exchanges`. Add `View session` only when dashboard Access is configured and the destination is usable.
+- The receipt's `line` is one quiet sentence a harness can print: `Saved to Mimir · 14 exchanges · 2 commits`.
 - Pending, partial, and failed states remain visible with direct language. Never replace them with optimistic success copy.
-- Keep raw session IDs, exact timestamps, failure codes, and storage metadata behind the session link. The linked session view uses inline disclosure for those details rather than a modal.
 
 ## Do's and Don'ts
 
 ### Do:
 - **Do** make Day the default arrival route and keep Sessions one click away for every listed session.
 - **Do** use 1px rules, exact alignment, and compact spacing to create hierarchy.
-- **Do** expose requests, files, errors, and model/provider details one click from a session.
+- **Do** expose files, errors, commits, and model details one click from a session.
 - **Do** preserve equal information hierarchy in light and dark themes.
 - **Do** keep the wordmark as the sole pixel-art treatment.
 

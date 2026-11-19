@@ -13,8 +13,6 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
 	"github.com/cloudboy-jh/mimir/internal/sessionimport"
-	"github.com/cloudboy-jh/mimir/internal/ui/lineoutput"
-	"github.com/cloudboy-jh/mimir/internal/ui/selector"
 )
 
 const importSelectionLimit = 20
@@ -25,8 +23,6 @@ type sessionImportService interface {
 }
 
 var importNow = time.Now
-var importSelectorAvailable = selector.Available
-var runImportSelector = selector.Run
 var importServiceFactory = func(maxSessions int, connected bool) (sessionImportService, error) {
 	opencode := sessionimport.NewOpenCodeAdapter()
 	if maxSessions > 0 {
@@ -46,14 +42,14 @@ var importServiceFactory = func(maxSessions int, connected bool) (sessionImportS
 }
 
 type importCandidate struct {
-	Harness           string `json:"harness"`
-	SourceID          string `json:"source_id"`
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title,omitempty"`
-	StartedAt         string `json:"started_at,omitempty"`
-	Exchanges         int    `json:"exchanges"`
-	SkippedOpenRouter int    `json:"skipped_openrouter"`
-	SkippedInvalid    int    `json:"skipped_invalid"`
+	Harness            string `json:"harness"`
+	SourceID           string `json:"source_id"`
+	SessionID          string `json:"session_id"`
+	Title              string `json:"title,omitempty"`
+	StartedAt          string `json:"started_at,omitempty"`
+	Exchanges          int    `json:"exchanges"`
+	SkippedOpenRouter  int    `json:"skipped_openrouter"`
+	SkippedInvalid     int    `json:"skipped_invalid"`
 	ParentSessionID    string `json:"parent_session_id,omitempty"`
 	ParentLinkStatus   string `json:"parent_link_status,omitempty"`
 	ParentLinkReason   string `json:"parent_link_reason,omitempty"`
@@ -100,7 +96,7 @@ func cmdImport(ctx context.Context, args []string, ioctx IO) error {
 	}
 	sessions := discovery.Sessions
 	if interactive && !yes {
-		sessions, err = selectImportSessions(ioctx, sessions, len(ids) > 0)
+		sessions, err = selectImportSessions(ioctx, sessions)
 		if err != nil {
 			return err
 		}
@@ -216,7 +212,7 @@ func cmdBackfill(ctx context.Context, args []string, ioctx IO) error {
 	}
 	sessions := discovery.Sessions
 	if !all {
-		sessions, err = selectImportSessions(ioctx, sessions, false)
+		sessions, err = selectImportSessions(ioctx, sessions)
 		if err != nil {
 			return err
 		}
@@ -331,64 +327,94 @@ func validImportHarness(value string) bool { return value == "opencode" || value
 func importInteractive(ioctx IO) bool {
 	in, inputOK := ioctx.In.(*os.File)
 	out, outputOK := ioctx.Out.(*os.File)
-	return inputOK && outputOK && isTerminal(in) && isTerminal(out) && importSelectorAvailable(in, out)
+	return inputOK && outputOK && isTerminal(in) && isTerminal(out)
 }
 
+var importHarnesses = []struct{ id, label string }{
+	{"opencode", "OpenCode"},
+	{"pi", "Pi"},
+	{"oh-my-pi", "Oh My Pi (parent links only)"},
+}
+
+// selectImportHarness prints a numbered list and reads one number; an empty
+// answer cancels.
 func selectImportHarness(ioctx IO) (string, error) {
-	in := ioctx.In.(*os.File)
-	out := ioctx.Out.(*os.File)
-	result, err := runImportSelector(in, out, "Import from harness", []selector.Item{{Label: "OpenCode"}, {Label: "Pi"}, {Label: "Oh My Pi (parent links only)"}})
-	if err != nil || !result.Accepted {
+	fmt.Fprintln(ioctx.Out, "Import from harness:")
+	for i, harness := range importHarnesses {
+		fmt.Fprintf(ioctx.Out, "  %d. %s\n", i+1, harness.label)
+	}
+	answer, err := promptValue(ioctx, "Harness number (Enter to cancel): ")
+	if err != nil || answer == "" {
 		return "", err
 	}
-	if len(result.Selected) != 3 {
-		return "", errors.New("harness selector returned an invalid selection")
+	choice, err := strconv.Atoi(answer)
+	if err != nil || choice < 1 || choice > len(importHarnesses) {
+		return "", fmt.Errorf("invalid harness selection %q", answer)
 	}
-	selected := ""
-	for i, chosen := range result.Selected {
-		if !chosen {
-			continue
-		}
-		if selected != "" {
-			return "", errors.New("select exactly one harness")
-		}
-		selected = []string{"opencode", "pi", "oh-my-pi"}[i]
-	}
-	if selected == "" {
-		return "", errors.New("select one harness")
-	}
-	return selected, nil
+	return importHarnesses[choice-1].id, nil
 }
 
-func selectImportSessions(ioctx IO, sessions []sessionimport.Session, selected bool) ([]sessionimport.Session, error) {
+// selectImportSessions prints a numbered list of the newest candidates and
+// reads comma-separated numbers or "all"; an empty answer selects none.
+func selectImportSessions(ioctx IO, sessions []sessionimport.Session) ([]sessionimport.Session, error) {
 	if len(sessions) == 0 {
 		return nil, nil
 	}
 	if len(sessions) > importSelectionLimit {
 		sessions = sessions[len(sessions)-importSelectionLimit:]
 	}
-	items := make([]selector.Item, len(sessions))
+	fmt.Fprintln(ioctx.Out, "Sessions to import:")
 	for i, session := range sessions {
 		label := fmt.Sprintf("%-8s  %-16s  %3d  %s", session.Harness, session.StartedAt.Local().Format("2006-01-02 15:04"), len(session.Exchanges), session.Title)
 		if session.Harness == "oh-my-pi" {
 			label = fmt.Sprintf("%s  %s -> %s [%s] %s", session.Harness, session.SourceID, session.ParentSessionID, session.ParentLinkStatus, session.ParentLinkReason)
 		}
-		items[i] = selector.Item{Label: label, Selected: selected}
+		fmt.Fprintf(ioctx.Out, "  %2d. %s\n", i+1, label)
 	}
-	result, err := runImportSelector(ioctx.In.(*os.File), ioctx.Out.(*os.File), "Sessions to import", items)
-	if err != nil || !result.Accepted {
+	answer, err := promptValue(ioctx, "Sessions (numbers separated by commas, all, or Enter for none): ")
+	if err != nil {
 		return nil, err
 	}
-	if len(result.Selected) != len(sessions) {
-		return nil, errors.New("session selector returned an invalid selection")
+	indexes, err := parseImportSelection(answer, len(sessions))
+	if err != nil {
+		return nil, err
 	}
-	chosen := make([]sessionimport.Session, 0, len(sessions))
-	for i, include := range result.Selected {
-		if include {
-			chosen = append(chosen, sessions[i])
-		}
+	chosen := make([]sessionimport.Session, 0, len(indexes))
+	for _, index := range indexes {
+		chosen = append(chosen, sessions[index])
 	}
 	return chosen, nil
+}
+
+// parseImportSelection turns "1, 3" or "all" into distinct zero-based indexes
+// in list order.
+func parseImportSelection(answer string, count int) ([]int, error) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return nil, nil
+	}
+	selected := make([]bool, count)
+	if strings.EqualFold(answer, "all") {
+		for i := range selected {
+			selected[i] = true
+		}
+	} else {
+		for _, field := range strings.Split(answer, ",") {
+			field = strings.TrimSpace(field)
+			number, err := strconv.Atoi(field)
+			if err != nil || number < 1 || number > count {
+				return nil, fmt.Errorf("invalid session selection %q", field)
+			}
+			selected[number-1] = true
+		}
+	}
+	indexes := make([]int, 0, count)
+	for i, include := range selected {
+		if include {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes, nil
 }
 
 func candidateViews(sessions []sessionimport.Session) []importCandidate {
@@ -438,37 +464,26 @@ func printImportReport(out io.Writer, report sessionimport.Report, jsonOutput bo
 	if jsonOutput {
 		return json.NewEncoder(out).Encode(report)
 	}
-	render := lineoutput.New(out)
-	summary := fmt.Sprintf("%s complete: %d imported, %d partial, %d already present, %d skipped, %d failed", operation, report.SessionsImported, report.SessionsPartial, report.ExchangesDuplicate, report.SessionsSkipped, report.SessionsFailed+report.SourcesFailed)
-	var err error
+	status := "✓"
 	if report.SessionsPartial > 0 || report.SessionsFailed > 0 || report.SourcesFailed > 0 {
-		err = render.Warning(summary)
-	} else {
-		err = render.Success(summary)
+		status = "!"
 	}
-	if err != nil {
-		return err
-	}
+	lines := []string{fmt.Sprintf("%s %s complete: %d imported, %d partial, %d already present, %d skipped, %d failed", status, operation, report.SessionsImported, report.SessionsPartial, report.ExchangesDuplicate, report.SessionsSkipped, report.SessionsFailed+report.SourcesFailed)}
 	if report.GitArtifactsFound > 0 {
-		if err := render.Detail(fmt.Sprintf("Git artifacts: %d saved, %d already present", report.GitArtifactsSaved, report.GitArtifactsDuplicate)); err != nil {
-			return err
-		}
+		lines = append(lines, fmt.Sprintf("  Git artifacts: %d saved, %d already present", report.GitArtifactsSaved, report.GitArtifactsDuplicate))
 	}
 	for _, session := range report.Sessions {
 		if session.ParentLinkStatus != "" {
-			if err := render.Detail(fmt.Sprintf("%s %s -> %s [%s]: %s", session.Source, session.SourceID, session.ParentSessionID, session.ParentLinkStatus, session.ParentLinkReason)); err != nil {
-				return err
-			}
+			lines = append(lines, fmt.Sprintf("  %s %s -> %s [%s]: %s", session.Source, session.SourceID, session.ParentSessionID, session.ParentLinkStatus, session.ParentLinkReason))
 		}
 		detail := session.Error
 		if detail == "" {
 			detail = session.GitArtifactError
 		}
 		if detail != "" {
-			if err := render.Detail(fmt.Sprintf("%s %s: %s", session.Source, session.SourceID, detail)); err != nil {
-				return err
-			}
+			lines = append(lines, fmt.Sprintf("  %s %s: %s", session.Source, session.SourceID, detail))
 		}
 	}
-	return nil
+	_, err := fmt.Fprintln(out, strings.Join(lines, "\n"))
+	return err
 }

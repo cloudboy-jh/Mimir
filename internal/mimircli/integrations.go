@@ -45,7 +45,7 @@ func integrationSummary(report harness.IntegrationReport) string {
 	if report.Cursor.RestartRequired {
 		lines = append(lines, "Cursor: restart required")
 	}
-	if report.Hermes.State == "installed" && report.Hermes.Scope == "all-providers" {
+	if report.Hermes.Provider == "openrouter" && report.Hermes.Scope == "all-providers" {
 		lines = append(lines, "Hermes scope: OpenRouter proxy plus direct providers")
 	}
 	return strings.Join(lines, "\n")

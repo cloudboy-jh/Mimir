@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/harness/lifecycle"
 	"github.com/cloudboy-jh/mimir/internal/install"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
+	"github.com/cloudboy-jh/mimir/internal/tailnet"
 )
 
 type Requester interface {
@@ -57,16 +55,16 @@ func (r Report) Structured() StructuredReport {
 		state := State{Status: check.Status, Detail: check.Detail, Repair: check.Repair}
 		section := structured.Diagnostics
 		switch {
-		case strings.HasPrefix(name, "managed-artifact "):
-			name = strings.TrimPrefix(name, "managed-artifact ")
+		case strings.HasPrefix(name, "managed-file "):
+			name = strings.TrimPrefix(name, "managed-file ")
 			structured.Installed[name] = append(structured.Installed[name], state)
 			continue
-		case name == "managed-artifacts":
+		case name == "managed-files":
 			structured.Installed[name] = append(structured.Installed[name], state)
 			continue
 		case name == "worker" || strings.HasPrefix(name, "worker."):
 			section = structured.Deployed
-		case name == "connection" || strings.HasPrefix(name, "connection."):
+		case name == "connection" || strings.HasPrefix(name, "connection.") || name == "tailnet":
 			section = structured.Connection
 		case strings.HasSuffix(name, ".plugin-load") || name == "harness-loads":
 			section = structured.Active
@@ -79,15 +77,16 @@ func (r Report) Structured() StructuredReport {
 type Service struct {
 	API            Requester
 	CheckArtifacts func() (install.ArtifactReport, error)
-	LoadReceipt    func() (install.Receipt, error)
+	LoadManifest   func() (install.Manifest, error)
 	LoadPointer    func() (mimirapi.Pointer, error)
+	ReportTailnet  func(context.Context, tailnet.Requester) (bool, error)
 	Lifecycle      lifecycle.Service
 }
 
 func New(api Requester) Service {
 	return Service{
-		API: api, CheckArtifacts: install.CheckArtifacts, LoadReceipt: install.LoadReceipt, LoadPointer: mimirapi.LoadPointer,
-		Lifecycle: lifecycle.New(),
+		API: api, CheckArtifacts: install.CheckArtifacts, LoadManifest: install.LoadManifest,
+		LoadPointer: mimirapi.LoadPointer, ReportTailnet: tailnet.Report, Lifecycle: lifecycle.New(),
 	}
 }
 
@@ -99,220 +98,150 @@ func (s Service) Run(ctx context.Context) Report {
 			report.OK = false
 		}
 	}
-	artifacts, artifactErr := s.CheckArtifacts()
-	if artifactErr != nil {
-		add("managed-artifacts", "failed", artifactErr.Error(), "mimir install or mimir update")
+	artifacts, err := s.CheckArtifacts()
+	if err != nil {
+		add("managed-files", "failed", err.Error(), "mimir install")
 	} else {
-		for _, artifact := range artifacts.Artifacts {
-			status, repair := "ok", ""
-			if artifact.Status != install.ArtifactCurrent {
-				status = "failed"
-				switch artifact.Status {
-				case install.ArtifactOutdated, install.ArtifactMissing:
-					repair = "mimir install"
-				case install.ArtifactConflict, install.ArtifactModified:
-					repair = "review the preserved Mimir file; remove or restore it, then run mimir install"
-				default:
-					repair = "mimir install or mimir update"
-				}
-			}
-			add("managed-artifact "+artifact.Source, status, string(artifact.Status)+" · "+artifact.Path, repair)
-		}
-		s.addOMPParentLinkCheck(artifacts, add)
+		addArtifactChecks(artifacts, add)
+	}
+	manifest, manifestErr := s.LoadManifest()
+	if manifestErr != nil {
+		add("managed-files", "failed", manifestErr.Error(), "mimir install")
 	}
 	pointer, err := s.LoadPointer()
 	if err != nil {
 		add("connection", "failed", err.Error(), "mimir login")
 		return report
 	}
-	workerReady := false
-	data, err := s.API.Request(ctx, "GET", "/whoami", nil)
+	data, err := s.API.Request(ctx, http.MethodGet, "/whoami", nil)
 	if err != nil {
 		add("worker", "failed", err.Error(), "mimir login")
 	} else if err := ValidateWorkerIdentity(data); err != nil {
 		add("worker", "failed", err.Error(), "mimir deploy")
 	} else {
 		add("worker", "ok", pointer.URL, "")
-		workerReady = true
 		var identity workerIdentity
 		_ = json.Unmarshal(data, &identity)
 		expected, identityErr := install.EmbeddedWorkerIdentity()
-		if identityErr != nil {
+		switch {
+		case identityErr != nil:
 			add("worker.bundle", "failed", identityErr.Error(), "mimir deploy")
-		} else if identity.BundleSHA256 == "" {
+		case identity.BundleSHA256 == "":
 			add("worker.bundle", "skipped", "deployed Worker bundle identity is unknown", "mimir deploy")
-		} else if identity.BundleSHA256 != expected.SHA256 {
+		case identity.BundleSHA256 != expected.SHA256:
 			add("worker.bundle", "failed", fmt.Sprintf("installed %s (%s), deployed %s (%s)", expected.Version, expected.SHA256, identity.BundleVersion, identity.BundleSHA256), "mimir deploy")
-		} else {
+		default:
 			add("worker.bundle", "ok", fmt.Sprintf("installed and deployed %s · sha256 %s", expected.Version, expected.SHA256), "")
 		}
+		if manifestErr == nil {
+			s.addHarnessLoadChecks(ctx, artifacts, manifest, add)
+		}
 	}
-	if workerReady {
-		s.addHarnessLoadChecks(ctx, artifacts, add)
+	switch reported, err := s.ReportTailnet(ctx, s.API); {
+	case err != nil:
+		add("tailnet", "failed", err.Error(), "check tailscale status, then mimir doctor")
+	case reported:
+		add("tailnet", "ok", "reported", "")
+	default:
+		add("tailnet", "skipped", "tailscale not available", "")
 	}
-	manifest, err := s.Lifecycle.Manifest(pointer.URL)
+	if manifestErr != nil || !contains(manifest.Harnesses, "hermes") {
+		return report
+	}
+	connection, err := s.Lifecycle.Manifest(pointer.URL)
 	if err != nil {
 		add("connection.manifest", "failed", err.Error(), "mimir login")
 		return report
 	}
-	s.addBinaryJunkCheck(add)
-	receipt, receiptErr := s.LoadReceipt()
-	if receiptErr != nil {
-		add("harness-selection", "failed", receiptErr.Error(), "mimir install")
-	} else if selectedHarness(receipt.Harnesses, "hermes") {
-		for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, manifest, receipt.InstallationID) {
-			add(check.Name, check.Status, check.Detail, check.Repair)
-		}
+	for _, check := range s.Lifecycle.Hermes.Doctor(ctx, pointer, connection, manifest.InstallationID) {
+		add(check.Name, check.Status, check.Detail, check.Repair)
 	}
 	return report
 }
 
-func selectedHarness(selected []string, id string) bool {
-	if selected == nil {
-		return true
-	}
-	for _, candidate := range selected {
-		if candidate == id {
-			return true
-		}
-	}
-	return false
-}
-
-func (s Service) addOMPParentLinkCheck(artifacts install.ArtifactReport, add func(string, string, string, string)) {
+// addArtifactChecks reports each managed file. An MCP configuration Mimir
+// could not write is a manual step, not a failure.
+func addArtifactChecks(artifacts install.ArtifactReport, add func(string, string, string, string)) {
 	for _, artifact := range artifacts.Artifacts {
-		if artifact.Source != "plugins/oh-my-pi/mimir.ts" {
-			continue
-		}
-		if artifactUsable(artifact.Status) {
-			add("oh-my-pi.parent-links", "ok", "exact host parent metadata with bounded artifact-tree fallback", "")
-		} else {
-			add("oh-my-pi.parent-links", "failed", "installed integration cannot guarantee live parent linkage", "mimir install or mimir update")
-		}
-		return
-	}
-}
-
-// addBinaryJunkCheck reports stale files sitting next to the receipt-owned
-// executable: Mimir swap leftovers (.old, .rollback, orphaned staged temps)
-// and foreign junk (.bak, linker ~ files). Mimir-owned leftovers are removed
-// automatically once no Mimir process holds them; the rest is the user's call.
-func (s Service) addBinaryJunkCheck(add func(string, string, string, string)) {
-	receipt, err := s.LoadReceipt()
-	if err != nil || receipt.CLI.Path == "" {
-		return
-	}
-	entries, err := os.ReadDir(filepath.Dir(receipt.CLI.Path))
-	if err != nil {
-		return
-	}
-	base := filepath.Base(receipt.CLI.Path)
-	stale := []string{}
-	for _, entry := range entries {
-		name := entry.Name()
+		detail := string(artifact.Status) + " · " + artifact.Path
 		switch {
-		case name == base+".old", name == base+".rollback", name == base+".new", name == base+".bak", name == base+"~":
-			stale = append(stale, name)
-		case strings.HasPrefix(name, ".mimir-update-"), strings.HasPrefix(name, ".mimir-install-"):
-			stale = append(stale, name)
+		case install.ArtifactUsable(artifact.Status):
+			add("managed-file "+artifact.Source, "ok", detail, "")
+		case artifact.Snippet != "":
+			add(artifact.Harness+".mcp", "warning", detail, "add the mimir server to "+artifact.Path+": "+artifact.Snippet)
+		case artifact.Status == install.ArtifactMissing:
+			add("managed-file "+artifact.Source, "failed", detail, "mimir install")
+		default:
+			add("managed-file "+artifact.Source, "failed", detail, "review the preserved file; remove or restore it, then run mimir install")
 		}
 	}
-	if len(stale) == 0 {
-		return
-	}
-	sort.Strings(stale)
-	add("binary-junk", "warning",
-		"stale files next to "+receipt.CLI.Path+": "+strings.Join(stale, ", "),
-		"Mimir-owned swap leftovers are removed by a later CLI run once no Mimir process holds them; delete foreign files manually")
 }
 
 type harnessLoad struct {
 	Harness        string `json:"harness"`
 	ArtifactSHA256 string `json:"artifact_sha256"`
-	BundleVersion  string `json:"bundle_version"`
-	CLIVersion     string `json:"cli_version"`
-	CLICommit      string `json:"cli_commit"`
 	InstallationID string `json:"installation_id"`
-	ClientLoadedAt string `json:"client_loaded_at"`
 	ReportedAt     string `json:"reported_at"`
 }
 
-type harnessLoadsResponse struct {
-	Loads []harnessLoad `json:"loads"`
+// loadSources maps each harness to the file whose hash its loads report.
+var loadSources = []struct{ harness, source, activate string }{
+	{"pi", "plugins/pi/mimir.ts", "restart Pi"},
+	{"oh-my-pi", "plugins/oh-my-pi/mimir.ts", "restart Oh My Pi"},
+	{"opencode", "plugins/opencode/mimir.ts", "restart OpenCode"},
+	{"hermes", "plugins/hermes/__init__.py", "restart Hermes"},
+	{"claude-code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},
+	{"codex", "plugins/codex/hooks/hooks.json", "review and trust the Mimir plugin hooks in /hooks, then restart Codex"},
+	{"cursor", "plugins/cursor/hooks.json", "open or continue a Cursor agent session; Cursor reloads hooks.json automatically"},
 }
 
-func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.ArtifactReport, add func(string, string, string, string)) {
-	registry := []struct{ harness, label, source, activate string }{
-		{"pi", "Pi", "plugins/pi/mimir.ts", "restart Pi"},
-		{"oh-my-pi", "Oh My Pi", "plugins/oh-my-pi/mimir.ts", "restart Oh My Pi"},
-		{"opencode", "OpenCode", "plugins/opencode/mimir.ts", "restart OpenCode"},
-		{"hermes", "Hermes", "plugins/hermes/__init__.py", "restart Hermes"},
-		{"claude-code", "Claude Code", "plugins/claude-code/hooks/hooks.json", "run /reload-plugins in Claude Code or restart Claude Code"},
-		{"codex", "Codex", "plugins/codex/hooks/hooks.json", "review and trust the Mimir plugin hooks in /hooks, then restart Codex"},
-		{"cursor", "Cursor", "plugins/cursor/hooks.json", "open or continue a Cursor agent session; Cursor reloads hooks.json automatically"},
-	}
-	plugins := make(map[string]install.ArtifactResult)
+// addHarnessLoadChecks compares the hash each harness last reported loading
+// with the hash managed.json recorded for that file.
+func (s Service) addHarnessLoadChecks(ctx context.Context, artifacts install.ArtifactReport, manifest install.Manifest, add func(string, string, string, string)) {
+	recorded := map[string]string{}
 	for _, artifact := range artifacts.Artifacts {
-		if !artifactUsable(artifact.Status) || artifact.BundleHash == "" {
-			continue
-		}
-		for _, entry := range registry {
-			if artifact.Source == entry.source {
-				plugins[entry.harness] = artifact
-				break
-			}
+		if hash := manifest.Files[artifact.Path]; hash != "" && install.ArtifactUsable(artifact.Status) {
+			recorded[artifact.Source] = hash
 		}
 	}
-	if len(plugins) == 0 {
-		return
+	var expected []int
+	for i, entry := range loadSources {
+		if recorded[entry.source] != "" {
+			expected = append(expected, i)
+		}
 	}
-	receipt, err := s.LoadReceipt()
-	if err != nil {
-		add("harness-loads", "failed", err.Error(), "mimir install or mimir update")
+	if len(expected) == 0 {
 		return
 	}
 	data, err := s.API.Request(ctx, http.MethodGet, "/integrations/harness-loads", nil)
 	if err != nil {
 		var apiErr *mimirapi.Error
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
-			for _, entry := range registry {
-				if _, ok := plugins[entry.harness]; ok {
-					add(entry.harness+".plugin-load", "skipped", "installed plugin is current; active version unknown because the deployed Worker does not report harness loads", "")
-				}
-			}
+			add("harness-loads", "skipped", "the deployed Worker does not report harness loads", "mimir deploy")
 			return
 		}
 		add("harness-loads", "failed", err.Error(), "mimir deploy")
 		return
 	}
-	var response harnessLoadsResponse
+	var response struct {
+		Loads []harnessLoad `json:"loads"`
+	}
 	if err := json.Unmarshal(data, &response); err != nil {
 		add("harness-loads", "failed", "invalid /integrations/harness-loads response: "+err.Error(), "mimir deploy")
 		return
 	}
-	for _, entry := range registry {
-		harnessName := entry.harness
-		artifact, ok := plugins[harnessName]
-		if !ok {
-			continue
+	for _, i := range expected {
+		entry := loadSources[i]
+		hash := recorded[entry.source]
+		load, found := latestHarnessLoad(response.Loads, entry.harness, manifest.InstallationID)
+		switch {
+		case !found || load.ArtifactSHA256 == "":
+			add(entry.harness+".plugin-load", "failed", "installed, but no active load was reported", entry.activate)
+		case load.ArtifactSHA256 != hash:
+			add(entry.harness+".plugin-load", "failed", fmt.Sprintf("installed %s, but active integration is %s", hash, load.ArtifactSHA256), entry.activate)
+		default:
+			add(entry.harness+".plugin-load", "ok", "installed, active, and current · sha256 "+hash, "")
 		}
-		load, found := latestHarnessLoad(response.Loads, harnessName, receipt.InstallationID)
-		if !found || load.ArtifactSHA256 == "" {
-			add(harnessName+".plugin-load", "failed", "installed integration is staged, but no active load was reported", entry.activate)
-		} else if load.ArtifactSHA256 != artifact.BundleHash {
-			add(harnessName+".plugin-load", "failed", fmt.Sprintf("installed integration is current (%s), but active integration is %s", artifact.BundleHash, load.ArtifactSHA256), entry.activate)
-		} else {
-			add(harnessName+".plugin-load", "ok", "plugin is installed, active, and current · sha256 "+artifact.BundleHash, "")
-		}
-	}
-}
-
-func artifactUsable(status install.ArtifactStatus) bool {
-	switch status {
-	case install.ArtifactCurrent, install.ArtifactInstalled, install.ArtifactAdopted, install.ArtifactMigrated, install.ArtifactUpdated:
-		return true
-	default:
-		return false
 	}
 }
 
@@ -346,14 +275,19 @@ func ValidateWorkerIdentity(data []byte) error {
 	if identity.Service != "mimir" || identity.APIVersion < 1 {
 		return fmt.Errorf("deployed Worker predates the versioned machine API")
 	}
-	capabilities := make(map[string]bool, len(identity.Capabilities))
-	for _, capability := range identity.Capabilities {
-		capabilities[capability] = true
-	}
-	for _, required := range []string{"hermes_authorization", "session_events", "session_lifecycle"} {
-		if !capabilities[required] {
+	for _, required := range []string{"query_api", "hermes_authorization", "session_events", "session_lifecycle"} {
+		if !contains(identity.Capabilities, required) {
 			return fmt.Errorf("deployed Worker lacks required capability %s", required)
 		}
 	}
 	return nil
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

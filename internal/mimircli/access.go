@@ -1,16 +1,12 @@
 package mimircli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
 )
 
 const dashboardAccessAppName = deployment.DashboardAccessAppName
@@ -24,7 +20,7 @@ Create one at https://dash.cloudflare.com/profile/api-tokens (account-scoped, no
 func accessChecklist(workerURL string) string {
 	host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimRight(workerURL, "/"), "https://"), "http://")
 	domains := deployment.DashboardAccessDomains(host)
-	return fmt.Sprintf(`Dashboard Access is not configured (no Cloudflare API token given).
+	return fmt.Sprintf(`! Dashboard Access is not configured (no Cloudflare API token given).
 Recommended: mimir access --token <cloudflare-api-token>  (does all of this)
 
 Manual steps in Zero Trust → Access → Applications:
@@ -34,18 +30,8 @@ Manual steps in Zero Trust → Access → Applications:
        (all are required; Access paths are exact matches)
   2. Add an Allow policy for your email
 
-Machine API routes (/v1, /sessions, ...) stay outside Access; the Worker
-authenticates them with bearer tokens.`, dashboardAccessAppName, strings.Join(domains, ", "))
-}
-
-func renderAccessChecklist(out io.Writer, workerURL string) string {
-	render := cliui.New(out)
-	return render.Callout(bentotui.ToneWarn, "Dashboard Access needs configuration", accessChecklist(workerURL))
-}
-
-func renderAccessTokenHint(out io.Writer) string {
-	render := cliui.New(out)
-	return render.Callout(bentotui.ToneInfo, "Cloudflare API token", strings.TrimSpace(accessTokenHint))
+Machine API routes (/v1, /api, /mcp, /sessions, ...) stay outside Access; the
+Worker authenticates them with bearer tokens.`, dashboardAccessAppName, strings.Join(domains, ", "))
 }
 
 func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
@@ -91,7 +77,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 			token = strings.TrimSpace(os.Getenv("CLOUDFLARE_API_TOKEN"))
 		}
 		if token == "" && !jsonOut {
-			fmt.Fprintln(ioctx.Out, renderAccessTokenHint(ioctx.Out))
+			fmt.Fprint(ioctx.Out, accessTokenHint)
 			token, err = promptSecret(ioctx, "Cloudflare API token (Enter to print manual steps): ")
 			if err != nil {
 				return err
@@ -108,7 +94,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 				}
 				return writeSetupResult(ioctx.Out, true, result, "")
 			}
-			_, err := fmt.Fprintln(ioctx.Out, renderAccessChecklist(ioctx.Out, url))
+			_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
 			return err
 		}
 		if email == "" {
@@ -126,10 +112,7 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 	opts.Noninteractive = jsonOut
 	outcome, err := deployment.NewService(httpClient).ConfigureAccess(ctx, opts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
-		Login: func(ctx context.Context, dir string) error {
-			cloudflareLoginNotice(ioctx.Out)
-			return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
-		},
+		Login:   func(ctx context.Context, dir string) error { return cloudflareLogin(ctx, dir, ioctx) },
 	})
 	if err != nil {
 		return err
@@ -141,21 +124,9 @@ func cmdAccess(ctx context.Context, args []string, ioctx IO) error {
 				"action": "provide --email for an exact dashboard Allow policy, then rerun mimir access",
 			}, "")
 		}
-		_, err := fmt.Fprintln(ioctx.Out, renderAccessChecklist(ioctx.Out, url))
+		_, err := fmt.Fprintln(ioctx.Out, accessChecklist(url))
 		return err
 	}
 	result := map[string]any{"state": "configured", "aud": outcome.Aud, "team_domain": outcome.TeamDomain}
-	render := cliui.New(ioctx.Out)
-	return writeSetupResult(ioctx.Out, jsonOut, result, render.Card("Dashboard Access configured", bentotui.Field{Label: "Worker", Value: url}, bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "READY", bentotui.VariantSuccess)}))
-}
-
-func promptValue(ioctx IO, label string) (string, error) {
-	if _, err := fmt.Fprint(ioctx.Out, cliui.New(ioctx.Out).Prompt(label)); err != nil {
-		return "", err
-	}
-	line, err := bufio.NewReader(ioctx.In).ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
+	return writeSetupResult(ioctx.Out, jsonOut, result, "✓ Dashboard Access configured for "+url)
 }

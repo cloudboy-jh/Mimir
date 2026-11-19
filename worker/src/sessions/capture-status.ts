@@ -3,24 +3,12 @@ import { finalizeAcceptedExchange } from "../exchanges/capture-pipeline";
 import { reconcileSessionTitleStatement } from "./titles";
 
 export type CaptureSummary = {
+  status: "empty" | "pending" | "saved" | "failed" | "partial";
   saved_exchanges: number;
   failed_exchanges: number;
   pending_exchanges: number;
   last_saved_at: string | null;
-  status: "empty" | "pending" | "saved" | "failed" | "partial";
 };
-
-export type CaptureReceipt = {
-  label: string;
-  detail: string;
-  action_label: "View session" | "View details" | null;
-};
-
-export const CAPTURE_SUMMARY_COLUMNS =
-  "(SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_saved_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'failed') AS capture_failed_exchanges, (SELECT COUNT(*) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'accepted') AS capture_pending_exchanges, (SELECT MAX(e.saved_at) FROM exchanges e WHERE e.session_id = sessions.id AND e.capture_status = 'saved') AS capture_last_saved_at";
-
-export const TREE_CAPTURE_SUMMARY_COLUMNS =
-  "(SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'saved') AS capture_saved_exchanges, (SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'failed') AS capture_failed_exchanges, (SELECT COUNT(*) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'accepted') AS capture_pending_exchanges, (SELECT MAX(e.saved_at) FROM exchanges e JOIN session_tree ON session_tree.id = e.session_id WHERE session_tree.root_id = sessions.id AND e.capture_status = 'saved') AS capture_last_saved_at";
 
 export type ReconcileResponse = {
   scanned: number;
@@ -61,143 +49,7 @@ type ReconcileRow = {
   title_candidate: string | null;
 };
 
-export async function captureSummary(
-  db: D1Database,
-  sessionId: string,
-): Promise<CaptureSummary> {
-  const row = await db
-    .prepare(
-      "SELECT SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END) AS saved_exchanges, SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END) AS failed_exchanges, SUM(CASE WHEN capture_status = 'accepted' THEN 1 ELSE 0 END) AS accepted_exchanges, MAX(CASE WHEN capture_status = 'saved' THEN saved_at END) AS last_saved_at FROM exchanges WHERE session_id = ?",
-    )
-    .bind(sessionId)
-    .first<{
-      saved_exchanges: number | null;
-      failed_exchanges: number | null;
-      accepted_exchanges: number | null;
-      last_saved_at: string | null;
-    }>();
-  return captureSummaryValues(
-    row?.saved_exchanges ?? 0,
-    row?.failed_exchanges ?? 0,
-    row?.accepted_exchanges ?? 0,
-    row?.last_saved_at ?? null,
-  );
-}
-
-export async function captureTreeSummary(
-  db: D1Database,
-  sessionId: string,
-): Promise<CaptureSummary> {
-  const row = await db
-    .prepare(
-      "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT sessions.id FROM sessions JOIN subtree ON sessions.parent_session_id = subtree.id) SELECT SUM(CASE WHEN capture_status = 'saved' THEN 1 ELSE 0 END) AS saved_exchanges, SUM(CASE WHEN capture_status = 'failed' THEN 1 ELSE 0 END) AS failed_exchanges, SUM(CASE WHEN capture_status = 'accepted' THEN 1 ELSE 0 END) AS accepted_exchanges, MAX(CASE WHEN capture_status = 'saved' THEN saved_at END) AS last_saved_at FROM exchanges WHERE session_id IN (SELECT id FROM subtree)",
-    )
-    .bind(sessionId)
-    .first<{
-      saved_exchanges: number | null;
-      failed_exchanges: number | null;
-      accepted_exchanges: number | null;
-      last_saved_at: string | null;
-    }>();
-  return captureSummaryValues(
-    row?.saved_exchanges ?? 0,
-    row?.failed_exchanges ?? 0,
-    row?.accepted_exchanges ?? 0,
-    row?.last_saved_at ?? null,
-  );
-}
-
-export function attachCaptureSummary(row: Record<string, unknown>) {
-  const saved = Number(row.capture_saved_exchanges ?? 0);
-  const failed = Number(row.capture_failed_exchanges ?? 0);
-  const pending = Number(row.capture_pending_exchanges ?? 0);
-  const lastSaved =
-    typeof row.capture_last_saved_at === "string"
-      ? row.capture_last_saved_at
-      : null;
-  const {
-    capture_saved_exchanges: _saved,
-    capture_failed_exchanges: _failed,
-    capture_pending_exchanges: _pending,
-    capture_last_saved_at: _lastSaved,
-    ...session
-  } = row;
-  return {
-    ...session,
-    capture: captureSummaryValues(saved, failed, pending, lastSaved),
-  };
-}
-
-export function captureReceipt(summary: CaptureSummary): CaptureReceipt {
-  const total =
-    summary.saved_exchanges +
-    summary.failed_exchanges +
-    summary.pending_exchanges;
-  if (summary.pending_exchanges > 0 && summary.failed_exchanges > 0) {
-    return {
-      label: "Partially saved",
-      detail: `${summary.saved_exchanges} saved · ${summary.failed_exchanges} failed · ${summary.pending_exchanges} pending`,
-      action_label: "View details",
-    };
-  }
-  if (summary.status === "pending") {
-    return {
-      label: "Saving to Mimir...",
-      detail: exchangeDetail(total),
-      action_label: "View session",
-    };
-  }
-  if (summary.status === "partial") {
-    return {
-      label: "Partially saved",
-      detail: `${summary.saved_exchanges} of ${total} exchanges`,
-      action_label: "View details",
-    };
-  }
-  if (summary.status === "failed") {
-    return {
-      label: "Mimir couldn't save this session",
-      detail: exchangeDetail(summary.failed_exchanges),
-      action_label: "View details",
-    };
-  }
-  if (summary.status === "saved") {
-    return {
-      label: "Saved to Mimir",
-      detail: `${exchangeDetail(summary.saved_exchanges)} in this session`,
-      action_label: "View session",
-    };
-  }
-  return {
-    label: "Not captured",
-    detail: "No exchanges in this session",
-    action_label: "View session",
-  };
-}
-
-export function sessionStatusResponse(
-  requestURL: string,
-  sessionID: string,
-  summary: CaptureSummary,
-  session: Record<string, unknown>,
-  dashboardAvailable: boolean,
-) {
-  const receipt = captureReceipt(summary);
-  return {
-    session_id: sessionID,
-    capture: summary,
-    ...session,
-    receipt: dashboardAvailable ? receipt : { ...receipt, action_label: null },
-    dashboard_url: dashboardAvailable
-      ? new URL(
-          `/dashboard/sessions/${encodeURIComponent(sessionID)}`,
-          requestURL,
-        ).toString()
-      : null,
-  };
-}
-
-function captureSummaryValues(
+export function captureSummaryValues(
   saved: number,
   failed: number,
   accepted: number,
@@ -209,16 +61,12 @@ function captureSummaryValues(
   else if (failed > 0) status = "failed";
   else if (saved > 0) status = "saved";
   return {
+    status,
     saved_exchanges: saved,
     failed_exchanges: failed,
     pending_exchanges: accepted,
     last_saved_at: lastSavedAt,
-    status,
   };
-}
-
-function exchangeDetail(count: number) {
-  return `${count} ${count === 1 ? "exchange" : "exchanges"}`;
 }
 
 const EMPTY_FINALIZED_HARNESS_SESSION = `
@@ -237,15 +85,10 @@ const EMPTY_FINALIZED_HARNESS_SESSION = `
   AND intent IS NULL
   AND title IS NULL
   AND title_source IS NULL
-  AND work_outcome = 'unresolved'
-  AND outcome_src IS NULL
-  AND outcome_updated_at IS NULL
-  AND outcome_reason IS NULL
   AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_session_id = sessions.id)
   AND NOT EXISTS (SELECT 1 FROM exchanges WHERE exchanges.session_id = sessions.id)
   AND NOT EXISTS (SELECT 1 FROM session_files WHERE session_files.session_id = sessions.id)
   AND NOT EXISTS (SELECT 1 FROM session_errors WHERE session_errors.session_id = sessions.id)
-  AND NOT EXISTS (SELECT 1 FROM session_outcome_events WHERE session_outcome_events.session_id = sessions.id)
   AND NOT EXISTS (SELECT 1 FROM session_git_artifacts WHERE session_git_artifacts.session_id = sessions.id)
 `;
 
@@ -260,6 +103,8 @@ async function removeEmptyFinalizedHarnessSessions(
     .all<{ id: string }>();
   const removed: string[] = [];
   for (const candidate of candidates.results) {
+    // Sessions finalized before the Durable Object removal may still own a
+    // transcript manifest in R2.
     await env.LOGS.delete(`sessions/${candidate.id}/transcript.json`);
     const result = await env.DB.prepare(
       `DELETE FROM sessions WHERE id = ? AND ${EMPTY_FINALIZED_HARNESS_SESSION}`,

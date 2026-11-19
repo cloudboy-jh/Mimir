@@ -24,7 +24,7 @@ type embeddedWorkerManifest struct {
 // dashboard, and required shared assets. Generated dependencies, Wrangler
 // state, and unrelated files are left in place.
 func materializeEmbeddedWorker() (string, error) {
-	paths, err := managedInstallationPaths()
+	paths, err := Paths()
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +132,7 @@ func loadEmbeddedWorkerManifest(path string) (embeddedWorkerManifest, error) {
 	return manifest, nil
 }
 
-func removeObsoleteEmbeddedFile(paths installationPaths, target, priorHash string) (bool, error) {
+func removeObsoleteEmbeddedFile(paths InstallationPaths, target, priorHash string) (bool, error) {
 	root := ""
 	for _, candidate := range []string{paths.Worker, paths.SharedAssets} {
 		rel, err := filepath.Rel(candidate, target)

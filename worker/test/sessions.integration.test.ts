@@ -14,59 +14,6 @@ import {
 } from "./support";
 
 describe("Sessions integration", () => {
-  it("repairs exact parent metadata without changing lifecycle, outcomes, or siblings", async () => {
-    await addMachineToken("repair-install", "repair-token");
-    const headers = { authorization: "Bearer repair-token", "content-type": "application/json" };
-    const event = { version: 1, kind: "end", ts: "2026-08-13T10:00:00Z", harness: "oh-my-pi" };
-    for (const id of ["repair-root", "repair-child", "repair-sibling"]) {
-      expect((await request(`/sessions/${id}/events`, {
-        method: "POST", headers, body: JSON.stringify(event),
-      })).status).toBe(200);
-    }
-    await env.DB.exec(`
-      UPDATE sessions SET work_outcome = 'landed', request_count = 3, tokens_in = 11 WHERE id = 'repair-root';
-      UPDATE sessions SET work_outcome = 'discarded', request_count = 2, tokens_in = 7 WHERE id = 'repair-child';
-      UPDATE sessions SET parent_session_id = 'repair-root' WHERE id = 'repair-sibling';
-    `);
-    const before = (await env.DB.prepare(
-      "SELECT id, state, started_at, ended_at, inactive_at, last_active_at, work_outcome, request_count, tokens_in FROM sessions ORDER BY id",
-    ).all()).results;
-    const stateBefore = await (await request("/sessions/repair-child/object-state", { headers })).json<Record<string, unknown>>();
-    const transcriptBefore = await (await env.LOGS.get("sessions/repair-child/transcript.json"))!.text();
-    const outcomesBefore = (
-      await env.DB.prepare(
-        "SELECT * FROM session_outcome_events ORDER BY session_id, created_at, id",
-      ).all()
-    ).results;
-    const patch: RequestInit = {
-      method: "PATCH", headers, body: JSON.stringify({ parent_session_id: "repair-root" }),
-    };
-    const linked = await request("/sessions/repair-child/parent", patch);
-    expect(linked.status).toBe(200);
-    expect(await linked.json()).toEqual({ session_id: "repair-child", parent_session_id: "repair-root" });
-    expect((await request("/sessions/repair-child/parent", patch)).status).toBe(200);
-    expect(await (await request("/sessions/repair-child/parent", { headers })).json()).toEqual({
-      session_id: "repair-child", parent_session_id: "repair-root", app: "oh-my-pi",
-    });
-    expect((await env.DB.prepare(
-      "SELECT id, state, started_at, ended_at, inactive_at, last_active_at, work_outcome, request_count, tokens_in FROM sessions ORDER BY id",
-    ).all()).results).toEqual(before);
-    expect(await (await request("/sessions/repair-child/object-state", { headers })).json()).toEqual({
-      ...stateBefore, parent_session_id: "repair-root",
-    });
-    expect(await (await env.LOGS.get("sessions/repair-child/transcript.json"))!.text()).toBe(transcriptBefore);
-    expect(await env.DB.prepare(
-      "SELECT parent_session_id FROM sessions WHERE id = 'repair-sibling'",
-    ).first()).toEqual({ parent_session_id: "repair-root" });
-    expect(
-      (
-        await env.DB.prepare(
-          "SELECT * FROM session_outcome_events ORDER BY session_id, created_at, id",
-        ).all()
-      ).results,
-    ).toEqual(outcomesBefore);
-  });
-
   it("enforces both parent endpoint owners and rejects missing, conflicting, and cyclic parents atomically", async () => {
     await addMachineToken("parent-owner", "parent-owner-token");
     await addMachineToken("other-owner", "other-owner-token");
@@ -96,9 +43,6 @@ describe("Sessions integration", () => {
     expect((await link(linked!.id, "link-c")).status).toBe(409);
     expect((await link("link-c", linked!.id)).status).toBe(200);
     expect((await link(linked!.parent_session_id, "link-c")).status).toBe(409);
-    expect((await request(`/sessions/${linked!.id}/object-state`, {
-      headers: { authorization: "Bearer parent-owner-token" },
-    })).status).toBe(404);
     await expect(env.DB.prepare(
       "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
     ).bind("link-c", linked!.parent_session_id).run()).rejects.toThrow();
@@ -108,71 +52,6 @@ describe("Sessions integration", () => {
     expect(await env.DB.prepare(
       "SELECT parent_session_id FROM sessions WHERE id = 'link-foreign'",
     ).first()).toEqual({ parent_session_id: null });
-  });
-
-  it("lists root sessions with aggregated supporting-run evidence and roots child outcomes", async () => {
-    await env.DB.exec(`
-        INSERT INTO sessions(id, started_at, boundary, state, request_count, tokens_in, tokens_out, intent) VALUES ('root-session', '2026-07-27T10:00:00Z', 'header', 'inactive', 1, 10, 5, 'Ship the feature');
-        INSERT INTO sessions(id, parent_session_id, started_at, boundary, state, request_count, tokens_in, tokens_out, intent) VALUES ('child-session', 'root-session', '2026-07-27T10:01:00Z', 'header', 'inactive', 1, 20, 7, 'Research the implementation');
-        INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('root-exchange', 'root-session', '2026-07-27T10:00:30Z', 'harness', 1, 'log/root.json', 'saved', '2026-07-27T10:00:31Z');
-        INSERT INTO exchanges(id, session_id, ts, endpoint, latency_ms, r2_key, capture_status, saved_at) VALUES ('child-exchange', 'child-session', '2026-07-27T10:01:30Z', 'harness', 1, 'log/child.json', 'saved', '2026-07-27T10:01:31Z');
-      `);
-
-    const listed = (await (
-      await dashboardRequest("/dashboard/api/sessions")
-    ).json()) as { sessions: Array<Record<string, unknown>> };
-    expect(listed.sessions).toHaveLength(1);
-    expect(listed.sessions[0]).toMatchObject({
-      id: "root-session",
-      child_session_count: 1,
-      request_count: 2,
-      tokens_in: 30,
-      tokens_out: 12,
-      capture: { saved_exchanges: 2 },
-    });
-
-    const detail = (await (
-      await dashboardRequest("/dashboard/api/sessions/root-session")
-    ).json()) as { supporting_sessions: Array<{ id: string }> } & Record<
-      string,
-      unknown
-    >;
-    expect(detail.supporting_sessions).toContainEqual(
-      expect.objectContaining({ id: "child-session" }),
-    );
-    expect(detail).not.toHaveProperty("exchanges");
-    const timeline = (await (
-      await dashboardRequest(
-        "/dashboard/api/sessions/root-session/exchanges?order=asc",
-      )
-    ).json()) as { exchanges: Array<{ id: string }> };
-    expect(timeline.exchanges.map((exchange) => exchange.id)).toEqual([
-      "root-exchange",
-      "child-exchange",
-    ]);
-
-    const outcome = await request("/sessions/child-session/outcome", {
-      method: "POST",
-      headers: {
-        authorization: "Bearer machine-token",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ outcome: "landed", reason: "kept by parent" }),
-    });
-    expect(await outcome.json()).toMatchObject({
-      id: "root-session",
-      outcome: "landed",
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'root-session'",
-      ).first(),
-    ).toMatchObject({ work_outcome: "landed" });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'child-session'",
-      ).first(),
-    ).toMatchObject({ work_outcome: "unresolved" });
   });
 
   it("adopts a freshly registered exact Hermes session before heuristic fallback", async () => {
@@ -203,38 +82,6 @@ describe("Sessions integration", () => {
         "2026-09-04T10:00:31Z",
       ),
     ).resolves.toEqual({ id: "hermes-heuristic" });
-  });
-
-  it("orders root sessions by the latest activity in their session tree", async () => {
-    await env.DB.exec(`
-        INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('older-root', '2026-07-27T10:00:00Z', 'inactive', '2026-07-27T10:05:00Z', 'header');
-        INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('reopened-supporting', 'older-root', '2026-07-27T10:01:00Z', 'active', '2026-07-27T12:00:00Z', 'header');
-        INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('newer-root', '2026-07-27T11:00:00Z', 'inactive', '2026-07-27T11:05:00Z', 'header');
-      `);
-
-    const dashboard = (await (
-      await dashboardRequest("/dashboard/api/sessions")
-    ).json()) as { sessions: Array<{ id: string; activity_at: string }> };
-    expect(dashboard.sessions).toEqual([
-      expect.objectContaining({
-        id: "older-root",
-        activity_at: "2026-07-27T12:00:00Z",
-      }),
-      expect.objectContaining({
-        id: "newer-root",
-        activity_at: "2026-07-27T11:05:00Z",
-      }),
-    ]);
-
-    const machine = (await (
-      await request("/sessions", {
-        headers: { authorization: "Bearer machine-token" },
-      })
-    ).json()) as { sessions: Array<{ id: string; activity_at: string }> };
-    expect(machine.sessions.map((session) => session.id)).toEqual([
-      "older-root",
-      "newer-root",
-    ]);
   });
 
   it("keeps heuristic sessions separate by installation while preserving null identity", async () => {
@@ -485,615 +332,6 @@ describe("Sessions integration", () => {
     ).toEqual({ state: "active", request_count: 1 });
   });
 
-  it("marks stale sessions inactive when memory is queried", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('stale', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 'active', '2020-01-01T00:00:00Z', 'heuristic')",
-    ).run();
-    const response = await request("/sessions", {
-      headers: { authorization: "Bearer machine-token" },
-    });
-    expect(response.status).toBe(200);
-    expect(
-      (
-        await env.DB.prepare(
-          "SELECT state FROM sessions WHERE id = 'stale'",
-        ).first<{ state: string }>()
-      )?.state,
-    ).toBe("inactive");
-  });
-
-  it("rejects cross-installation mark, outcome, and end mutations before changes or object events", async () => {
-    await addMachineToken("install-a", "machine-a");
-    await addMachineToken("install-b", "machine-b");
-    await env.DB.exec(`
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-mark-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-        INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-mark-child', 'owned-mark-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-outcome-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-        INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-outcome-child', 'owned-outcome-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('owned-end-root', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-        INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('owned-end-child', 'owned-end-root', '2026-08-13T00:00:01Z', 'active', '2026-08-13T00:00:01Z', 'header');
-      `);
-    const ownerHeaders = {
-      authorization: "Bearer machine-a",
-      "content-type": "application/json",
-    };
-    await request("/sessions/owned-end-child/events", {
-      method: "POST",
-      headers: ownerHeaders,
-      body: JSON.stringify({
-        version: 1,
-        kind: "heartbeat",
-        ts: new Date().toISOString(),
-      }),
-    });
-    const beforeObject = await (
-      await request("/sessions/owned-end-child/object-state", {
-        headers: ownerHeaders,
-      })
-    ).json();
-    const otherHeaders = {
-      authorization: "Bearer machine-b",
-      "content-type": "application/json",
-    };
-
-    const responses = await Promise.all([
-      request("/sessions/owned-mark-child/mark", {
-        method: "POST",
-        headers: otherHeaders,
-        body: JSON.stringify({ outcome: "landed" }),
-      }),
-      request("/sessions/owned-outcome-child/outcome", {
-        method: "POST",
-        headers: otherHeaders,
-        body: JSON.stringify({ outcome: "discarded" }),
-      }),
-      request("/sessions/owned-end-child/end", {
-        method: "POST",
-        headers: otherHeaders,
-        body: JSON.stringify({ outcome: "abandoned" }),
-      }),
-    ]);
-
-    expect(responses.map((response) => response.status)).toEqual([
-      403, 403, 403,
-    ]);
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'owned-mark-root'",
-      ).first(),
-    ).toEqual({ work_outcome: "unresolved" });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'owned-outcome-root'",
-      ).first(),
-    ).toEqual({ work_outcome: "unresolved" });
-    expect(
-      await env.DB.prepare(
-        "SELECT state, ended_at FROM sessions WHERE id = 'owned-end-child'",
-      ).first(),
-    ).toEqual({ state: "active", ended_at: null });
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events",
-      ).first(),
-    ).toEqual({ count: 0 });
-    expect(
-      await (
-        await request("/sessions/owned-end-child/object-state", {
-          headers: ownerHeaders,
-        })
-      ).json(),
-    ).toEqual(beforeObject);
-  });
-
-  it("allows the owning installation to mark, set outcome, and end sessions", async () => {
-    await addMachineToken("install-a", "machine-a");
-    await env.DB.exec(`
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-mark', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-outcome', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-        INSERT INTO sessions(id, installation_id, started_at, state, last_active_at, boundary) VALUES ('same-end', 'install-a', '2026-08-13T00:00:00Z', 'active', '2026-08-13T00:00:00Z', 'header');
-      `);
-    const headers = {
-      authorization: "Bearer machine-a",
-      "content-type": "application/json",
-    };
-
-    expect(
-      (
-        await request("/sessions/same-mark/mark", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ outcome: "landed" }),
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await request("/sessions/same-outcome/outcome", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ outcome: "discarded" }),
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await request("/sessions/same-end/end", {
-          method: "POST",
-          headers,
-          body: "{}",
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'same-mark'",
-      ).first(),
-    ).toEqual({ work_outcome: "landed" });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'same-outcome'",
-      ).first(),
-    ).toEqual({ work_outcome: "discarded" });
-    expect(
-      await env.DB.prepare(
-        "SELECT state FROM sessions WHERE id = 'same-end'",
-      ).first(),
-    ).toEqual({ state: "inactive" });
-  });
-
-  it("deduplicates identical outcome retries but records changed evidence and later reversions", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, boundary) VALUES ('outcome-retry', '2026-08-17T12:00:00Z', 'inactive', 'header')",
-    ).run();
-    const headers = { authorization: "Bearer machine-token", "content-type": "application/json" };
-    const send = async (evidence: { note: string }) => {
-      const response = await request("/sessions/outcome-retry/outcome", {
-        method: "POST", headers,
-        body: JSON.stringify({ outcome: "discarded", source: "agent", reason: "superseded", evidence }),
-      });
-      expect(response.status).toBe(200);
-      return response.json<{ outcome_updated_at: string }>();
-    };
-    const first = await send({ note: "first" });
-    await env.DB.prepare(
-      "UPDATE sessions SET summary_text = 'kept', summary_status = 'ready' WHERE id = 'outcome-retry'",
-    ).run();
-    const repeated = await send({ note: "first" });
-    expect(repeated.outcome_updated_at).toBe(first.outcome_updated_at);
-    expect(await env.DB.prepare(
-      "SELECT summary_text, summary_status FROM sessions WHERE id = 'outcome-retry'",
-    ).first()).toEqual({ summary_text: "kept", summary_status: "ready" });
-    expect((await env.DB.prepare(
-      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'outcome-retry' ORDER BY rowid",
-    ).all()).results).toEqual([{ evidence_json: '{"note":"first"}' }]);
-
-    await Promise.all([send({ note: "second" }), send({ note: "second" })]);
-    await send({ note: "first" });
-    expect((await env.DB.prepare(
-      "SELECT evidence_json FROM session_outcome_events WHERE session_id = 'outcome-retry' ORDER BY rowid",
-    ).all()).results).toEqual([
-      { evidence_json: '{"note":"first"}' },
-      { evidence_json: '{"note":"second"}' },
-      { evidence_json: '{"note":"first"}' },
-    ]);
-  });
-
-  it("keeps bulk outcome retries idempotent per root session", async () => {
-    await env.DB.exec(`
-      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-retry-a', '2026-08-17T12:00:00Z', 'inactive', 'header');
-      INSERT INTO sessions(id, started_at, state, boundary) VALUES ('bulk-retry-b', '2026-08-17T12:00:00Z', 'inactive', 'header');
-    `);
-    const send = async (reason: string) => {
-      const response = await dashboardRequest("/dashboard/api/sessions/outcomes", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_ids: ["bulk-retry-a", "bulk-retry-b"], outcome: "discarded", reason }),
-      });
-      expect(response.status).toBe(200);
-      return response.json<{ updated: { id: string; outcome_updated_at: string }[] }>();
-    };
-    const first = await send("first");
-    expect((await send("first")).updated).toEqual(first.updated);
-    await send("changed");
-    expect((await env.DB.prepare(
-      "SELECT session_id, reason FROM session_outcome_events WHERE session_id IN ('bulk-retry-a', 'bulk-retry-b') ORDER BY session_id, rowid",
-    ).all()).results).toEqual([
-      { session_id: "bulk-retry-a", reason: "first" },
-      { session_id: "bulk-retry-a", reason: "changed" },
-      { session_id: "bulk-retry-b", reason: "first" },
-      { session_id: "bulk-retry-b", reason: "changed" },
-    ]);
-  });
-
-  it("ends sessions idempotently and optionally records an outcome", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('end-session', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')",
-    ).run();
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    const ended = await request("/sessions/end-session/end", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outcome: "landed",
-        reason: "verified",
-        evidence: { commit: "abc123" },
-      }),
-    });
-    expect(ended.status).toBe(200);
-    const first = (await ended.json()) as {
-      session: {
-        state: string;
-        ended_at: string;
-        inactive_at: string;
-        outcome: string;
-        outcome_src: string;
-        outcome_updated_at: string;
-      };
-      evidence: unknown;
-    };
-    expect(first.session).toMatchObject({
-      state: "inactive",
-      outcome: "landed",
-      outcome_src: "agent",
-    });
-    expect(first.session.ended_at).toBe(first.session.inactive_at);
-    expect(first.evidence).toEqual({ commit: "abc123" });
-    expect(
-      await env.DB.prepare(
-        "SELECT outcome, source, reason, evidence_json FROM session_outcome_events WHERE session_id = 'end-session'",
-      ).first(),
-    ).toEqual({
-      outcome: "landed",
-      source: "agent",
-      reason: "verified",
-      evidence_json: '{"commit":"abc123"}',
-    });
-
-    const repeated = await request("/sessions/end-session/end", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outcome: "landed",
-        reason: "verified",
-        evidence: { commit: "abc123" },
-      }),
-    });
-    const repeatedSession = (
-      (await repeated.json()) as {
-        session: {
-          ended_at: string;
-          inactive_at: string;
-          outcome_updated_at: string;
-        };
-      }
-    ).session;
-    expect(repeatedSession).toMatchObject({
-      ended_at: first.session.ended_at,
-      inactive_at: first.session.inactive_at,
-      outcome_updated_at: first.session.outcome_updated_at,
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-session'",
-      ).first(),
-    ).toEqual({ count: 1 });
-
-    const concurrent = await Promise.all([
-      request("/sessions/end-session/end", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          outcome: "discarded",
-          reason: "superseded",
-          evidence: { issue: 42 },
-        }),
-      }),
-      request("/sessions/end-session/end", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          outcome: "discarded",
-          reason: "superseded",
-          evidence: { issue: 42 },
-        }),
-      }),
-    ]);
-    expect(concurrent.every((response) => response.status === 200)).toBe(true);
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'end-session' AND outcome = 'discarded'",
-      ).first(),
-    ).toEqual({ count: 1 });
-
-    expect(
-      (
-        await request("/sessions/missing/end", {
-          method: "POST",
-          headers,
-          body: "{}",
-        })
-      ).status,
-    ).toBe(404);
-    expect(
-      (
-        await request("/sessions/end-session/end", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ reason: "missing outcome" }),
-        })
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await request("/sessions/end-session/end", {
-          method: "POST",
-          headers,
-          body: "null",
-        })
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await request("/sessions/end-session/end", {
-          method: "POST",
-          headers,
-          body: "[]",
-        })
-      ).status,
-    ).toBe(400);
-  });
-
-  it("rejects incomplete landed Git evidence without changing the prior outcome", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, last_active_at, boundary, work_outcome, outcome) VALUES ('git-evidence', '2026-08-17T12:00:00Z', 'inactive', '2026-08-17T12:00:00Z', 'header', 'discarded', 'reverted')",
-    ).run();
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    const incomplete = await request("/sessions/git-evidence/outcome", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outcome: "landed",
-        evidence: { commit: "a".repeat(40), provenance: "opencode-plugin" },
-      }),
-    });
-    expect(incomplete.status).toBe(400);
-    expect(await incomplete.json()).toEqual({
-      error: "landed Git outcomes require a retrievable patch",
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'git-evidence'",
-      ).first(),
-    ).toEqual({ work_outcome: "discarded" });
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'git-evidence'",
-      ).first(),
-    ).toEqual({ count: 0 });
-
-    const patch =
-      "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
-    const completeRequest: RequestInit = {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outcome: "landed",
-        evidence: {
-          commit: "a".repeat(40),
-          provenance: "opencode-plugin",
-          patch,
-        },
-      }),
-    };
-    const complete = await request("/sessions/git-evidence/outcome", completeRequest);
-    expect(complete.status).toBe(200);
-    const completeBody: unknown = await complete.json();
-    if (
-      !completeBody ||
-      typeof completeBody !== "object" ||
-      !("evidence" in completeBody) ||
-      !completeBody.evidence ||
-      typeof completeBody.evidence !== "object" ||
-      !("patch_r2_key" in completeBody.evidence) ||
-      typeof completeBody.evidence.patch_r2_key !== "string"
-    ) {
-      throw new Error("outcome response did not include patch_r2_key");
-    }
-    expect(
-      await env.LOGS.get(completeBody.evidence.patch_r2_key),
-    ).not.toBeNull();
-    const repeated = await request("/sessions/git-evidence/outcome", completeRequest);
-    expect(repeated.status).toBe(200);
-    expect(await repeated.json()).toEqual(completeBody);
-    expect(await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'git-evidence'",
-    ).first()).toEqual({ count: 1 });
-    const diff = await dashboardRequest(
-      "/dashboard/api/sessions/git-evidence/diff",
-    );
-    expect(diff.status).toBe(200);
-    expect(await diff.text()).toBe(patch);
-  });
-
-  it("preserves structured evidence when ending with the current root outcome", async () => {
-    await env.DB.exec(`
-        INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('evidence-root', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header');
-        INSERT INTO sessions(id, parent_session_id, started_at, state, last_active_at, boundary) VALUES ('evidence-child', 'evidence-root', '2026-01-01T00:00:01Z', 'active', '2026-01-01T00:00:01Z', 'header');
-      `);
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    const evidence = {
-      commit: "abc123",
-      checks: ["worker tests", "typecheck"],
-    };
-    await request("/sessions/evidence-child/outcome", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ outcome: "landed", evidence }),
-    });
-
-    const ended = await request("/sessions/evidence-child/end", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ outcome: "landed", reason: "complete" }),
-    });
-
-    expect(await ended.json()).toMatchObject({
-      session: { state: "inactive" },
-      evidence,
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT work_outcome FROM sessions WHERE id = 'evidence-root'",
-      ).first(),
-    ).toEqual({ work_outcome: "landed" });
-    expect(
-      await env.DB.prepare(
-        "SELECT outcome, reason, evidence_json FROM session_outcome_events WHERE session_id = 'evidence-root' AND id LIKE 'end_%'",
-      ).first(),
-    ).toEqual({
-      outcome: "landed",
-      reason: "complete",
-      evidence_json: JSON.stringify(evidence),
-    });
-  });
-
-  it("does not inherit evidence when ending with a different outcome", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('different-end-outcome', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')",
-    ).run();
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    await request("/sessions/different-end-outcome/outcome", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        outcome: "landed",
-        evidence: { commit: "abc123" },
-      }),
-    });
-
-    const ended = await request("/sessions/different-end-outcome/end", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ outcome: "discarded", reason: "rejected" }),
-    });
-
-    expect(await ended.json()).toMatchObject({
-      session: { outcome: "discarded" },
-      evidence: null,
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT outcome, evidence_json FROM session_outcome_events WHERE session_id = 'different-end-outcome' AND id LIKE 'end_%'",
-      ).first(),
-    ).toEqual({ outcome: "discarded", evidence_json: null });
-  });
-
-  it("keeps evidence-preserving end idempotent", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, state, last_active_at, boundary) VALUES ('idempotent-evidence-end', '2026-01-01T00:00:00Z', 'active', '2026-01-01T00:00:00Z', 'header')",
-    ).run();
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    const evidence = { commit: "def456" };
-    await request("/sessions/idempotent-evidence-end/outcome", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ outcome: "landed", evidence }),
-    });
-    const body = JSON.stringify({ outcome: "landed", reason: "complete" });
-
-    const first = (await (
-      await request("/sessions/idempotent-evidence-end/end", {
-        method: "POST",
-        headers,
-        body,
-      })
-    ).json()) as { session: { outcome_updated_at: string }; evidence: unknown };
-    const repeated = (await (
-      await request("/sessions/idempotent-evidence-end/end", {
-        method: "POST",
-        headers,
-        body,
-      })
-    ).json()) as { session: { outcome_updated_at: string }; evidence: unknown };
-
-    expect(first.evidence).toEqual(evidence);
-    expect(repeated).toMatchObject({
-      session: { outcome_updated_at: first.session.outcome_updated_at },
-      evidence,
-    });
-    expect(
-      await env.DB.prepare(
-        "SELECT COUNT(*) AS count FROM session_outcome_events WHERE session_id = 'idempotent-evidence-end' AND id LIKE 'end_%'",
-      ).first(),
-    ).toEqual({ count: 1 });
-  });
-
-  it("turns an auto-expired session into an explicit end marker", async () => {
-    await env.DB.prepare(
-      "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, inactive_at, boundary) VALUES ('expired-end-race', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'inactive', '2026-01-01T00:01:00Z', '2026-01-01T00:15:00Z', 'header')",
-    ).run();
-    await env.DB.prepare(
-      "INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('expired-end-exchange', 'expired-end-race', '2026-01-01T00:01:00Z', 'chat', 'openai/test', 1, 'log/expired-end.json', 'accepted', '2026-01-01T00:01:01Z', 1)",
-    ).run();
-    const headers = {
-      authorization: "Bearer machine-token",
-      "content-type": "application/json",
-    };
-    const ended = await request("/sessions/expired-end-race/end", {
-      method: "POST",
-      headers,
-      body: "{}",
-    });
-    const explicit = (
-      (await ended.json()) as {
-        session: { ended_at: string; inactive_at: string };
-      }
-    ).session;
-    expect(explicit.ended_at).toBe(explicit.inactive_at);
-    expect(explicit.inactive_at).not.toBe("2026-01-01T00:15:00Z");
-
-    await finalizeAcceptedExchange(
-      env.DB,
-      "expired-end-exchange",
-      "expired-end-race",
-      "2026-01-01T00:01:00Z",
-      "2026-01-01T00:20:00Z",
-      "opencode",
-      "openai/test",
-      2,
-      1,
-      0,
-      0,
-      50,
-      true,
-    );
-    expect(
-      await env.DB.prepare(
-        "SELECT state, ended_at, inactive_at FROM sessions WHERE id = 'expired-end-race'",
-      ).first(),
-    ).toEqual({
-      state: "inactive",
-      ended_at: explicit.ended_at,
-      inactive_at: explicit.inactive_at,
-    });
-  });
-
   it("reactivates an explicitly ended exact session for genuinely later activity", async () => {
     await env.DB.prepare(
       "INSERT INTO sessions(id, started_at, ended_at, state, last_active_at, boundary) VALUES ('ended-reactivate', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 'active', '2026-01-01T00:01:00Z', 'header')",
@@ -1107,9 +345,7 @@ describe("Sessions integration", () => {
       headers,
       body: "{}",
     });
-    const endTime = (
-      (await ended.json()) as { session: { inactive_at: string } }
-    ).session.inactive_at;
+    const endTime = ((await ended.json()) as { ended_at: string }).ended_at;
     const later = new Date(Date.parse(endTime) + 1_000).toISOString();
     await env.DB.prepare(
       "INSERT INTO exchanges(id, session_id, ts, endpoint, model, latency_ms, r2_key, capture_status, accepted_at, schema_version) VALUES ('reactivate-exchange', 'ended-reactivate', ?, 'chat', 'openai/test', 1, 'log/reactivate.json', 'accepted', ?, 1)",
@@ -1141,22 +377,13 @@ describe("Sessions integration", () => {
         "SELECT state, inactive_at, last_active_at FROM sessions WHERE id = 'ended-reactivate'",
       ).first(),
     ).toEqual({ state: "active", inactive_at: null, last_active_at: later });
-    const dashboard = (await (
-      await dashboardRequest("/dashboard/api/sessions")
-    ).json()) as { sessions: Array<{ id: string }> };
-    expect(dashboard.sessions.map((session) => session.id)).toEqual([
-      "ended-reactivate",
-      "newer-unreopened",
-    ]);
-    const machine = (await (
-      await request("/sessions", {
-        headers: { authorization: "Bearer machine-token" },
-      })
-    ).json()) as { sessions: Array<{ id: string }> };
-    expect(machine.sessions.map((session) => session.id)).toEqual([
-      "ended-reactivate",
-      "newer-unreopened",
-    ]);
+    for (const listed of [await dashboardRequest("/dashboard/api/sessions"), await request("/api/sessions", { headers })]) {
+      const body = (await listed.json()) as { sessions: Array<{ id: string; state: string; ended_at: string | null }> };
+      expect(body.sessions.map(({ id, state, ended_at }) => ({ id, state, ended_at }))).toEqual([
+        { id: "ended-reactivate", state: "active", ended_at: null },
+        { id: "newer-unreopened", state: "inactive", ended_at: null },
+      ]);
+    }
   });
 
   it("reconciles accepted objects and missing saved objects without deletion", async () => {
@@ -1389,7 +616,7 @@ describe("Sessions integration", () => {
     });
 
     const listed = (await (
-      await request("/sessions", {
+      await request("/api/sessions?q=title%20storage", {
         headers: { authorization: "Bearer machine-token" },
       })
     ).json()) as { sessions: Array<Record<string, unknown>> };
@@ -1397,20 +624,6 @@ describe("Sessions integration", () => {
       expect.objectContaining({
         id: "title-projection",
         title: "Fix [REDACTED] title storage",
-        display_title: "Fix [REDACTED] title storage",
-      }),
-    );
-    const search = await request("/search", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ query: "title storage", types: ["title"] }),
-    });
-    expect(
-      ((await search.json()) as { matches: Array<Record<string, unknown>> })
-        .matches,
-    ).toContainEqual(
-      expect.objectContaining({
-        session_id: "title-projection",
         display_title: "Fix [REDACTED] title storage",
       }),
     );
@@ -1488,12 +701,11 @@ describe("Sessions integration", () => {
       },
     );
     expect(manual.status).toBe(200);
-    expect(await manual.json()).toMatchObject({
-      session: {
-        title: "Manual title",
-        title_source: "manual",
-        display_title: "Manual title",
-      },
+    expect(await manual.json()).toEqual({
+      id: "title-precedence",
+      title: "Manual title",
+      title_source: "manual",
+      display_title: "Manual title",
     });
 
     await request("/sessions/title-precedence/events", {
@@ -1554,6 +766,17 @@ describe("Sessions integration", () => {
         })
       ).status,
     ).toBe(403);
+    const cleared = await request("/api/sessions/title-precedence/title", {
+      method: "PATCH",
+      headers: authHeaders,
+      body: JSON.stringify({ title: null }),
+    });
+    expect(await cleared.json()).toEqual({
+      id: "title-precedence",
+      title: "Generated title",
+      title_source: "generated",
+      display_title: "Generated title",
+    });
   });
 
   it("reconciles a persisted generated title candidate after R2 succeeds", async () => {

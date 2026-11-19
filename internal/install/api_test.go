@@ -1,7 +1,6 @@
 package install
 
 import (
-	"path/filepath"
 	"regexp"
 	"testing"
 )
@@ -17,19 +16,17 @@ func TestEmbeddedWorkerIdentity(t *testing.T) {
 }
 
 func TestArtifactsReadyOwnsReadinessPolicy(t *testing.T) {
-	root := t.TempDir()
 	report := ArtifactReport{Artifacts: []ArtifactResult{
-		{Path: filepath.Join(root, "plugins", "mimir.ts"), Source: "plugins/opencode/mimir.ts", Status: ArtifactCurrent},
-		{Path: filepath.Join(root, "skills", "mimir-use", "SKILL.md"), Source: "skills/mimir-use/SKILL.md", Status: ArtifactUpdated},
-		{Path: filepath.Join(t.TempDir(), "plugin.yaml"), Source: "plugins/hermes/plugin.yaml", Status: ArtifactConflict},
+		{Harness: "opencode", Source: "plugins/opencode/mimir.ts", Status: ArtifactCurrent},
+		{Harness: "opencode", Source: "skills/mimir-use/SKILL.md", Status: ArtifactUpdated},
+		{Harness: "cursor", Source: "plugins/cursor/hooks.json", Status: ArtifactInstalled},
+		{Harness: "cursor", Source: MCPSource("cursor"), Status: ArtifactConflict},
+		{Harness: "hermes", Source: "plugins/hermes/plugin.yaml", Status: ArtifactConflict},
 	}}
-	if !ArtifactsReady(report, root, "plugins/opencode/mimir.ts", "skills/mimir-use/") {
-		t.Fatal("current provider artifacts were not ready")
+	if !ArtifactsReady(report, "opencode") || !ArtifactsReady(report, "cursor") {
+		t.Fatal("usable harness artifacts were not ready")
 	}
-	if ArtifactsReady(report, "", "plugins/hermes/") {
-		t.Fatal("conflicting provider artifact was ready")
-	}
-	if ArtifactsReady(report, root, "plugins/hermes/") {
-		t.Fatal("missing provider artifacts were ready")
+	if ArtifactsReady(report, "hermes") || ArtifactsReady(report, "pi") {
+		t.Fatal("conflicting or missing harness artifacts were ready")
 	}
 }

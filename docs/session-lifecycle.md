@@ -1,146 +1,111 @@
 # Session Lifecycle And Harness Capture
 
-Mimir combines capture paths around one lifecycle owner. The Worker proxy
-persists full redacted OpenRouter exchanges. Pi, OpenCode, Hermes, and the Claude
-Code, Codex, and Cursor hook adapter can persist bounded exchanges reconstructed
-from harness-visible requests and responses. Harness integrations also report
-lifecycle events; Hermes activates plugin lifecycle reporting only after direct
-provider evidence and suppresses requests known to have traversed the proxy.
-One Session Durable Object coordinates each exact session ID.
+Mimir combines capture paths into one session record in D1. The Worker proxy
+persists full redacted OpenRouter exchanges. Pi, Oh My Pi, OpenCode, Hermes,
+and the Claude Code, Codex, and Cursor hook adapter persist bounded exchanges
+reconstructed from what the harness exposes, report lifecycle events, and
+capture commits through `mimir _hook git`. Every route writes D1 directly;
+there is no per-session coordinator.
 
 ```mermaid
 stateDiagram-v2
-    state first_event <<choice>>
-    [*] --> first_event
-    first_event --> Active: heartbeat, turn, or saved exchange
-    first_event --> Finalizing: end
-    Active --> Disconnected: about 90 seconds silent
-    Active --> Finalizing: end event or explicit end
-    Disconnected --> Active: accepted activity
-    Disconnected --> Finalizing: end, explicit end, or about 10 minutes total silence
-    Finalizing --> Finalizing: durable write retry
-    Finalizing --> Finalized: manifest and lifecycle state saved
-    Finalized --> Active: accepted new activity with same ID
+    [*] --> Active: event, reported exchange, or proxied exchange
+    Active --> Active: activity
+    Active --> Inactive: end event or mimir session end
+    Active --> Inactive: silent longer than session.gap_minutes (cron)
+    Inactive --> Active: new activity with the same ID
 
-    note right of Disconnected
-      Liveness projection only.
-      Durable capture and work
-      outcome remain independent.
+    note right of Inactive
+      Summary is built for
+      inactive root sessions.
     end note
 ```
 
-`x-mimir-session` is the authoritative boundary. R2 and D1 are canonical for
-saved proxy and reconstructed harness exchanges, searchable metadata, and
-finalized lifecycle state. The Durable Object owns the bounded live event-turn
-buffer; event excerpts are not promoted into the R2 transcript manifest or D1
-search metadata.
+`x-mimir-session` is the authoritative boundary. Without it, the proxy groups
+traffic by repository, harness, and device with the `session.gap_minutes`
+inactivity gap (default 15).
 
 ## Starting
 
-Sessions start lazily. There is no separate start command.
+Sessions start lazily from the first activity carrying their ID:
 
-A session starts from the first activity carrying its session ID:
+1. A harness start hook sends a heartbeat. Oh My Pi waits for the first real
+   turn so an idle draft does not create a session. Hermes waits until
+   direct-provider evidence activates the plugin.
+2. The first completed turn or reported exchange arrives if the start hook was
+   missed.
+3. The first proxied request carrying `x-mimir-session` is captured.
 
-1. A harness start hook normally sends a heartbeat. Oh My Pi waits for the
-   first real turn so an idle draft does not create a session. Hermes waits
-   until direct-provider evidence activates the plugin.
-2. The first completed turn arrives if the start hook was missed.
-3. The first capture-eligible proxied request carrying `x-mimir-session` is
-   successfully saved and reported to the session object.
+Installing Mimir or launching an idle harness creates nothing.
 
-Installing Mimir or launching an idle harness does not create a session.
+## Ending
 
-## Finalizing
+A session becomes inactive through any of three triggers:
 
-A session finalizes through any of three triggers:
+1. **End event.** OpenCode sends it for `session.deleted`; Pi and Oh My Pi on
+   shutdown; Hermes on finalize; Claude Code, Codex, and Cursor on their
+   session-end hooks.
+2. **Explicit end.** `mimir session end <id>` (`POST /sessions/:id/end`).
+3. **Expiry.** The cron trigger, every 10 minutes, marks sessions silent longer
+   than `session.gap_minutes` inactive. This covers crashes, killed terminals,
+   sleep, and network loss.
 
-1. **End event.** A supported session-finalize hook reports an end and
-   finalization begins immediately. OpenCode sends this for `session.deleted`;
-   ordinary process exit relies on the silence timer.
-2. **Silence timer.** Every accepted non-duplicate event re-arms a server-side
-   alarm. About ten minutes without an event finalizes sessions left by a
-   crash, killed terminal, laptop sleep, or network loss.
-3. **Explicit request.** CLI `mimir session end <id>` finalizes the active
-   generation.
-
-All three write or rewrite `sessions/<id>/transcript.json` in R2, update the D1
-lifecycle row, broadcast the final state, and let the Durable Object sleep.
-Finalization failures schedule a retry.
-
-Repeated end requests are safe. Retried turns are deduplicated by exchange ID,
-and stale heartbeat retries cannot reopen a session that has already
-finalized.
+Ending is idempotent. Retried turns are deduplicated by exchange ID, and a
+heartbeat timestamped before the end cannot reopen the session.
 
 ## Reopening
 
-Finalization is not a tombstone. New activity carrying the same exact session
-ID wakes the same object, preserves its history, and starts another active
-generation. The next finalization rewrites the transcript manifest with every
-saved proxy or reconstructed harness exchange still indexed for that session
-and aggregate event-turn counters. Event-only payloads remain only in the
-bounded Durable Object live buffer. A genuinely new harness session receives
-a new ID and therefore a new object.
+Inactive is not a tombstone. New activity carrying the same session ID makes it
+active again with its history intact, so a user can resume a conversation after
+a clean end, an expiry, sleep, or disconnection. A genuinely new harness
+session uses a new ID.
 
-This is intentional: a user can resume the same harness conversation after a
-clean end, a silence timeout, sleep, or disconnection.
+## Summaries
 
-### Outcome generations
+When a root session and its supporting sessions are all inactive, Mimir builds a
+deterministic summary from saved evidence: goal, actions, result, verification,
+open items, and evidence links. It is built right after an explicit end or
+`end` event, and by the cron trigger for expired sessions or sessions whose new
+saved exchanges marked the summary pending. No model call is made, and summary
+claims are evidence to check, not proof.
 
-Each active period has its own outcome projection. A clean completed primary
-turn followed by whole-tree finalization remains `unresolved`: completion alone
-does not establish that the work landed. A failure signal, pending tool
-continuation, or finalization without a clean completion becomes `abandoned`.
-Explicit agent and user outcomes take precedence within the active generation.
-After 48 hours of inactivity, an unresolved root can be promoted to `landed`
-only with saved Git commit evidence and a retrievable patch.
+## Git Status
 
-When a finalized exact session resumes, Mimir appends an automatic
-`unresolved` event before accepting the new work. Prior outcomes remain in the
-immutable history. Supporting sessions apply explicit outcomes to their root,
-but automatic resolution waits until no session in the root tree remains
-active.
-
-## Liveness
-
-Liveness is a projection from event age, independent of durable capture state
-and work outcome:
-
-- **`active`** — an event arrived within about 90 seconds.
-- **`disconnected`** — the session has been silent for more than about 90
-  seconds, but its finalization alarm has not fired.
-- **`finalized`** — the final transcript and lifecycle write completed.
-
-Returning activity can move `disconnected` or `finalized` back to `active`.
-The ten-minute timer is a durability backstop, not a liveness promise.
+Commits are captured as they happen. After a shell tool prints a
+`git commit` confirmation, the integration runs `mimir _hook git`, which posts
+the commit's redacted patch and whether it is already on a remote-tracking
+branch. At turn or session end the integration re-checks the session's
+unpushed commits and marks newly pushed ones. Each session's `git_status` is
+`pushed` when any saved commit in its subtree is pushed, `committed` when it has
+saved commits, and `none` otherwise.
 
 ## Capture Responsibilities
 
 | Component | Responsibility |
 | --- | --- |
-| Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; classify saved primary turns as completed, pending, or failed |
-| Pi extension | Route OpenRouter through Mimir with exact session headers; persist bounded reconstructed direct-provider turns; report heartbeats, titles, and lifecycle events |
-| OpenCode plugin | Persist bounded reconstructed direct-provider exchanges; report completed turns, heartbeats, titles, and supported lifecycle events |
-| Hermes plugin | For direct providers, report bounded request/response reconstructions with supported tool activity, activation heartbeat, and end; leave proxied requests to the Worker and suppress plugin lifecycle for proxy-only sessions |
-| Claude Code, Codex, and Cursor hooks | Pair supported prompt/completion hooks into bounded reconstructed exchanges, report completion failures when exposed, and report start/end lifecycle events; Codex also reads matching transcript usage records |
-| Session Durable Object | Coordinate liveness, outcome generations, retries, reopening, live feed, transcript manifests, and D1 lifecycle state |
-| CLI | Primary search, inspection, outcome, explicit-end, deployment, and diagnostics surface |
-| Dashboard | Access-protected session and request views backed by Worker APIs |
+| Worker proxy | Stream upstream responses; redact and persist full exchanges to R2/D1; index them for search |
+| Pi and Oh My Pi extensions | Route OpenRouter through Mimir with exact session headers; persist bounded direct-provider turns; report heartbeats, titles, sub-agent parents, and end; capture commits |
+| OpenCode plugin | Persist bounded direct-provider exchanges; report turns, heartbeats, titles, and end; capture commits; expose `mimir_*` tools |
+| Hermes plugin | For direct providers, report bounded request/response reconstructions with tool activity, heartbeat, and end; leave proxied requests to the Worker; capture commits; expose `mimir_*` tools |
+| Claude Code, Codex, and Cursor hooks | Pair prompt/completion hooks into bounded exchanges, report failures and start/end events, capture commits after shell tools, re-check pushed commits; Codex also reads transcript usage |
+| Worker cron | Expire silent sessions, build summaries, backfill the search index |
+| CLI and MCP | Query surface for agents; deployment and diagnostics |
+| Dashboard | Access-protected Day, Sessions, and Devices pages over the same query API |
 
-Event payloads contain summaries and excerpts, not transport archives.
-Reconstructed harness exchanges are persisted and searchable after Worker
-redaction, but can only contain fields exposed by the harness and may omit tool
-activity, transport metadata, token use, or timing. Codex includes token usage
-when its bounded transcript tail contains a record for the completed turn. Only
-traffic that reaches the Worker proxy produces a full redacted transport
-exchange.
+Event payloads carry summaries and excerpts, not transport archives.
+Reconstructed exchanges are persisted and searchable after Worker redaction,
+but contain only what the harness exposes and may omit tool activity, transport
+metadata, token use, or timing. Only traffic through the Worker proxy produces a
+full redacted transport exchange.
 
-## Persistence Verification
+## Persistence
 
-Transport success is not proof that an exchange was saved. Use:
+Transport success is not proof that an exchange was saved. The receipt is:
 
 ```bash
 mimir session status <id>
 ```
 
-The authoritative receipt distinguishes saved, pending, partial, failed, and
-uncaptured sessions. Capture state and work outcome remain independent.
+It reflects stored state when asked and distinguishes saved, pending, partial,
+failed, and uncaptured sessions. Capture state says nothing about whether the
+work succeeded.

@@ -2,8 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import BrandIcon from "@/components/BrandIcon.vue";
 import { harnessLabel } from "@/lib/format";
-import { agentTime, share, type DayItem, type SliceTone } from "@/lib/day";
-import { outcomeMeta, outcomeOrder } from "@/lib/outcomes";
+import { agentTime, gitSummary, share, type DayItem, type SliceTone } from "@/lib/day";
 
 const props = defineProps<{ entries: Array<{ item: DayItem; tone: SliceTone }>; caption: string }>();
 const hovered = defineModel<string | null>("hovered", { required: true });
@@ -68,9 +67,6 @@ function badgeStyle(arc: (typeof arcs.value)[number]) {
   return { left: `${x / 2}%`, top: `${y / 2}%`, transform: `translate(-50%, -50%) translate(${lifted ? arc.lift[0] * scale.value : 0}px, ${lifted ? arc.lift[1] * scale.value : 0}px)` };
 }
 
-function outcomeLine(item: DayItem) {
-  return outcomeOrder.filter((outcome) => item.outcomes[outcome]).map((outcome) => `${item.outcomes[outcome]} ${outcomeMeta[outcome].label.toLowerCase()}`).join(" · ");
-}
 const hint = (item: DayItem) => ("session" in item.open ? "Click to open the session" : "Click to zoom in");
 </script>
 
@@ -135,7 +131,7 @@ const hint = (item: DayItem) => ("session" in item.open ? "Click to open the ses
       <p class="mt-1 text-zinc-600 dark:text-zinc-400">
         <template v-if="tooltipArc.item.sessionIds.length > 1">{{ tooltipArc.item.sessionIds.length }} sessions · </template>{{ tooltipArc.item.requests }} {{ tooltipArc.item.requests === 1 ? "request" : "requests" }}<template v-if="tooltipArc.item.subAgents"> · {{ tooltipArc.item.subAgents }} sub-agents</template><template v-if="tooltipArc.item.commits"> · {{ tooltipArc.item.commits }} {{ tooltipArc.item.commits === 1 ? "commit" : "commits" }}</template>
       </p>
-      <p v-if="tooltipArc.item.kind !== 'quick'" class="mt-1 text-zinc-600 dark:text-zinc-400">{{ outcomeLine(tooltipArc.item) }}</p>
+      <p v-if="tooltipArc.item.kind !== 'quick' && gitSummary(tooltipArc.item.git)" class="mt-1 text-zinc-600 dark:text-zinc-400">{{ gitSummary(tooltipArc.item.git) }}</p>
       <p class="mt-2 border-t border-zinc-200 pt-2 text-zinc-500 dark:border-zinc-700">{{ hint(tooltipArc.item) }}</p>
     </div>
   </div>

@@ -22,6 +22,19 @@ function Test-WritableDirectory([string]$Path) {
     }
 }
 
+function Test-FileLocked([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream.Dispose()
+        return $false
+    } catch {
+        return $true
+    }
+}
+
 function Install-Mimir {
     $isWindowsPlatform = $env:OS -eq "Windows_NT"
     if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
@@ -126,19 +139,26 @@ function Install-Mimir {
         }
         $BinDir = [IO.Path]::GetFullPath($BinDir)
 
-        $priorSource = $env:MIMIR_INSTALL_SOURCE
-        try {
-            $env:MIMIR_INSTALL_SOURCE = "release"
-            $installArgs = @("install", "--bin-dir", $BinDir)
-            foreach ($id in $Harness) {
-                $installArgs += @("--harness", $id)
+        $target = Join-Path $BinDir "mimir.exe"
+        $installArgs = @("install", "--bin-dir", $BinDir)
+        foreach ($id in $Harness) {
+            $installArgs += @("--harness", $id)
+        }
+        # mimir.exe that just exited (for example after `mimir update`) can stay
+        # locked for a moment; retry while the target cannot be opened exclusively.
+        for ($attempt = 1; ; $attempt++) {
+            if ($attempt -lt 10 -and (Test-FileLocked $target)) {
+                Start-Sleep -Milliseconds 500
+                continue
             }
             & $binary @installArgs
-            if ($LASTEXITCODE -ne 0) {
+            if ($LASTEXITCODE -eq 0) {
+                break
+            }
+            if ($attempt -ge 10 -or -not (Test-FileLocked $target)) {
                 throw "Mimir exited with status $LASTEXITCODE"
             }
-        } finally {
-            $env:MIMIR_INSTALL_SOURCE = $priorSource
+            Start-Sleep -Milliseconds 500
         }
 
         $pathEntries = @($env:Path -split ';' | ForEach-Object { $_.TrimEnd('\') })

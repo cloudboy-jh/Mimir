@@ -8,8 +8,7 @@ import (
 
 	"github.com/cloudboy-jh/mimir/internal/deployment"
 	"github.com/cloudboy-jh/mimir/internal/mimirapi"
-	cliui "github.com/cloudboy-jh/mimir/internal/ui/appframe"
-	"github.com/cloudboy-jh/mimir/internal/ui/bentotui"
+	"github.com/cloudboy-jh/mimir/internal/tailnet"
 )
 
 func login(ctx context.Context, args []string, ioctx IO) error {
@@ -26,34 +25,22 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		switch args[i] {
 		case "--url":
 			opts.URL = args[i+1]
-			forceDiscovery = true
 		case "--worker-dir":
 			opts.WorkerDir = args[i+1]
-			forceDiscovery = true
 		case "--worker-name":
 			opts.WorkerName = args[i+1]
-			forceDiscovery = true
 		case "--database-name":
 			opts.DatabaseName = args[i+1]
-			forceDiscovery = true
 		case "--account-id":
 			opts.AccountID = args[i+1]
 			if strings.TrimSpace(opts.AccountID) == "" {
 				return fmt.Errorf("--account-id requires a non-empty value")
 			}
-			forceDiscovery = true
 		default:
 			return fmt.Errorf("unknown login option %q", args[i])
 		}
+		forceDiscovery = true
 		i++
-	}
-	operationCtx, cancelOperation := context.WithCancel(ctx)
-	defer cancelOperation()
-	ctx = operationCtx
-	if !opts.JSON {
-		printSetupBanner(ioctx.Out)
-		opts.Progress = startOperationProgress(ctx, ioctx, "Mimir login", []string{"Preparing Worker", "Authenticating Cloudflare", "Finding deployment", "Registering machine", "Verifying connection"}, cancelOperation)
-		defer opts.Progress.Stop()
 	}
 	if !forceDiscovery {
 		pointer, pointerErr := loadPointer()
@@ -61,10 +48,8 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 		if pointerErr == nil && identityErr == nil {
 			client := mimirapi.Client{HTTPClient: httpClient, Pointer: pointer}
 			if err := associateMachineIdentity(ctx, client); err == nil {
-				setupStep(opts.Progress, ioctx.Out, opts.JSON, "Connection verified")
-				opts.Progress.Finish("Login complete")
-				opts.Progress.Stop()
-				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer.URL)
+				setupStep(ioctx.Out, opts.JSON, "Connection verified")
+				return writeLoginResult(ctx, ioctx, opts.JSON, identity, pointer)
 			}
 		}
 	}
@@ -76,59 +61,49 @@ func login(ctx context.Context, args []string, ioctx IO) error {
 	domainOpts := deployment.DefaultOptions()
 	domainOpts.WorkerDir, domainOpts.WorkerName, domainOpts.DatabaseName, domainOpts.Noninteractive = opts.WorkerDir, opts.WorkerName, opts.DatabaseName, opts.JSON
 	domainOpts.AccountID = opts.AccountID
-	service := newDeploymentService(httpClient)
-	if opts.Progress != nil {
-		service.Wrangler = deployment.ObserveWrangler(service.Wrangler, opts.Progress.Output())
-	}
-	result, err := service.Login(ctx, domainOpts, deployment.Hooks{
+	result, err := newDeploymentService(httpClient).Login(ctx, domainOpts, deployment.Hooks{
 		Streams: deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err},
-		Step:    func(message string) { setupStep(opts.Progress, ioctx.Out, opts.JSON, message) },
-		Login: func(ctx context.Context, dir string) error {
-			return opts.Progress.Handoff("Waiting for Cloudflare authentication", func() error {
-				cloudflareLoginNotice(ioctx.Out)
-				return deployment.Wrangler{}.Interactive(ctx, dir, deployment.Streams{In: ioctx.In, Out: ioctx.Out, Err: ioctx.Err}, "login")
-			})
-		},
+		Step:    func(message string) { setupStep(ioctx.Out, opts.JSON, message) },
+		Login:   func(ctx context.Context, dir string) error { return cloudflareLogin(ctx, dir, ioctx) },
 		Verify: func(ctx context.Context, url, token string) error {
 			return (mimirapi.Client{HTTPClient: httpClient, Pointer: mimirapi.Pointer{URL: url, Token: token}}).Verify(ctx)
 		},
 	}, opts.URL)
 	if err != nil {
-		opts.Progress.Fail()
 		return err
 	}
 	pointer := mimirapi.Pointer{URL: result.URL, Token: result.Token}
 	if err := savePointer(pointer); err != nil {
-		opts.Progress.Fail()
 		return err
 	}
-	opts.Progress.Finish("Login complete")
-	opts.Progress.Stop()
-	return writeLoginResult(ctx, ioctx, opts.JSON, result.Identity, result.URL)
+	return writeLoginResult(ctx, ioctx, opts.JSON, result.Identity, pointer)
 }
 
-func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity deployment.Identity, url string) error {
+func writeLoginResult(ctx context.Context, ioctx IO, jsonOutput bool, identity deployment.Identity, pointer mimirapi.Pointer) error {
 	if err := deployment.SaveIdentity(identity); err != nil {
 		return err
 	}
+	saveCurrentExecutable(ioctx.Err)
+	tailnetState := "unavailable"
+	reported, err := tailnet.Report(ctx, mimirapi.Client{HTTPClient: httpClient, Pointer: pointer})
+	if err != nil {
+		setupWarning(ioctx.Err, "tailnet report failed: %v", err)
+	} else if reported {
+		tailnetState = "reported"
+	}
 	lifecycle := refreshConnectedLifecycleIntegrations(ctx, "login")
 	if !lifecycle.OK {
-		fmt.Fprintf(ioctx.Err, "harness integration refresh warning: %s\n", lifecycle.Error)
+		setupWarning(ioctx.Err, "harness integration refresh: %s", lifecycle.Error)
 	}
-	integrations := lifecycle.Integrations
-	result := addConnectionManifest(map[string]any{"state": "connected", "url": url, "user": identity, "artifacts": lifecycle.Artifacts, "integrations": integrations}, url)
-	human := loginSummaryWithRenderer(identity, url, cliui.New(ioctx.Out))
-	if summary := integrationSummary(integrations); summary != "" {
+	result := addConnectionManifest(map[string]any{"state": "connected", "url": pointer.URL, "user": identity, "tailnet": tailnetState, "artifacts": lifecycle.Artifacts, "integrations": lifecycle.Integrations}, pointer.URL)
+	human := loginSummary(identity, pointer.URL)
+	if summary := integrationSummary(lifecycle.Integrations); summary != "" {
 		human += "\n\n" + summary
 	}
 	return writeSetupResult(ioctx.Out, jsonOutput, result, human)
 }
 
-func loginSummary(identity deployment.Identity, url string, color bool) string {
-	return loginSummaryWithRenderer(identity, url, cliui.Renderer{Color: color, Width: 80, Theme: bentotui.Mimir})
-}
-
-func loginSummaryWithRenderer(identity deployment.Identity, url string, render cliui.Renderer) string {
+func loginSummary(identity deployment.Identity, url string) string {
 	accountNames := make([]string, 0, len(identity.Accounts))
 	for _, account := range identity.Accounts {
 		if account.Name != "" {
@@ -139,20 +114,14 @@ func loginSummaryWithRenderer(identity deployment.Identity, url string, render c
 	if accounts == "" {
 		accounts = "unavailable"
 	}
-	machine, _ := os.Hostname()
-	if strings.TrimSpace(machine) == "" {
-		machine = "registered"
-	}
+	return fmt.Sprintf("✓ Logged in\n  Email:   %s\n  Account: %s\n  Auth:    %s\n  Worker:  %s\n  Machine: %s",
+		identity.Email, accounts, identity.AuthType, strings.TrimRight(url, "/"), machineName())
+}
 
-	cloudflare := render.KeyValues("Cloudflare",
-		bentotui.Field{Label: "Email", Value: identity.Email},
-		bentotui.Field{Label: "Account", Value: accounts},
-		bentotui.Field{Label: "Auth", Value: identity.AuthType},
-	)
-	connection := render.KeyValues("Connection",
-		bentotui.Field{Label: "Worker", Value: strings.TrimRight(url, "/")},
-		bentotui.Field{Label: "Machine", Value: machine},
-		bentotui.Field{Label: "Status", Value: bentotui.Badge(render.Theme, render.Color, "✓", bentotui.VariantSuccess) + " connected"},
-	)
-	return bentotui.Stack(cloudflare, connection)
+func machineName() string {
+	name, _ := os.Hostname()
+	if strings.TrimSpace(name) == "" {
+		return "registered"
+	}
+	return name
 }
